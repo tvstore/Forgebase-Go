@@ -1,12 +1,12 @@
 package db
 
 import (
+	"math"
 	"net"
 	"os"
 	osuser "os/user"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,8 +28,8 @@ type urlConfig struct {
 	connectTimeout                                   time.Duration // 0: none
 	keepalives                                       bool
 	keepalivesIdle                                   time.Duration
-	keepalivesInterval                               time.Duration // 0: the default
-	keepalivesRetries                                int           // 0: the default
+	keepalivesInterval                               time.Duration // 0: the operating system's
+	keepalivesRetries                                int           // 0: the operating system's
 	targetSessionAttrs                               string
 	channelBinding                                   string
 }
@@ -42,6 +42,20 @@ func newURLConfig() *urlConfig {
 // name of a key.
 func urlError(detail string) error {
 	return &Error{Kind: ErrCreatePool, Message: "the database URL is not valid: " + detail}
+}
+
+// seconds is time.Duration(n) * time.Second, clamped instead of overflowing (Rust: Duration::from_secs
+// takes any u64; a value this large is "never" in practice).
+func seconds(n int64) time.Duration {
+	if n > int64(math.MaxInt64/time.Second) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(n) * time.Second
+}
+
+// parseUnsigned is str::parse::<uN>: digits with an optional leading '+', no sign otherwise.
+func parseUnsigned(value string, bits int) (uint64, error) {
+	return strconv.ParseUint(strings.TrimPrefix(value, "+"), 10, bits)
 }
 
 func invalidValue(key string) error { return urlError("invalid value for option `" + key + "`") }
@@ -249,7 +263,7 @@ func (c *urlConfig) param(key, value string) error {
 			n := uint64(5432)
 			if port != "" {
 				var err error
-				if n, err = strconv.ParseUint(port, 10, 16); err != nil {
+				if n, err = parseUnsigned(port, 16); err != nil {
 					return invalidValue(key)
 				}
 			}
@@ -261,7 +275,7 @@ func (c *urlConfig) param(key, value string) error {
 			return err
 		}
 		if n > 0 {
-			c.connectTimeout = time.Duration(n) * time.Second
+			c.connectTimeout = seconds(n)
 		}
 	case "tcp_user_timeout":
 		n, err := number()
@@ -272,7 +286,7 @@ func (c *urlConfig) param(key, value string) error {
 			return unsupported("`tcp_user_timeout`")
 		}
 	case "keepalives":
-		n, err := strconv.ParseUint(value, 10, 64)
+		n, err := parseUnsigned(value, 64)
 		if err != nil {
 			return invalidValue(key)
 		}
@@ -283,7 +297,7 @@ func (c *urlConfig) param(key, value string) error {
 			return err
 		}
 		if n > 0 {
-			c.keepalivesIdle = time.Duration(n) * time.Second
+			c.keepalivesIdle = seconds(n)
 		}
 	case "keepalives_interval":
 		n, err := number()
@@ -291,10 +305,10 @@ func (c *urlConfig) param(key, value string) error {
 			return err
 		}
 		if n > 0 {
-			c.keepalivesInterval = time.Duration(n) * time.Second
+			c.keepalivesInterval = seconds(n)
 		}
 	case "keepalives_retries":
-		n, err := strconv.ParseUint(value, 10, 32)
+		n, err := parseUnsigned(value, 32)
 		if err != nil {
 			return invalidValue(key)
 		}
@@ -325,6 +339,14 @@ func (c *urlConfig) param(key, value string) error {
 
 // checkHosts are the checks of tokio_postgres::connect, made when the connection is opened.
 func (c *urlConfig) checkHosts() error {
+	for _, host := range c.hosts {
+		// tokio-postgres connects to Tcp("") (and to a host with a comma, which is one host for it)
+		// and fails to resolve it; the list of hosts reaches pgx comma-separated, so neither can be
+		// passed on. The error is the connect-time one.
+		if host == "" || strings.Contains(host, ",") {
+			return &Error{Kind: ErrPostgres, Message: "error connecting to server: failed to lookup address information: Name or service not known"}
+		}
+	}
 	if len(c.hosts) == 0 {
 		return &Error{Kind: ErrPostgres, Message: "invalid configuration: both host and hostaddr are missing"}
 	}
@@ -388,38 +410,48 @@ func (c *urlConfig) pgxSettings(user string) string {
 	}, " ")
 }
 
-// envMu serializes the removal of PGSERVICE from the environment during parsePoolConfig.
-var envMu sync.Mutex
+// keepAliveConfig is the TCP keepalive of tokio-postgres: on, idle 2 hours unless the URL says
+// otherwise. A negative interval or count leaves the operating system's value, which is what
+// tokio-postgres does when the URL gives none (Go's own defaults are 15 s and 9).
+func (c *urlConfig) keepAliveConfig() net.KeepAliveConfig {
+	interval, count := -time.Nanosecond, -1
+	if c.keepalivesInterval > 0 {
+		interval = c.keepalivesInterval
+	}
+	if c.keepalivesRetries > 0 {
+		count = c.keepalivesRetries
+	}
+	return net.KeepAliveConfig{Enable: true, Idle: c.keepalivesIdle, Interval: interval, Count: count}
+}
 
 // poolConfig builds the pgx pool configuration from the URL's own settings.
 func (c *urlConfig) poolConfig() (*pgxpool.Config, error) {
+	// pgx reads the service file named by PGSERVICE whenever that variable is set, and no setting of
+	// the connection string can switch that off (even an empty `service` makes it read the file).
+	// tokio-postgres ignores PGSERVICE. Rather than change the process environment, a set PGSERVICE
+	// is refused (a disclosed deviation, see the dependency evaluation).
+	if os.Getenv("PGSERVICE") != "" {
+		return nil, &Error{Kind: ErrCreatePool, Message: "Forgebase reads the connection settings only from the database URL; unset PGSERVICE"}
+	}
 	if err := c.checkHosts(); err != nil {
 		return nil, err
 	}
 	// No user in the URL: the operating system's user name, as tokio-postgres does (whoami). It is
 	// resolved here because pgx ignores an empty user setting and then takes PGUSER.
 	user := deref(c.user)
-	if user == "" {
+	if c.user != nil && user == "" {
+		// An empty user name is sent as it is by tokio-postgres, and the server refuses it. pgx
+		// would take PGUSER instead, so the refusal is made here, with the server's own text.
+		return nil, &Error{Kind: ErrPostgres, Message: "FATAL: no PostgreSQL user name specified in startup packet (SQLSTATE 28000)"}
+	}
+	if c.user == nil {
 		current, err := osuser.Current()
 		if err != nil || current.Username == "" {
 			return nil, &Error{Kind: ErrPostgres, Message: "cannot determine the operating system user name for a database URL without a user"}
 		}
 		user = current.Username
 	}
-	// pgx reads the service file named by PGSERVICE whenever that variable is set, and the setting
-	// cannot be overridden from the connection string (even an empty `service` makes pgx read the
-	// file). It is the only source that cannot be neutralized, so it is removed from the
-	// environment for the duration of the parse. Nothing else in this package reads it.
-	envMu.Lock()
-	service, hadService := os.LookupEnv("PGSERVICE")
-	if hadService {
-		_ = os.Unsetenv("PGSERVICE")
-	}
 	config, err := pgxpool.ParseConfig(c.pgxSettings(user))
-	if hadService {
-		_ = os.Setenv("PGSERVICE", service)
-	}
-	envMu.Unlock()
 	if err != nil {
 		// pgx's own message could quote parts of the settings; none is shown.
 		return nil, urlError("it cannot be used")
@@ -440,9 +472,7 @@ func (c *urlConfig) poolConfig() (*pgxpool.Config, error) {
 
 	dialer := &net.Dialer{Timeout: c.connectTimeout}
 	if c.keepalives {
-		dialer.KeepAliveConfig = net.KeepAliveConfig{
-			Enable: true, Idle: c.keepalivesIdle, Interval: c.keepalivesInterval, Count: c.keepalivesRetries,
-		}
+		dialer.KeepAliveConfig = c.keepAliveConfig()
 	} else {
 		dialer.KeepAlive = -1
 	}

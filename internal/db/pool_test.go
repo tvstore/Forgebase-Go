@@ -3,6 +3,7 @@ package db_test
 import (
 	"errors"
 	"os"
+	osuser "os/user"
 	"runtime"
 	"strings"
 	"testing"
@@ -189,7 +190,6 @@ func TestTheURLIsTheOnlySourceOfSettings(t *testing.T) {
 		"PGHOST":               "203.0.113.1",
 		"PGPORT":               "1",
 		"PGDATABASE":           "nodb",
-		"PGSERVICE":            "svc",
 		"PGSERVICEFILE":        servicefile,
 		"PGPASSFILE":           passfile,
 		"PGSSLMODE":            "verify-full",
@@ -206,9 +206,6 @@ func TestTheURLIsTheOnlySourceOfSettings(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	want(t, session(t, d.URL()), baseline, "the session under a hostile environment")
-	if got := os.Getenv("PGSERVICE"); got != "svc" {
-		t.Errorf("PGSERVICE was not restored: %q", got)
-	}
 
 	// What the URL sets, it sets.
 	url := d.URL() + "?application_name=from-the-url&options=-c%20search_path%3Dmine"
@@ -229,15 +226,41 @@ func TestTheURLIsTheOnlySourceOfSettings(t *testing.T) {
 	if e := asDbError(t, err); e.Kind != db.ErrPostgres || !strings.Contains(err.Error(), "both host and hostaddr are missing") {
 		t.Errorf("%v", err)
 	}
-	// A URL without a user does not take PGUSER (it is the operating system's user, as in
-	// tokio-postgres), and the error never names the environment's.
+	// A URL without a user does not take PGUSER: it is the operating system's user, as in
+	// tokio-postgres (whoami). The test server has no such role, or asks for its password: the
+	// error names that user, never "nobody".
+	current, uerr := osuser.Current()
+	if uerr != nil {
+		t.Fatal(uerr)
+	}
 	_, err = db.Connect(bg, strings.Replace(d.URL(), "forgebase:forgebase@", "", 1))
-	if err != nil && strings.Contains(err.Error(), "nobody") {
+	if err == nil {
+		t.Fatal("connected without a user")
+	}
+	if e := asDbError(t, err); e.Kind != db.ErrPostgres ||
+		!strings.Contains(err.Error(), `for user "`+current.Username+`"`) && !strings.Contains(err.Error(), `role "`+current.Username+`"`) {
+		t.Errorf("expected a server refusal naming the operating system user %q: %v", current.Username, err)
+	}
+	if strings.Contains(err.Error(), "nobody") {
 		t.Errorf("PGUSER was used: %v", err)
 	}
 	// An unknown key is refused, not sent to the server as a run-time parameter.
 	_, err = db.Connect(bg, d.URL()+"?search_path=x")
 	if e := asDbError(t, err); e.Kind != db.ErrCreatePool || !strings.Contains(err.Error(), "unknown option `search_path`") {
 		t.Errorf("%v", err)
+	}
+}
+
+// Not in Rust: PGSERVICE is the one environment variable that pgx cannot be told to ignore, so a set
+// one is refused (and the process environment is not touched).
+func TestAPGSERVICEInTheEnvironmentIsRefused(t *testing.T) {
+	t.Setenv("PGSERVICE", "svc")
+	_, err := db.Connect(bg, "postgres://forgebase:forgebase@127.0.0.1:1/x")
+	e := asDbError(t, err)
+	if e.Kind != db.ErrCreatePool || err.Error() != "cannot create connection pool: Forgebase reads the connection settings only from the database URL; unset PGSERVICE" {
+		t.Errorf("%v", err)
+	}
+	if os.Getenv("PGSERVICE") != "svc" {
+		t.Error("the environment was changed")
 	}
 }

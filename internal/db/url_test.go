@@ -2,6 +2,8 @@ package db
 
 import (
 	"errors"
+	"math"
+	"net"
 	"slices"
 	"strings"
 	"testing"
@@ -98,7 +100,7 @@ func TestUnknownAndUnsupportedKeysAreRefused(t *testing.T) {
 	}
 }
 
-// Rust: tokio-postgres decodes with percent_decode, which keeps a bad escape as it is.
+// Not in Rust: tokio-postgres decodes with percent_decode, which keeps a bad escape as it is.
 func TestLenientDecode(t *testing.T) {
 	for in, want := range map[string]string{"a%20b": "a b", "%zz": "%zz", "%4": "%4", "100%": "100%", "%e2%82%ac": "€"} {
 		if got, err := lenientDecode(in, true); err != nil || got != want {
@@ -120,5 +122,87 @@ func TestPgxSettingsQuoting(t *testing.T) {
 		if !strings.Contains(got, key) {
 			t.Errorf("%s is not set explicitly: %s", key, got)
 		}
+	}
+}
+
+// Not in Rust: integer options accept a leading '+' like str::parse::<u16/u32/u64>, and a huge
+// number of seconds does not overflow a Duration.
+func TestIntegerOptions(t *testing.T) {
+	cfg := parsedURL(t, "postgres://h:+6543/db?keepalives=+1&keepalives_idle=+5&keepalives_interval=+3&keepalives_retries=+2&connect_timeout=+7")
+	if !slices.Equal(cfg.ports, []uint16{6543}) || !cfg.keepalives || cfg.keepalivesIdle != 5*time.Second ||
+		cfg.keepalivesInterval != 3*time.Second || cfg.keepalivesRetries != 2 || cfg.connectTimeout != 7*time.Second {
+		t.Errorf("%+v", cfg)
+	}
+	for _, bad := range []string{"postgres://h:+/db", "postgres://h:++5/db", "postgres://h:-5/db",
+		"postgres://h/db?keepalives=-1", "postgres://h/db?keepalives_retries=-1", "postgres://h/db?keepalives=++1"} {
+		badURL(t, bad)
+	}
+	huge := parsedURL(t, "postgres://h/db?connect_timeout=9223372036854775807&keepalives_idle=9223372036854775807")
+	if huge.connectTimeout != time.Duration(math.MaxInt64) || huge.keepalivesIdle != time.Duration(math.MaxInt64) {
+		t.Errorf("%v %v", huge.connectTimeout, huge.keepalivesIdle)
+	}
+	badURL(t, "postgres://h/db?connect_timeout=9223372036854775808")
+}
+
+// Not in Rust: without keepalive settings in the URL the operating system's interval and count are
+// kept, as tokio-postgres does.
+func TestKeepAliveConfig(t *testing.T) {
+	got := parsedURL(t, "postgres://h/db").keepAliveConfig()
+	want := net.KeepAliveConfig{Enable: true, Idle: 2 * time.Hour, Interval: -time.Nanosecond, Count: -1}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	got = parsedURL(t, "postgres://h/db?keepalives_idle=10&keepalives_interval=4&keepalives_retries=3").keepAliveConfig()
+	want = net.KeepAliveConfig{Enable: true, Idle: 10 * time.Second, Interval: 4 * time.Second, Count: 3}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// Not in Rust: hosts that tokio-postgres fails to resolve at connect time are refused at connect
+// time, and a host= value with a comma is one host.
+func TestEmptyAndCommaHostsFailAtConnectTime(t *testing.T) {
+	for _, url := range []string{"postgres://a,,b/db", "postgres://h/db?host=", "postgres://h/db?host=a%2Cb", "postgres://,/db"} {
+		cfg := parsedURL(t, url)
+		err := cfg.checkHosts()
+		var e *Error
+		if !errors.As(err, &e) || e.Kind != ErrPostgres || !strings.Contains(e.Message, "failed to lookup address information") {
+			t.Errorf("%q: %v", url, err)
+		}
+	}
+	// The comma stays in the host: it is not split into two.
+	cfg := parsedURL(t, "postgres://h/db?host=a%2Cb")
+	if !slices.Equal(cfg.hosts, []string{"h", "a,b"}) {
+		t.Errorf("%v", cfg.hosts)
+	}
+}
+
+// Not in Rust: an empty user in the URL is an empty user (the server refuses it), not "no user".
+func TestEmptyUserIsNotNoUser(t *testing.T) {
+	if cfg := parsedURL(t, "postgres://:pw@h/db"); cfg.user == nil || *cfg.user != "" {
+		t.Errorf("%v", cfg.user)
+	}
+	if cfg := parsedURL(t, "postgres://h/db"); cfg.user != nil {
+		t.Errorf("%v", cfg.user)
+	}
+	_, err := parsePoolConfig("postgres://:pw@h/db")
+	var e *Error
+	if !errors.As(err, &e) || e.Kind != ErrPostgres || !strings.Contains(e.Message, "28000") || strings.Contains(e.Message, "pw") {
+		t.Errorf("%v", err)
+	}
+}
+
+// Not in Rust: a set PGSERVICE is refused, with no change of the process environment.
+func TestPGSERVICEIsRefused(t *testing.T) {
+	t.Setenv("PGSERVICE", "svc")
+	_, err := parsePoolConfig("postgres://u:p@h/db")
+	var e *Error
+	if !errors.As(err, &e) || e.Kind != ErrCreatePool ||
+		e.Message != "Forgebase reads the connection settings only from the database URL; unset PGSERVICE" {
+		t.Errorf("%v", err)
+	}
+	t.Setenv("PGSERVICE", "")
+	if _, err := parsePoolConfig("postgres://u:p@h/db"); err != nil {
+		t.Errorf("an empty PGSERVICE is not a service: %v", err)
 	}
 }

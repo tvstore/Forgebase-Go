@@ -18,11 +18,11 @@ import (
 // the Rust pool.
 //
 // The URL is the only source of connection settings, as in tokio-postgres: the PG* environment
-// variables, the password file and the service file have no effect (url.go). There is no TLS yet
-// (it arrives with P5, ADR 0018): a URL without sslmode or with sslmode=disable connects without
-// TLS, and every other sslmode, and
-// sslrootcert, is refused with ErrTLS. There is no connect timeout by default; give ctx a deadline
-// or add connect_timeout=<seconds> to the URL to bound it.
+// variables and the password file have no effect (url.go); a set PGSERVICE, which pgx cannot be told
+// to ignore, is refused. There is no TLS yet (it arrives with P5, ADR 0018): a URL without sslmode
+// or with sslmode=disable connects without TLS, and every other sslmode, and sslrootcert, is refused
+// with ErrTLS. There is no connect timeout by default; give ctx a deadline or add
+// connect_timeout=<seconds> to the URL to bound it.
 //
 // No error contains the URL or the password.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
