@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func refusedTLS(t *testing.T, url string) string {
@@ -161,19 +163,16 @@ func TestSameTLSView(t *testing.T) {
 	}
 }
 
-// Not in Rust: with no TLS the pool must never try TLS, whatever pgx's default is.
+// Not in Rust: with no TLS the pool must never try TLS, whatever the configuration asked for.
 func TestForceNoTLS(t *testing.T) {
-	cleaned, err := checkTLSSettings("postgres://u:p@h1,h2/db")
+	// sslmode=prefer is what pgx would use for a URL without sslmode; it is set here so that the
+	// assertion holds whatever the environment says.
+	config, err := pgxpool.ParseConfig("postgres://u:p@h1,h2/db?sslmode=prefer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := parsePoolConfig(cleaned)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// pgx's default (sslmode=prefer) asks for TLS first.
 	if config.ConnConfig.TLSConfig == nil {
-		t.Skip("pgx no longer defaults to TLS; forceNoTLS is then only a safeguard")
+		t.Fatal("the test configuration does not ask for TLS: it proves nothing")
 	}
 	forceNoTLS(config)
 	if config.ConnConfig.TLSConfig != nil {

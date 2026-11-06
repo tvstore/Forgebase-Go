@@ -6,6 +6,7 @@ import (
 	neturl "net/url"
 	"runtime"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,8 +17,10 @@ import (
 // and checks that a connection can be made. The pool holds at most four connections per CPU, like
 // the Rust pool.
 //
-// There is no TLS yet (it arrives with P5, ADR 0018): a URL without sslmode or with sslmode=disable
-// connects without TLS, whatever the PG* environment variables say, and every other sslmode, and
+// The URL is the only source of connection settings, as in tokio-postgres: the PG* environment
+// variables, the password file and the service file have no effect (url.go). There is no TLS yet
+// (it arrives with P5, ADR 0018): a URL without sslmode or with sslmode=disable connects without
+// TLS, and every other sslmode, and
 // sslrootcert, is refused with ErrTLS. There is no connect timeout by default; give ctx a deadline
 // or add connect_timeout=<seconds> to the URL to bound it.
 //
@@ -26,9 +29,12 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return ConnectSized(ctx, databaseURL, 0)
 }
 
-// ConnectSized is like Connect, with the largest number of connections the pool opens (0 or less:
-// four per CPU). A job worker needs one connection for each job it runs at the same time, so it
-// sets the size from its concurrency.
+// ConnectSized is like Connect, with the largest number of connections the pool opens. A job worker
+// needs one connection for each job it runs at the same time, so it sets the size from its
+// concurrency.
+//
+// Intentional difference from Rust, where the size is an Option<usize>: here a maxSize of 0 or less
+// means the default size (four per CPU), because Go has no None.
 func ConnectSized(ctx context.Context, databaseURL string, maxSize int) (*pgxpool.Pool, error) {
 	cleaned, err := checkTLSSettings(databaseURL)
 	if err != nil {
@@ -43,6 +49,14 @@ func ConnectSized(ctx context.Context, databaseURL string, maxSize int) (*pgxpoo
 		maxSize = runtime.NumCPU() * 4
 	}
 	config.MaxConns = int32(min(maxSize, 1<<31-1))
+	// deadpool-postgres (RecyclingMethod::Fast, no timeouts) never retires a healthy connection: it
+	// has no maximum lifetime and no idle time, and checks only that the connection is open. pgxpool
+	// closes connections after an hour and after 30 idle minutes by default; both are turned off
+	// here to match (a lifetime of 0 means none; the idle time has no off switch, so it is made
+	// longer than any process). The health-check period (one minute) stays: it only replaces
+	// connections that broke, which deadpool does when the connection is next taken.
+	config.MaxConnLifetime = 0
+	config.MaxConnIdleTime = 100 * 365 * 24 * time.Hour
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, &Error{Kind: ErrCreatePool, Message: "cannot create the pool"}
@@ -56,14 +70,14 @@ func ConnectSized(ctx context.Context, databaseURL string, maxSize int) (*pgxpoo
 	return pool, nil
 }
 
-// parsePoolConfig parses a URL that checkTLSSettings accepted. pgx's own message is not used: it can
-// hold the text of the URL (a url.Error), and no error of this package contains the URL.
+// parsePoolConfig builds the pool configuration from a URL that checkTLSSettings accepted. The URL
+// is the only source of settings (see url.go). No error contains a value of the URL.
 func parsePoolConfig(url string) (*pgxpool.Config, error) {
-	config, err := pgxpool.ParseConfig(url)
+	cfg, err := parseURLConfig(url)
 	if err != nil {
-		return nil, &Error{Kind: ErrCreatePool, Message: "the database URL is not a valid PostgreSQL URL"}
+		return nil, err
 	}
-	return config, nil
+	return cfg.poolConfig()
 }
 
 // acquireError maps the failure of the first connection: a server or connection error keeps the

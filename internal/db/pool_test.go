@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -139,5 +140,104 @@ func TestErrorTexts(t *testing.T) {
 	if got := (&db.Error{Kind: db.ErrLockTimeout}).Error(); got != "timed out waiting for a database lock (another transaction holds a conflicting lock); "+
 		"the statement that timed out was rolled back (earlier committed steps, such as framework migrations in `migrate`, stay applied), retry later" {
 		t.Errorf("%q", got)
+	}
+}
+
+// session reads the settings of the session that a URL gives.
+func session(t *testing.T, url string) map[string]string {
+	t.Helper()
+	pool, err := db.Connect(bg, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	out := map[string]string{}
+	row := pool.QueryRow(bg, "SELECT current_setting('search_path'), current_setting('TimeZone'), "+
+		"current_setting('application_name'), current_user::text, current_database()::text")
+	var searchPath, timeZone, appName, user, database string
+	if err := row.Scan(&searchPath, &timeZone, &appName, &user, &database); err != nil {
+		t.Fatal(err)
+	}
+	out["search_path"], out["TimeZone"], out["application_name"], out["user"], out["database"] = searchPath, timeZone, appName, user, database
+	return out
+}
+
+// Not in Rust: the URL is the only source of connection settings, as in tokio-postgres, which reads
+// no PG* variable, no password file and no service file. pgx reads all of them.
+func TestTheURLIsTheOnlySourceOfSettings(t *testing.T) {
+	d := dbtest.New(t)
+	baseline := session(t, d.URL())
+	if baseline["application_name"] != "" || baseline["user"] != "forgebase" || baseline["database"] == "" {
+		t.Fatalf("baseline: %v", baseline)
+	}
+
+	dir := t.TempDir()
+	passfile := dir + "/pgpass"
+	if err := os.WriteFile(passfile, []byte("*:*:*:*:forgebase\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	servicefile := dir + "/pg_service.conf"
+	if err := os.WriteFile(servicefile, []byte("[svc]\nhost=203.0.113.1\nport=1\ndbname=nodb\nuser=nobody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		"PGOPTIONS":            "-c search_path=nowhere",
+		"PGTZ":                 "Asia/Tokyo",
+		"PGAPPNAME":            "from-the-environment",
+		"PGPASSWORD":           "wrong-password",
+		"PGUSER":               "nobody",
+		"PGHOST":               "203.0.113.1",
+		"PGPORT":               "1",
+		"PGDATABASE":           "nodb",
+		"PGSERVICE":            "svc",
+		"PGSERVICEFILE":        servicefile,
+		"PGPASSFILE":           passfile,
+		"PGSSLMODE":            "verify-full",
+		"PGSSLROOTCERT":        dir + "/nonexistent.pem",
+		"PGCONNECT_TIMEOUT":    "1",
+		"PGTARGETSESSIONATTRS": "standby",
+		"PGCHANNELBINDING":     "require",
+		"PGREQUIREAUTH":        "password",
+		"PGMINPROTOCOLVERSION": "3.2",
+		"PGMAXPROTOCOLVERSION": "3.2",
+		"PGSSLNEGOTIATION":     "direct",
+		"PGSSLCERT":            dir + "/nonexistent.crt",
+	} {
+		t.Setenv(k, v)
+	}
+	want(t, session(t, d.URL()), baseline, "the session under a hostile environment")
+	if got := os.Getenv("PGSERVICE"); got != "svc" {
+		t.Errorf("PGSERVICE was not restored: %q", got)
+	}
+
+	// What the URL sets, it sets.
+	url := d.URL() + "?application_name=from-the-url&options=-c%20search_path%3Dmine"
+	s := session(t, url)
+	if s["application_name"] != "from-the-url" || s["search_path"] != "mine" || s["TimeZone"] != baseline["TimeZone"] {
+		t.Errorf("%v", s)
+	}
+
+	// A URL without a password does not take one from PGPASSWORD or the password file: the server
+	// refuses it (the file holds the right one).
+	noPassword := strings.Replace(d.URL(), "forgebase:forgebase@", "forgebase@", 1)
+	_, err := db.Connect(bg, noPassword)
+	if err == nil || !strings.Contains(err.Error(), "28P01") && !strings.Contains(err.Error(), "password") {
+		t.Errorf("connected without a password, or with another error: %v", err)
+	}
+	// A URL without a host does not take PGHOST.
+	_, err = db.Connect(bg, "postgres://forgebase:forgebase@/"+baseline["database"])
+	if e := asDbError(t, err); e.Kind != db.ErrPostgres || !strings.Contains(err.Error(), "both host and hostaddr are missing") {
+		t.Errorf("%v", err)
+	}
+	// A URL without a user does not take PGUSER (it is the operating system's user, as in
+	// tokio-postgres), and the error never names the environment's.
+	_, err = db.Connect(bg, strings.Replace(d.URL(), "forgebase:forgebase@", "", 1))
+	if err != nil && strings.Contains(err.Error(), "nobody") {
+		t.Errorf("PGUSER was used: %v", err)
+	}
+	// An unknown key is refused, not sent to the server as a run-time parameter.
+	_, err = db.Connect(bg, d.URL()+"?search_path=x")
+	if e := asDbError(t, err); e.Kind != db.ErrCreatePool || !strings.Contains(err.Error(), "unknown option `search_path`") {
+		t.Errorf("%v", err)
 	}
 }

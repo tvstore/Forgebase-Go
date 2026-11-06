@@ -127,7 +127,7 @@ func TestMakingAnExistingDoctypeSubmittableAddsTheColumnsAdditively(t *testing.T
 func TestADryRunShowsTheAlterStatementsAndChangesNothing(t *testing.T) {
 	d := dbtest.Migrated(t)
 	mustSync(t, d, registry(t, plainMemo))
-	report, err := db.Sync(bg, d.Pool, registry(t, submittableMemo), db.SyncOptions{DryRun: true})
+	report, err := db.Sync(bg, d.Pool, registry(t, submittableMemo), dryRun())
 	if err != nil {
 		t.Fatal(err)
 	}

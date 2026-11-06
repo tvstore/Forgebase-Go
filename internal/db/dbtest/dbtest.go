@@ -119,8 +119,9 @@ func New(t testing.TB) *DB {
 	return d
 }
 
-// connectAdmin opens a plain connection to the admin URL. It needs no TLS (the test server is
-// local) and sends no TLS settings of its own.
+// connectAdmin opens a plain pgx connection to the admin URL with pgx's own defaults (sslmode
+// prefer, PG* variables), not through db.Connect: the admin connection only creates and drops
+// databases and is not part of what the tests check.
 func connectAdmin(ctx context.Context, url string) (*pgx.Conn, error) {
 	return pgx.Connect(ctx, url)
 }
