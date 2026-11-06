@@ -16,7 +16,7 @@ import (
 // SyncLockKey is the advisory lock key serializing schema syncs (transaction-level lock).
 const SyncLockKey int64 = 0x4642_5359_4e43_0001
 
-// DefaultLockTimeout is the lock_timeout of a sync whose options do not set one.
+// DefaultLockTimeout is the lock_timeout of DefaultSyncOptions (the Rust SyncOptions::default()).
 const DefaultLockTimeout = 5 * time.Second
 
 // SyncOptions are the options of Sync.
@@ -24,9 +24,10 @@ type SyncOptions struct {
 	// DryRun computes and returns the plan without keeping any change.
 	DryRun bool
 	// LockTimeout is the longest wait for any lock (including the sync advisory lock). Hitting it
-	// fails the sync with ErrLockTimeout. Zero means DefaultLockTimeout (5 s; the Rust default,
-	// where an explicit zero would be clamped to 1 ms, which nobody wants). Otherwise it is clamped
-	// to 1 ms ..= 2^31-1 ms (about 24.8 days): PostgreSQL rejects larger values.
+	// fails the sync with ErrLockTimeout. It is used as given and clamped to 1 ms ..= 2^31-1 ms
+	// (about 24.8 days), exactly as in Rust: 0 would disable the timeout in PostgreSQL, so it
+	// becomes 1 ms, and PostgreSQL rejects larger values. The zero value of SyncOptions is
+	// therefore a 1 ms timeout: start from DefaultSyncOptions (5 s) for the usual one.
 	LockTimeout time.Duration
 }
 
@@ -71,11 +72,7 @@ func Sync(ctx context.Context, starter TxStarter, registry *core.Registry, optio
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	timeout := options.LockTimeout
-	if timeout == 0 {
-		timeout = DefaultLockTimeout
-	}
-	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", lockTimeoutSetting(timeout)); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", lockTimeoutSetting(options.LockTimeout)); err != nil {
 		return nil, wrap(err)
 	}
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", SyncLockKey); err != nil {

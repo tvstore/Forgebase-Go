@@ -192,7 +192,13 @@ type querier interface {
 }
 
 // TxStarter is anything that can start a transaction: a *pgxpool.Pool, a *pgxpool.Conn, a *pgx.Conn,
-// or a pgx.Tx (which then starts a savepoint). It is what the Rust functions take as a client.
+// or a pgx.Tx. It is what the Rust functions take as a client.
+//
+// With a pgx.Tx, Begin starts a savepoint inside the caller's transaction: the transaction-local
+// settings (set_config(..., true), as the sync's lock_timeout) and the transaction-level advisory
+// locks (pg_advisory_xact_lock, as the migration and sync locks) then last until the caller's outer
+// transaction ends, not until the function returns, and a commit of the function only releases
+// the savepoint.
 type TxStarter interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }

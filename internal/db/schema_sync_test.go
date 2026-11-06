@@ -15,6 +15,10 @@ import (
 
 // Schema sync against a real PostgreSQL (see dbtest). Ported from
 // crates/forgebase-db/tests/schema_sync.rs.
+//
+// Deferred: schema_sync::migrate_runs_migrations_then_sync. It tests migrate(), the composition of
+// the framework migrations, the sync, app migrations, schedules, the workflow backfill and fixtures;
+// it moves to P2, with the migrate command of the CLI skeleton.
 
 func registry(t *testing.T, texts ...string) *core.Registry { return dbtest.Registry(t, texts...) }
 
@@ -105,7 +109,7 @@ func TestResyncIsANoOp(t *testing.T) {
 // Rust: schema_sync.rs::dry_run_creates_nothing_and_reports_sql
 func TestDryRunCreatesNothingAndReportsSql(t *testing.T) {
 	d := dbtest.Migrated(t)
-	report, err := db.Sync(bg, d.Pool, registry(t, dbtest.Customer), db.SyncOptions{DryRun: true})
+	report, err := db.Sync(bg, d.Pool, registry(t, dbtest.Customer), dryRun())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,10 +377,62 @@ func TestHugeLockTimeoutIsClamped(t *testing.T) {
 		t.Fatal(err)
 	}
 	// So is a timeout below 1 ms (0 would disable the timeout), and a negative one.
-	for _, timeout := range []time.Duration{time.Nanosecond, -time.Second} {
+	for _, timeout := range []time.Duration{0, time.Nanosecond, -time.Second} {
 		if _, err := db.Sync(bg, d.Pool, registry(t, dbtest.Customer), db.SyncOptions{DryRun: true, LockTimeout: timeout}); err != nil {
 			t.Errorf("%v: %v", timeout, err)
 		}
+	}
+}
+
+// Not in Rust: the setting that PostgreSQL receives. A zero LockTimeout is 1 ms (Rust:
+// Duration::ZERO, as the CLI option --lock-timeout-ms 0 gives), not the default and not "no
+// timeout"; the clamp is [1 ms, 2^31-1 ms].
+func TestLockTimeoutSettingClamps(t *testing.T) {
+	for timeout, want := range map[time.Duration]string{
+		0:                             "1ms",
+		time.Nanosecond:               "1ms",
+		999 * time.Microsecond:        "1ms",
+		-time.Hour:                    "1ms",
+		time.Millisecond:              "1ms",
+		5 * time.Second:               "5000ms",
+		100_000_000 * time.Second:     "2147483647ms",
+		2147483647 * time.Millisecond: "2147483647ms",
+	} {
+		if got := db.LockTimeoutSettingForTest(timeout); got != want {
+			t.Errorf("%v: %q, want %q", timeout, got, want)
+		}
+	}
+	if db.DefaultSyncOptions().LockTimeout != 5*time.Second || db.DefaultSyncOptions().DryRun {
+		t.Errorf("%+v", db.DefaultSyncOptions())
+	}
+}
+
+// Not in Rust: the lock timeout that Sync sets in PostgreSQL is the one given, 1 ms for zero. A
+// held table lock makes a sync with LockTimeout 0 fail at once with ErrLockTimeout.
+func TestZeroLockTimeoutIsOneMillisecond(t *testing.T) {
+	d := dbtest.Migrated(t)
+	mustSync(t, d, registry(t, dbtest.Customer))
+	blocker, err := d.Pool.Acquire(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Release()
+	tx, err := blocker.Begin(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(bg) }()
+	if _, err := tx.Exec(bg, "LOCK TABLE doc_customer IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	extended := dbtest.Customer + "\n[[fields]]\nname = \"extra\"\ntype = \"text\"\n"
+	start := time.Now()
+	_, err = db.Sync(bg, d.Pool, registry(t, extended), db.SyncOptions{})
+	if e := asDbError(t, err); e.Kind != db.ErrLockTimeout {
+		t.Errorf("%v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("a 1 ms lock timeout took %v", elapsed)
 	}
 }
 
@@ -863,7 +919,7 @@ func TestAnUnknownLinkTargetIsRefusedBeforeTheDatabaseIsTouched(t *testing.T) {
 // Rust: schema_sync.rs::dry_run_shows_the_foreign_key_sql_and_keeps_nothing
 func TestDryRunShowsTheForeignKeySqlAndKeepsNothing(t *testing.T) {
 	d := dbtest.Migrated(t)
-	report, err := db.Sync(bg, d.Pool, registry(t, dbtest.SalesOrder, dbtest.Person), db.SyncOptions{DryRun: true})
+	report, err := db.Sync(bg, d.Pool, registry(t, dbtest.SalesOrder, dbtest.Person), dryRun())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,4 +933,11 @@ func TestDryRunShowsTheForeignKeySqlAndKeepsNothing(t *testing.T) {
 		t.Errorf("%#v", text)
 	}
 	want(t, d.Rows("SELECT coalesce(to_regclass('doc_sales_order')::text, 'none')"), [][]string{{"none"}}, "table")
+}
+
+// dryRun is DefaultSyncOptions with DryRun set (the Rust SyncOptions { dry_run: true, ..default() }).
+func dryRun() db.SyncOptions {
+	options := db.DefaultSyncOptions()
+	options.DryRun = true
+	return options
 }
