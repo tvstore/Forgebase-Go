@@ -8,7 +8,7 @@ func rootCommand() *command {
 	return &command{
 		name: "forgebase", about: "Forgebase command-line tool", longAbout: "Forgebase command-line tool.\n\nDatabase commands work on one site, which is one database. Without a config file there is one site, `default`, and its connection URL comes from the `FORGEBASE_DATABASE_URL` environment variable (`postgres://user:password@host:port/database`). With a config file (`--config`) the sites are listed in it, each naming the environment variable that holds its URL.",
 		args: []argSpec{
-			{id: "config", long: "config", valueName: "PATH", help: "The config file (`forgebase.toml`) that lists the sites. Also read from the environment variable `FORGEBASE_CONFIG`; this option wins. It is never looked for in the current directory. Without one, the only site is `default`"},
+			{id: "config", long: "config", valueName: "PATH", kind: kindPath, help: "The config file (`forgebase.toml`) that lists the sites. Also read from the environment variable `FORGEBASE_CONFIG`; this option wins. It is never looked for in the current directory. Without one, the only site is `default`"},
 			{id: "site", long: "site", valueName: "NAME", help: "The site a database command works on. Required when the config file has several sites, except for `serve`, which serves every site without it. Optional with one site, and without a config file (where only `default` exists)"},
 		},
 		subs: []*command{
@@ -114,14 +114,14 @@ func rootCommand() *command {
 							{id: "filter", long: "filter", valueName: "JSON", help: "A JSON array of filters, as for `doc list`"},
 							{id: "sort", long: "sort", valueName: "FIELD[:desc]", multiple: true, help: "Sort key `FIELD` or `FIELD:desc`; repeat for several. `name` is always the last key"},
 							{id: "fields", long: "fields", valueName: "FIELDS", multiple: true, delimiter: ",", help: "The keys to write, comma separated: field names and the standard columns `name`, `owner`, `modified_by`, `created_at`, `modified_at`, `version` (and `docstatus`, `workflow_state` where the DocType has them). Default: `name` and every field"},
-							{id: "out", long: "out", valueName: "FILE", help: "Write to this new file instead of standard output. An existing file is never overwritten, and a failed export leaves no partial file"},
+							{id: "out", long: "out", valueName: "FILE", kind: kindPath, help: "Write to this new file instead of standard output. An existing file is never overwritten, and a failed export leaves no partial file"},
 							{id: "limit_override", long: "limit-override", valueName: "N", kind: kindU64, help: "Allow this many rows instead of the default limit (100000)"},
 						},
 					},
 					{name: "import", about: "Import documents from a CSV or JSON file in one transaction: every row goes through the document pipeline (hooks, validation, naming, webhooks), each in a savepoint, and if any row has an error **nothing** is imported. Prints the summary as JSON (as the API's `data`), with the first 100 row errors; exit code 1 when any row failed. With --dry-run nothing is ever kept. At most 10000 rows", longAbout: "Import documents from a CSV or JSON file in one transaction: every row goes through the document pipeline (hooks, validation, naming, webhooks), each in a savepoint, and if any row has an error **nothing** is imported. Prints the summary as JSON (as the API's `data`), with the first 100 row errors; exit code 1 when any row failed. With --dry-run nothing is ever kept. At most 10000 rows.\n\nCSV: the first row is the header of field keys (a `name` column is allowed; child tables are not, use JSON); an empty cell is not given (insert) or set to null (upsert of an existing document). JSON: an array of objects as for `doc insert`, child rows as arrays.",
 						args: []argSpec{
 							{id: "doctype", positional: true, valueName: "DOCTYPE", required: true, help: "DocType name"},
-							{id: "file", positional: true, valueName: "FILE", required: true, help: "The file to read"},
+							{id: "file", positional: true, valueName: "FILE", kind: kindPath, required: true, help: "The file to read"},
 							doctypesArg(),
 							{id: "format", long: "format", valueName: "FORMAT", possible: []string{"csv", "json"}, required: true, help: "The file format"},
 							{id: "upsert", long: "upsert", flag: true, help: "Update the documents that exist (by `name`) and insert the others, instead of inserting every row"},
@@ -296,13 +296,13 @@ func rootCommand() *command {
 					{name: "backup", about: "Write a backup of the site's database to a new file, with `pg_dump` (PostgreSQL client tools of the server's major version, on `PATH` or in `FORGEBASE_PG_BIN`; they are not part of Forgebase). The file is a custom-format dump of everything in the database, **password hashes, session and API token digests included**: it is created with mode 0600; keep it safe. The dump is written to `FILE.partial` and published as FILE (a hard link) only when it is complete: a failed backup leaves nothing, and an interrupted one (SIGINT, SIGTERM) can leave only `FILE.partial`, which can be removed. An existing file is never overwritten (exit 1; there is no `--force`). The database URL and password are passed to `pg_dump` in its environment, never on its command line",
 						args: []argSpec{
 							{id: "name", positional: true, valueName: "NAME", required: true, help: "The site name"},
-							{id: "out", long: "out", valueName: "FILE", required: true, help: "The file to create. It must not exist"},
+							{id: "out", long: "out", valueName: "FILE", kind: kindPath, required: true, help: "The file to create. It must not exist"},
 						},
 					},
 					{name: "restore", about: "Restore a backup of `site backup` into the site's database with `pg_restore`, in one transaction. `pg_restore` must have the server's major version, and the backup must come from a `pg_dump` of the same or an older major version. The database must exist and be **empty** (no tables, schemas other than `public`, extensions other than `plpgsql`, functions or types: the kinds of objects checked): create it with `site create NAME --empty`. Nothing is migrated: run `migrate --site NAME` afterwards if this binary is newer than the backup",
 						args: []argSpec{
 							{id: "name", positional: true, valueName: "NAME", required: true, help: "The site name"},
-							{id: "from", long: "from", valueName: "FILE", required: true, help: "The backup file"},
+							{id: "from", long: "from", valueName: "FILE", kind: kindPath, required: true, help: "The backup file"},
 						},
 					},
 				},
@@ -310,8 +310,8 @@ func rootCommand() *command {
 			{name: "new-app", about: "Create a new app: a Rust crate (library and binary) with a sample DocType, a hook, tests, a README and an AGENTS.md, in `<DIR>/<NAME>`. It builds and passes its tests as created. Needs no database. Never overwrites: an existing target directory is an error",
 				args: []argSpec{
 					{id: "name", positional: true, valueName: "NAME", required: true, help: "The app and crate name: lower-case ASCII letters, digits and underscores, starting with a letter (the rules of a DocType name), at most 54 bytes"},
-					{id: "forgebase_path", long: "forgebase-path", valueName: "DIR", required: true, help: "The Forgebase checkout the app depends on (it contains `crates/forgebase`). Written into the app's `Cargo.toml` as an absolute path"},
-					{id: "dir", long: "dir", valueName: "DIR", def: ".", hasDefault: true, help: "The directory in which `<NAME>` is created"},
+					{id: "forgebase_path", long: "forgebase-path", valueName: "DIR", kind: kindPath, required: true, help: "The Forgebase checkout the app depends on (it contains `crates/forgebase`). Written into the app's `Cargo.toml` as an absolute path"},
+					{id: "dir", long: "dir", valueName: "DIR", kind: kindPath, def: ".", hasDefault: true, help: "The directory in which `<NAME>` is created"},
 				},
 			},
 			{name: "worker", about: "Run background jobs until Ctrl-C or SIGTERM. It claims only the jobs of the apps installed on the site (and the built-in ones), runs each in a database transaction with its completion, retries a failure with a growing delay and marks a job `dead` when the attempts are used up. The first signal stops claiming and lets running jobs finish for 30 seconds (then they are given back, not counted as an attempt); a second signal exits at once. It does not run migrations: run `migrate` first",
@@ -359,7 +359,7 @@ func rootCommand() *command {
 
 // The argument groups that several commands flatten in (Rust DocTypesDir, DataArg, ActorArg, VersionArg).
 func doctypesArg() argSpec {
-	return argSpec{id: "doctypes", long: "doctypes", valueName: "DIR", help: "Directory with one DocType `*.toml` file per DocType (not searched recursively). It becomes the app `local`, which depends on the apps installed on the site (every app of the binary unless the site lists `apps`) and is part of every site's registry. Required when the binary has no apps (the stock `forgebase` binary); a binary with apps does not need it"}
+	return argSpec{id: "doctypes", long: "doctypes", valueName: "DIR", kind: kindPath, help: "Directory with one DocType `*.toml` file per DocType (not searched recursively). It becomes the app `local`, which depends on the apps installed on the site (every app of the binary unless the site lists `apps`) and is part of every site's registry. Required when the binary has no apps (the stock `forgebase` binary); a binary with apps does not need it"}
 }
 
 func dataArg() argSpec {

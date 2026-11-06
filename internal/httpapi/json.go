@@ -1,12 +1,8 @@
 package httpapi
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/tvstore/forgebase-go/internal/core"
@@ -79,20 +75,12 @@ type Input struct {
 	Tables map[string][]core.Row
 }
 
-// decodeJSON parses one JSON value; numbers stay json.Number so that integers are exact.
+// decodeJSON parses one JSON value with serde_json's errors (jsonparse.go); numbers are jsonNumber, so
+// that integers are exact.
 func decodeJSON(text string) (any, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(text)))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
+	v, err := parseJSON(text)
+	if err != nil {
 		return nil, &JSONError{Kind: JSONSyntax, Err: err}
-	}
-	// serde_json refuses text after the value ("trailing characters").
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, &JSONError{Kind: JSONSyntax, Err: fmt.Errorf("trailing characters after the JSON value")}
 	}
 	return v, nil
 }
@@ -130,7 +118,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// InputFromJSON is like ParseInput for JSON that is already parsed (numbers as json.Number). The
+// InputFromJSON is like ParseInput for JSON that is already parsed (numbers as jsonNumber). The
 // keys are read in sorted order, so the first problem reported is always the same one.
 func InputFromJSON(registry *core.Registry, doctype *core.DocType, v any) (*Input, error) {
 	object, ok := v.(map[string]any)
@@ -216,12 +204,12 @@ func toValue(name string, ft core.FieldType, v any) (core.Value, error) {
 		}
 		return core.Text(s), nil
 	case core.FieldInt:
-		n, ok := v.(json.Number)
+		n, ok := v.(jsonNumber)
 		if !ok {
 			return core.Value{}, expected("an integer")
 		}
-		i, err := strconv.ParseInt(n.String(), 10, 64)
-		if err != nil {
+		i, ok := n.int64Value()
+		if !ok {
 			return core.Value{}, bad(name, fmt.Sprintf("%s is not an integer in the range of a 64-bit signed integer", n))
 		}
 		return core.Int(i), nil
@@ -233,7 +221,7 @@ func toValue(name string, ft core.FieldType, v any) (core.Value, error) {
 				return core.Value{}, bad(name, fmt.Sprintf("`%s` is not a decimal number: %s", core.Shorten(x), err))
 			}
 			return core.Decimal(d), nil
-		case json.Number:
+		case jsonNumber:
 			return core.Value{}, bad(name, "a decimal must be a JSON string such as \"12.50\", not a number")
 		}
 		return core.Value{}, expected("a decimal string")
@@ -276,7 +264,7 @@ func kind(v any) string {
 		return "null"
 	case bool:
 		return "a boolean"
-	case json.Number:
+	case jsonNumber:
 		return "a number"
 	case string:
 		return "a string"

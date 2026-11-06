@@ -92,15 +92,22 @@ func TestUsageErrorsHaveTheClapFormatAndCodeTwo(t *testing.T) {
 		{[]string{"doc", "delete", "a", "b", "--doctypes", "d"}, "error: the following required arguments were not provided:\n  --version <N>\n\nUsage: forgebase doc delete --version <N> --doctypes <DIR> <DOCTYPE> <NAME>" + hint},
 		{[]string{"doc", "delete", "a", "b", "--version", "abc"}, "error: invalid value 'abc' for '--version <N>': invalid digit found in string" + hint},
 		{[]string{"doc", "delete", "a", "b", "--version"}, "error: a value is required for '--version <N>' but none was supplied" + hint},
-		{[]string{"doc", "delete", "a", "b", "--version", "-1"}, "error: a value is required for '--version <N>' but none was supplied" + hint},
+		// A token that looks like a flag is parsed as an argument before it can be the value (parser.rs).
+		{[]string{"doc", "delete", "a", "b", "--version", "-1"}, "error: unexpected argument '-1' found\n\n  tip: to pass '-1' as a value, use '-- -1'\n\nUsage: forgebase doc delete [OPTIONS] --version <N> <DOCTYPE> <NAME>" + hint},
+		{[]string{"doc", "delete", "a", "b", "--version", "--bogus"}, "error: unexpected argument '--bogus' found\n\n  tip: to pass '--bogus' as a value, use '-- --bogus'\n\nUsage: forgebase doc delete --version <N> <DOCTYPE> <NAME>" + hint},
 		{[]string{"worker", "--concurrency", "0"}, "error: invalid value '0' for '--concurrency <N>': 0 is not in 1..=64" + hint},
 		{[]string{"worker", "--concurrency", "65"}, "error: invalid value '65' for '--concurrency <N>': 65 is not in 1..=64" + hint},
 		{[]string{"worker", "--concurrency", "x"}, "error: invalid value 'x' for '--concurrency <N>': invalid digit found in string" + hint},
 		{[]string{"worker", "--concurrency", ""}, "error: invalid value '' for '--concurrency <N>': cannot parse integer from empty string" + hint},
-		{[]string{"worker", "--concurrency", "99999999999"}, "error: invalid value '99999999999' for '--concurrency <N>': number too large to fit in target type" + hint},
+		// u32 values are read as i64 and then range checked (value_parser.rs:1400-1455).
+		{[]string{"worker", "--concurrency", "99999999999"}, "error: invalid value '99999999999' for '--concurrency <N>': 99999999999 is not in 1..=64" + hint},
+		{[]string{"worker", "--concurrency=-5"}, "error: invalid value '-5' for '--concurrency <N>': -5 is not in 1..=64" + hint},
+		{[]string{"doc", "list", "c", "--limit=99999999999"}, "error: invalid value '99999999999' for '--limit <N>': 99999999999 is not in 0..=4294967295" + hint},
+		{[]string{"doc", "list", "c", "--limit=9223372036854775808"}, "error: invalid value '9223372036854775808' for '--limit <N>': number too large to fit in target type" + hint},
+		{[]string{"doc", "list", "c", "--offset=-1"}, "error: invalid value '-1' for '--offset <N>': invalid digit found in string" + hint},
 		{[]string{"job", "list", "--status", "zz"}, "error: invalid value 'zz' for '--status <STATUS>'\n  [possible values: queued, running, done, dead]" + hint},
-		{[]string{"migrate", "--dry-run=yes"}, "error: unexpected value 'yes' for '--dry-run' found; no more were expected\n\nUsage: forgebase migrate [OPTIONS]" + hint},
-		{[]string{"--site", "a", "--site", "b", "migrate"}, "error: the argument '--site <NAME>' cannot be used multiple times\n\nUsage: forgebase --site <NAME>" + hint},
+		{[]string{"migrate", "--dry-run=yes"}, "error: unexpected value 'yes' for '--dry-run' found; no more were expected\n\nUsage: forgebase migrate --dry-run" + hint},
+		{[]string{"--site", "a", "--site", "b", "migrate"}, "error: the argument '--site <NAME>' cannot be used multiple times\n\nUsage: forgebase [OPTIONS] <COMMAND>" + hint},
 	} {
 		exit := mustExit(t, c.args...)
 		want := c.want
@@ -329,16 +336,214 @@ func TestTheLongHelpOfACommandPutsDefaultsUnderTheText(t *testing.T) {
 	if !strings.Contains(long, "--filter is a JSON array of conditions") || !strings.Contains(long, "  <DOCTYPE>\n          DocType name\n") {
 		t.Errorf("%s", long)
 	}
-	// The doc command only has a long help through its subcommand; its own help is the same in both forms except for the hint.
-	doc := renderHelp(root.find("doc"), true)
-	if !strings.Contains(doc, "Print help (see a summary with '-h')") {
-		t.Errorf("%s", doc)
+	// long_help_exists is a property of the command alone (command.rs:5157-5180): doc has no long text of
+	// its own, so `doc --help` is the short form, with "Print help", although doc list has a long one.
+	for _, c := range [][]string{{"doc"}, {"data"}} {
+		help := renderHelp(root.find(c...), true)
+		if help != renderHelp(root.find(c...), false) || !strings.Contains(help, "  -h, --help ") || strings.Contains(help, "see more with") {
+			t.Errorf("%v: %s", c, help)
+		}
 	}
-	// A default in the long form is on its own paragraph.
+	// The default and the possible values are in the lines under the description, after a blank line that
+	// holds the indent (help_template.rs:630, styled_str.rs:69-75).
 	data := renderHelp(root.find("data", "export"), true)
-	if !strings.Contains(data, "The file format\n\n          [default: csv]\n          [possible values: csv, json]") {
-		// clap puts all the specs in one paragraph, one per line
-		t.Logf("%s", data)
+	want := "      --format <FORMAT>\n          The file format\n          \n          [default: csv]\n          [possible values: csv, json]\n\n"
+	if !strings.Contains(data, want) {
+		t.Errorf("%s", data)
+	}
+	// In the short form they follow the text on the same line.
+	short := renderHelp(root.find("data", "export"), false)
+	if !strings.Contains(short, "The file format [default: csv] [possible values: csv, json]\n") {
+		t.Errorf("%s", short)
+	}
+}
+
+// The options are in clap's order (help_template.rs option_sort_key): by display order, which counts a
+// command's own non-positional arguments from 0 and leaves the global options at the root's 0 and 1, then
+// by name; -h and -V last.
+func TestOptionsAreListedInClapsOrder(t *testing.T) {
+	root := rootCommand()
+	root.link()
+	options := func(c *command) []string {
+		var names []string
+		for _, e := range optionEntries(c, false) {
+			names = append(names, strings.TrimSpace(strings.Split(strings.TrimSpace(e.left), " <")[0]))
+		}
+		return names
+	}
+	for _, c := range []struct {
+		path []string
+		want string
+	}{
+		{[]string{"doc", "update"}, "--config --version --doctypes --site --data --actor -h, --help"},
+		{[]string{"migrate"}, "--config --doctypes --dry-run --site --lock-timeout-ms -h, --help"},
+		{[]string{"doc", "get"}, "--config --doctypes --site -h, --help"},
+		{nil, "--config --site -h, --help -V, --version"},
+		{[]string{"worker"}, "--config --doctypes --concurrency --site -h, --help"},
+	} {
+		cmd := root.find(c.path...)
+		if got := strings.Join(options(cmd), " "); got != c.want {
+			t.Errorf("%v:\n got %s\nwant %s", c.path, got, c.want)
+		}
+	}
+}
+
+// `help [COMMAND]...` ends in the long help of the command (parse_help_subcommand), and every argument
+// after help is a subcommand name.
+func TestTheHelpSubcommand(t *testing.T) {
+	exit := mustExit(t, "help")
+	if exit.code != 0 || !exit.stdout || !strings.Contains(exit.text, "Print help (see a summary with '-h')") {
+		t.Errorf("%+v", exit)
+	}
+	exit = mustExit(t, "help", "doc", "list")
+	if !strings.Contains(exit.text, "--filter is a JSON array") || !strings.Contains(exit.text, "  <DOCTYPE>\n          DocType name") {
+		t.Errorf("%s", exit.text)
+	}
+	exit = mustExit(t, "doc", "help", "get")
+	if !strings.HasPrefix(exit.text, "Print a document\n\nUsage: forgebase doc get [OPTIONS] <DOCTYPE> <NAME>") {
+		t.Errorf("%s", exit.text)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"help", "bogus"}, "error: unrecognized subcommand 'bogus'\n\nUsage: forgebase [OPTIONS] <COMMAND>"},
+		{[]string{"help", "doc", "--x"}, "error: unrecognized subcommand '--x'\n\nUsage: forgebase doc [OPTIONS] <COMMAND>"},
+		{[]string{"help", "-h"}, "error: unrecognized subcommand '-h'\n\nUsage: forgebase [OPTIONS] <COMMAND>"},
+		{[]string{"help", "migrate", "doc"}, "error: unrecognized subcommand 'doc'\n\nUsage: forgebase migrate [OPTIONS]"},
+	} {
+		exit := mustExit(t, c.args...)
+		if exit.code != 2 || !strings.HasPrefix(exit.text, c.want) {
+			t.Errorf("%v: %q", c.args, exit.text)
+		}
+	}
+}
+
+// The usage line of an error (usage.rs write_usage_no_title, validator.rs missing_required_error,
+// parser.rs did_you_mean_error and react): shortened as soon as an argument was used, with no [OPTIONS],
+// the required arguments first.
+func TestTheUsageLineOfAnError(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"doc", "insert", "customer"}, "Usage: forgebase doc insert --data <JSON|-> <DOCTYPE>"},
+		{[]string{"doc", "get"}, "Usage: forgebase doc get <DOCTYPE> <NAME>"},
+		{[]string{"doc", "get", "--doctypes", "d"}, "Usage: forgebase doc get --doctypes <DIR> <DOCTYPE> <NAME>"},
+		{[]string{"doc", "get", "--site", "x", "c"}, "Usage: forgebase doc get --site <NAME> <DOCTYPE> <NAME>"},
+		{[]string{"doc", "insert", "--data", "{}", "--bogus"}, "Usage: forgebase doc insert --data <JSON|-> <DOCTYPE>"},
+		{[]string{"doc", "get", "--bogus"}, "Usage: forgebase doc get [OPTIONS] <DOCTYPE> <NAME>"},
+		{[]string{"doc", "get", "x", "--bogus"}, "Usage: forgebase doc get <DOCTYPE> <NAME>"},
+		{[]string{"--site", "x", "--bogus"}, "Usage: forgebase --site <NAME> <COMMAND>"},
+		{[]string{"--site", "a", "--site", "b", "migrate"}, "Usage: forgebase [OPTIONS] <COMMAND>"},
+		{[]string{"migrate", "--dry-run", "-x"}, "Usage: forgebase migrate [OPTIONS]"},
+		{[]string{"migrate", "--dry-run", "extra"}, "Usage: forgebase migrate [OPTIONS]"},
+		{[]string{"--site", "x", "bogus"}, "Usage: forgebase [OPTIONS] <COMMAND>"},
+		{[]string{"--site", "x"}, "Usage: forgebase [OPTIONS] <COMMAND>"},
+		{[]string{"--help=x"}, "Usage: forgebase --help <COMMAND>"},
+		{[]string{"--version=x"}, "Usage: forgebase --version <COMMAND>"},
+		{[]string{"migrate", "--dry-run", "--help=x"}, "Usage: forgebase migrate --dry-run --help"},
+	} {
+		exit := mustExit(t, c.args...)
+		if exit.code != 2 || !strings.Contains(exit.text, "\n\n"+c.want+"\n\nFor more information") {
+			t.Errorf("%v: %q\nwant usage %q", c.args, exit.text, c.want)
+		}
+	}
+	exit := mustExit(t, "--help=x")
+	if !strings.HasPrefix(exit.text, "error: unexpected value 'x' for '--help' found; no more were expected\n\n") {
+		t.Errorf("%q", exit.text)
+	}
+}
+
+func TestEmptyPathValuesAreUsageErrors(t *testing.T) {
+	const hint = "\n\nFor more information, try '--help'.\n"
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"migrate", "--doctypes", ""}, "error: a value is required for '--doctypes <DIR>' but none was supplied" + hint},
+		{[]string{"migrate", "--doctypes="}, "error: a value is required for '--doctypes <DIR>' but none was supplied" + hint},
+		{[]string{"--config", "", "migrate", "--doctypes", "d"}, "error: a value is required for '--config <PATH>' but none was supplied" + hint},
+		{[]string{"site", "backup", "a", "--out", ""}, "error: a value is required for '--out <FILE>' but none was supplied" + hint},
+		{[]string{"site", "restore", "a", "--from", ""}, "error: a value is required for '--from <FILE>' but none was supplied" + hint},
+		{[]string{"new-app", "x", "--forgebase-path", ""}, "error: a value is required for '--forgebase-path <DIR>' but none was supplied" + hint},
+		{[]string{"new-app", "x", "--forgebase-path", "/f", "--dir", ""}, "error: a value is required for '--dir <DIR>' but none was supplied" + hint},
+		{[]string{"data", "import", "c", "", "--format", "csv", "--doctypes", "d"}, "error: a value is required for '<FILE>' but none was supplied" + hint},
+		{[]string{"job", "list", "--status", ""}, "error: a value is required for '--status <STATUS>' but none was supplied\n  [possible values: queued, running, done, dead]" + hint},
+	} {
+		exit := mustExit(t, c.args...)
+		if exit.code != 2 || exit.text != c.want {
+			t.Errorf("%v:\n got %q\nwant %q", c.args, exit.text, c.want)
+		}
+	}
+	// An empty String is a value (the actor).
+	if m := mustParseArgs(t, "doc", "delete", "a", "b", "--version", "1", "--doctypes", "d", "--actor", ""); m.str("actor") != "" {
+		t.Errorf("%v", m.vals)
+	}
+}
+
+// A global option may be given on two levels: one value per level, and the deepest wins (arg_matcher.rs).
+func TestAGlobalOptionOnTwoLevelsTheDeepestWins(t *testing.T) {
+	m := mustParseArgs(t, "--site", "a", "migrate", "--site", "b", "--doctypes", "d")
+	if m.str("site") != "b" {
+		t.Errorf("%v", m.vals)
+	}
+	m = mustParseArgs(t, "--config", "x", "doc", "get", "c", "n", "--config", "y", "--doctypes", "d")
+	if m.str("config") != "y" {
+		t.Errorf("%v", m.vals)
+	}
+	// ... but twice on one level is an error.
+	exit := mustExit(t, "migrate", "--site", "a", "--site", "b", "--doctypes", "d")
+	if !strings.Contains(exit.text, "the argument '--site <NAME>' cannot be used multiple times") {
+		t.Errorf("%q", exit.text)
+	}
+}
+
+func TestDoubleDashAndTheNits(t *testing.T) {
+	const hint = "\n\nFor more information, try '--help'.\n"
+	// `-- migrate`: the subcommand exists; the tip says to remove the dashes.
+	exit := mustExit(t, "--", "migrate")
+	want := "error: unexpected argument 'migrate' found\n\n  tip: subcommand 'migrate' exists; to use it, remove the '--' before it\n\nUsage: forgebase [OPTIONS] <COMMAND>" + hint
+	if exit.code != 2 || exit.text != want {
+		t.Errorf("%q", exit.text)
+	}
+	exit = mustExit(t, "--", "bogus")
+	if exit.text != "error: unrecognized subcommand 'bogus'\n\nUsage: forgebase [OPTIONS] <COMMAND>"+hint {
+		t.Errorf("%q", exit.text)
+	}
+	// `--` alone is no argument: the help on standard error.
+	exit = mustExit(t, "--")
+	if exit.code != 2 || exit.stdout || !strings.HasPrefix(exit.text, "Forgebase command-line tool") {
+		t.Errorf("%+v", exit)
+	}
+	exit = mustExit(t, "doc", "--")
+	if exit.code != 2 || exit.stdout || !strings.Contains(exit.text, "Usage: forgebase doc [OPTIONS] <COMMAND>") {
+		t.Errorf("%+v", exit)
+	}
+	// A value after -- is a positional, even with a flag-like name; the pending option is then empty.
+	exit = mustExit(t, "doc", "get", "c", "--doctypes", "--", "n")
+	if exit.text != "error: a value is required for '--doctypes <DIR>' but none was supplied"+hint {
+		t.Errorf("%q", exit.text)
+	}
+	// An option that waits for a value and meets --help or the end.
+	exit = mustExit(t, "doc", "get", "c", "n", "--doctypes", "--help")
+	if exit.code != 2 || !strings.Contains(exit.text, "a value is required for '--doctypes <DIR>'") {
+		t.Errorf("%q", exit.text)
+	}
+	// An invalid value is reported when the next argument arrives, before a later unknown flag.
+	exit = mustExit(t, "doc", "delete", "a", "b", "--version", "abc", "--help")
+	if !strings.Contains(exit.text, "invalid value 'abc' for '--version <N>'") {
+		t.Errorf("%q", exit.text)
+	}
+	// ... but an unknown flag wins over the pending value's error (parser.rs discards it).
+	exit = mustExit(t, "doc", "delete", "a", "b", "--version", "abc", "--bogus")
+	if !strings.Contains(exit.text, "unexpected argument '--bogus' found") {
+		t.Errorf("%q", exit.text)
+	}
+	// The unknown long flag is printed without its attached value.
+	exit = mustExit(t, "worker", "--bogus=1")
+	if !strings.HasPrefix(exit.text, "error: unexpected argument '--bogus' found\n") {
+		t.Errorf("%q", exit.text)
 	}
 }
 
@@ -356,8 +561,18 @@ func TestIntegerErrorsReadLikeRusts(t *testing.T) {
 		t.Errorf("%v", m.vals)
 	}
 	exit := mustExit(t, "doc", "delete", "a", "b", "--version", "-9", "--doctypes", "d")
-	if !strings.Contains(exit.text, "a value is required for '--version <N>'") {
+	if !strings.Contains(exit.text, "unexpected argument '-9' found") {
 		t.Errorf("%q", exit.text)
+	}
+	if m := mustParseArgs(t, "doc", "delete", "a", "b", "--version=-9", "--doctypes", "d"); m.i64("expected_version") != -9 {
+		t.Errorf("%v", m.vals)
+	}
+	// "+5" is a number to Rust.
+	if m := mustParseArgs(t, "worker", "--doctypes", "d", "--concurrency=+5"); m.str("concurrency") != "+5" {
+		t.Errorf("%v", m.vals)
+	}
+	if m := mustParseArgs(t, "migrate", "--doctypes", "d", "--lock-timeout-ms=+5"); m.str("lock_timeout_ms") != "+5" {
+		t.Errorf("%v", m.vals)
 	}
 }
 
