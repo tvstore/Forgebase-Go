@@ -1,0 +1,28 @@
+# A DocType of the `sales` example app (examples/sales); `customer` links to it. Its records come from two places on purpose (M9.4, ADR 0022):
+# the SQL migration `default_customer_groups` creates Retail and Wholesale (migrations are append-only, so it stays), and the fixture
+# fixtures/customer_group.json lists Retail, Wholesale and Online. The first `migrate` adopts the two that exist ("kept") and inserts Online.
+# Field naming (the `title` is the name) is what makes a DocType fit for a fixture. Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "customer_group"
+label = "Customer Group"
+naming = { field = "title" }
+title_field = "title"
+icon = "tag"
+
+[[fields]]
+name = "title"
+label = "Title"
+type = "data"
+max_length = 140
+required = true
+unique = true
+
+[[permissions]]
+role = "Sales User"
+read = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true
+write = true
+create = true
+delete = true

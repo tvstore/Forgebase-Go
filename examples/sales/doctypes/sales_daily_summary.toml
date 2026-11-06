@@ -1,0 +1,32 @@
+# A DocType of the `sales` example app (examples/sales): the orders submitted on one day, written by the scheduled job
+# `sales.daily_summary` (src/lib.rs).
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "sales_daily_summary"
+label = "Sales Daily Summary"
+# The day (`YYYY-MM-DD`, UTC) is the name: one summary per day, enforced by the database.
+naming = { field = "day" }
+title_field = "day"
+icon = "receipt"
+list_fields = ["day", "orders", "total"]
+
+[[fields]]
+name = "day"
+type = "data"
+max_length = 10
+required = true
+unique = true
+
+[[fields]]
+name = "orders"
+type = "int"
+
+[[fields]]
+name = "total"
+type = "decimal"
+precision = 12
+scale = 2
+
+# Written by the job (system context); managers read it.
+[[permissions]]
+role = "Sales Manager"
+read = true

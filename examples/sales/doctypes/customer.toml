@@ -1,0 +1,85 @@
+# A DocType of the `sales` example app (examples/sales). Used by the quick start of the getting-started guide.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+# Labels are the humanized field names ("Full Name", "Loyalty Points", ...) unless a field sets `label`.
+name = "customer"
+label = "Customer"
+naming = { field = "email" }
+# How the desk names a customer and which columns its list shows after `name` (UX.1).
+title_field = "full_name"
+icon = "users"
+list_fields = ["full_name", "customer_group", "tier"]
+
+[[fields]]
+name = "email"
+label = "Email"
+type = "data"
+max_length = 140
+required = true
+unique = true
+
+[[fields]]
+name = "full_name"
+type = "data"
+required = true
+
+[[fields]]
+name = "notes"
+type = "text"
+
+[[fields]]
+name = "loyalty_points"
+type = "int"
+
+[[fields]]
+name = "credit_limit"
+type = "decimal"
+precision = 12
+scale = 2
+# Level 1 (M10.2, ADR 0024: docs/adr/0024-field-permission-levels.md): only a rule with `level = 1` below reads or writes it, so a Sales User does not even see that it exists.
+perm_level = 1
+
+[[fields]]
+name = "active"
+type = "check"
+
+[[fields]]
+name = "joined_on"
+type = "date"
+
+[[fields]]
+name = "last_seen_at"
+type = "datetime"
+
+[[fields]]
+name = "tier"
+type = "select"
+options = ["standard", "silver", "gold"]
+
+[[fields]]
+name = "customer_group"
+type = "link"
+target = "customer_group"
+
+# Who may do what (ADR 0011). The `forgebase doc` commands run as the trusted system context and ignore these rules;
+# they apply to real users (HTTP API, M3.3). A DocType without rules is closed to everyone except `Administrator`.
+# `export` (with `read`) and `import` (with `create`) are rights of their own (M9.3, ADR 0021): nobody has them until a rule grants them.
+[[permissions]]
+role = "Sales User"
+read = true
+export = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true
+write = true
+create = true
+delete = true
+export = true
+import = true
+
+# Level 1: the Sales Manager reads and writes `credit_limit` (ADR 0024). A Sales User has no level 1 rule.
+[[permissions]]
+role = "Sales Manager"
+level = 1
+read = true
+write = true
