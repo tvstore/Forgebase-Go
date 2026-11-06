@@ -6,9 +6,9 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 
 | Module | Licence | Use | Status | Admitted |
 |---|---|---|---|---|
-| `github.com/jackc/pgx/v5` (and its `pgxpool`) | MIT | PostgreSQL driver, pool, TLS configuration | Approved by owner (G2) | P1 |
+| `github.com/jackc/pgx/v5` (and its `pgxpool`) | MIT | PostgreSQL driver, pool, TLS configuration | Approved by owner (G2). **Admitted in P1.2: v5.12.0** (see below) | P1.2 |
 | a decimal library: `github.com/shopspring/decimal` or `github.com/cockroachdb/apd/v3` | MIT or Apache-2.0 | `Decimal` fields (exact, text round-trip) | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): neither; an own `rust_decimal`-compatible type in `internal/decimal` (standard library only), because a parity wrapper would be needed with either** | P1.1 |
-| `github.com/google/uuid` | BSD-3-Clause | UUID values | Approved by owner (G2) | P1 |
+| `github.com/google/uuid` | BSD-3-Clause | UUID values (the v7 `id` of a document is generated in the application) | Approved by owner (G2). Not needed by P1.2 (the schema sync and the framework migrations generate no UUID), so it is admitted with the first document insert | P2 |
 | one TOML library: `github.com/BurntSushi/toml` or `github.com/pelletier/go-toml/v2` | MIT | DocType, overlay and `forgebase.toml` files; **must reject unknown keys** | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): `github.com/BurntSushi/toml` v1.6.0**, decoded into a generic tree with a strict schema decoder | P1.1 |
 | `golang.org/x/crypto` (package `argon2`) | BSD-3-Clause | Argon2id password hashing, m=19456, t=2, p=1 (ADR 0010) | Approved by owner (G2) | P3 |
 
@@ -17,6 +17,19 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 | Module | Version | Licence | Dependencies of its own | Used by | Decision |
 |---|---|---|---|---|---|
 | `github.com/BurntSushi/toml` | v1.6.0 | MIT | none | `internal/core` (DocType, workflow, permission and overlay files) | [ADR 0027](../adr/0027-decimal-and-toml.md) |
+
+**Modules added in P1.2 (`internal/db`).** Licences checked with `go run ./.github/ci/licensecheck` (all on the allow-list).
+
+| Module | Version | Licence | Dependencies of its own | Used by | Decision |
+|---|---|---|---|---|---|
+| `github.com/jackc/pgx/v5` | v5.12.0 | MIT | `pgpassfile`, `pgservicefile`, `puddle/v2`, `golang.org/x/sync`, `golang.org/x/text` (below) | `internal/db`: `pgxpool` (the pool), `pgconn` (server errors with their SQLSTATE), `pgx` (transactions and rows); the test helper `internal/db/dbtest` | G2 of the approved plan. The driver is the one the plan names; the standard library has no PostgreSQL driver. pgx is maintained, has no cgo and is widely used |
+| `github.com/jackc/pgpassfile` | v1.0.0 | MIT | none | pgx (`~/.pgpass` lookup) | transitive |
+| `github.com/jackc/pgservicefile` | v0.0.0-20240606120523-5a60cdf6a761 | MIT | none | pgx (`pg_service.conf` lookup) | transitive |
+| `github.com/jackc/puddle/v2` | v2.2.3 | MIT | `golang.org/x/sync` | pgx (`pgxpool`: the generic resource pool) | transitive |
+| `golang.org/x/sync` | v0.22.0 | BSD-3-Clause | none | pgx, puddle (`errgroup`, `semaphore`) | transitive |
+| `golang.org/x/text` | v0.41.0 | BSD-3-Clause | none | pgx (`pgconn`: SASLprep for SCRAM authentication) | transitive |
+
+Behaviour of pgx that the port depends on and that differs from the Rust driver: pgx reads the `PG*` environment variables, `~/.pgpass` and the service file for what a URL leaves out (the Rust driver reads none of them), and its default `sslmode` is `prefer` (TLS first, plain as the fallback). `internal/db.Connect` therefore removes the TLS parameters from the URL and forces a plain connection until TLS arrives in P5 (owner decision, "setuju TLS di P5"); any other `sslmode` is refused. `go.sum` also lists, for `go mod tidy`, the test-only modules that pgx's own tests name (`testify`, `go-spew`, `go-difflib`, `yaml.v3`); none is in the build graph of this repository.
 
 `internal/decimal` is part of this module, not a dependency: a `rust_decimal`-compatible fixed-point number on `math/big` and `math/bits` ([ADR 0027](../adr/0027-decimal-and-toml.md)). Evaluated and not chosen: `github.com/shopspring/decimal` (MIT) and `github.com/cockroachdb/apd/v3` (Apache-2.0), both arbitrary-precision, so a parity wrapper for the 28-digit, 96-bit rules would be needed on top; `github.com/pelletier/go-toml/v2` (MIT), equivalent to the chosen TOML library.
 
