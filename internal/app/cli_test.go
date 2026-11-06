@@ -610,3 +610,94 @@ func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
 		t.Errorf("code %d: %s", code, errOut.String())
 	}
 }
+
+// The conflict is judged before the value is parsed (parser.rs:1172-1193).
+func TestAnOptionGivenTwiceIsRefusedBeforeItsValueIsRead(t *testing.T) {
+	const hint = "\n\nFor more information, try '--help'.\n"
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"doc", "list", "T", "--limit", "5", "--limit", "abc"}, "error: the argument '--limit <N>' cannot be used multiple times\n\nUsage: forgebase doc list [OPTIONS] <DOCTYPE>" + hint},
+		{[]string{"migrate", "--doctypes", "a", "--doctypes", ""}, "error: the argument '--doctypes <DIR>' cannot be used multiple times\n\nUsage: forgebase migrate [OPTIONS]" + hint},
+		{[]string{"migrate", "--lock-timeout-ms=1", "--lock-timeout-ms=x"}, "error: the argument '--lock-timeout-ms <MS>' cannot be used multiple times\n\nUsage: forgebase migrate [OPTIONS]" + hint},
+	} {
+		if exit := mustExit(t, c.args...); exit.text != c.want {
+			t.Errorf("%v:\n got %q\nwant %q", c.args, exit.text, c.want)
+		}
+	}
+}
+
+// An argument whose value was refused still counts as used (start_custom_arg precedes push_arg_values),
+// and the groups of the flattened Args structs are in the usage of a `--flag=value` error
+// (parser.rs:831-850, usage.rs write_args, command.rs format_group).
+func TestTheUsedListOfAnErrorHoldsRefusedValuesAndGroups(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"migrate", "--lock-timeout-ms", "abc", "--bogus"}, "Usage: forgebase migrate --lock-timeout-ms <MS>"},
+		{[]string{"migrate", "--doctypes=dt", "--dry-run=true"}, "Usage: forgebase migrate --dry-run <--doctypes <DIR>>"},
+		{[]string{"migrate", "--dry-run=true"}, "Usage: forgebase migrate --dry-run"},
+		{[]string{"doc", "insert", "c", "--actor", "a", "--data", "{}", "--bogus"}, "Usage: forgebase doc insert --data <JSON|-> --actor <NAME> <DOCTYPE>"},
+		{[]string{"--site", "x", "--config", "c", "--version=y"}, "Usage: forgebase --version <--config <PATH>|--site <NAME>> <COMMAND>"},
+	} {
+		exit := mustExit(t, c.args...)
+		if !strings.Contains(exit.text, "\n\n"+c.want+"\n\n") {
+			t.Errorf("%v: %q\nwant usage %q", c.args, exit.text, c.want)
+		}
+	}
+}
+
+// The generated help command (command.rs:4850-4870) has no options and one optional argument.
+func TestHelpHelp(t *testing.T) {
+	const hint = "\n\nFor more information, try '--help'.\n"
+	want := "Print this message or the help of the given subcommand(s)\n\nUsage: forgebase help [COMMAND]...\n\nArguments:\n  [COMMAND]...  Print help for the subcommand(s)\n"
+	for _, args := range [][]string{{"help", "help"}} {
+		if exit := mustExit(t, args...); exit.code != 0 || !exit.stdout || exit.text != want {
+			t.Errorf("%v: %q", args, exit.text)
+		}
+	}
+	nested := strings.ReplaceAll(want, "forgebase help", "forgebase doc help")
+	for _, args := range [][]string{{"help", "doc", "help"}, {"doc", "help", "help"}} {
+		if exit := mustExit(t, args...); exit.code != 0 || exit.text != nested {
+			t.Errorf("%v: %q", args, exit.text)
+		}
+	}
+	exit := mustExit(t, "help", "help", "doc")
+	if exit.code != 2 || exit.text != "error: unrecognized subcommand 'doc'\n\nUsage: forgebase help [COMMAND]..."+hint {
+		t.Errorf("%q", exit.text)
+	}
+	// A leaf command has no help command.
+	exit = mustExit(t, "migrate", "help")
+	if !strings.HasPrefix(exit.text, "error: unexpected argument 'help' found") {
+		t.Errorf("%q", exit.text)
+	}
+}
+
+// Values other than paths must be UTF-8; a path takes any bytes (value_parser.rs).
+func TestInvalidUTF8Arguments(t *testing.T) {
+	const hint = "\n\nFor more information, try '--help'.\n"
+	bad := "a\xffb"
+	for _, args := range [][]string{
+		{"doc", "insert", "c", "--data", bad},
+		{"doc", "insert", "c", "--data=" + bad},
+		{"doc", "get", bad, "n"},
+		{"worker", "--concurrency", bad},
+		{"job", "list", "--status", bad},
+		{"--site", bad, "migrate"},
+	} {
+		exit := mustExit(t, args...)
+		if exit.code != 2 || !strings.HasPrefix(exit.text, "error: invalid UTF-8 was detected in one or more arguments\n\nUsage: forgebase") || !strings.HasSuffix(exit.text, hint) {
+			t.Errorf("%v: %q", args, exit.text)
+		}
+	}
+	if m := mustParseArgs(t, "migrate", "--doctypes", bad); m.str("doctypes") != bad {
+		t.Errorf("a path takes any bytes: %q", m.str("doctypes"))
+	}
+	// The name in an error is shown lossily.
+	exit := mustExit(t, "migrate", "--bo"+bad)
+	if !strings.HasPrefix(exit.text, "error: unexpected argument '--bo\uFFFD\uFFFDb' found") && !strings.HasPrefix(exit.text, "error: unexpected argument '--boa\uFFFDb' found") {
+		t.Errorf("%q", exit.text)
+	}
+}

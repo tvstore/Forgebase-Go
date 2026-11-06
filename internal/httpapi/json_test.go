@@ -373,7 +373,8 @@ func TestSyntaxErrorsReadLikeSerdeJSON(t *testing.T) {
 		{`"a\u12`, "EOF while parsing a string at line 1 column 6"},
 		{`"\ud800x"`, "unexpected end of hex escape at line 1 column 8"},
 		{`"\udc00"`, "lone leading surrogate in hex escape at line 1 column 7"},
-		{"\"a\x01\"", "control character (\\u0000-\\u001F) found while parsing a string at line 1 column 2"},
+		{"\"a\x01\"", "control character (\\u0000-\\u001F) found while parsing a string at line 1 column 3"},
+		{"{\"a\":\"x\x01\"}", "control character (\\u0000-\\u001F) found while parsing a string at line 1 column 8"},
 		{`01`, "invalid number at line 1 column 2"},
 		{`-`, "EOF while parsing a value at line 1 column 1"},
 		{`-x`, "invalid number at line 1 column 2"},
@@ -382,6 +383,8 @@ func TestSyntaxErrorsReadLikeSerdeJSON(t *testing.T) {
 		{`1e`, "EOF while parsing a value at line 1 column 2"},
 		{`1e+x`, "invalid number at line 1 column 4"},
 		{`1e999`, "number out of range at line 1 column 5"},
+		{`1e99999999999`, "number out of range at line 1 column 12"},
+		{`1e+99999999999`, "number out of range at line 1 column 13"},
 		{strings.Repeat("[", 128), "recursion limit exceeded at line 1 column 128"},
 	} {
 		_, err := parseJSON(c[0])
@@ -398,6 +401,12 @@ func TestSyntaxErrorsReadLikeSerdeJSON(t *testing.T) {
 	if _, err := parseJSON(strings.Repeat("[", 127) + strings.Repeat("]", 127)); err != nil {
 		t.Errorf("%v", err)
 	}
+	// An exponent that overflows i32 is a zero when the number is zero or the exponent negative.
+	for _, ok := range []string{`0e99999999999`, `1e-99999999999`, `-0e+99999999999`} {
+		if _, err := parseJSON(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
 	for _, ok := range []string{`null`, ` true `, `{"a":[1,2.5,-3e2,"xé😀\n"],"b":{}}`, `[]`, `"\/"`} {
 		if _, err := parseJSON(ok); err != nil {
 			t.Errorf("%s: %v", ok, err)
@@ -412,10 +421,10 @@ func TestSyntaxErrorsReadLikeSerdeJSON(t *testing.T) {
 // Number's Display, which the message about an integer out of range uses.
 func TestNumbersDisplayLikeSerdeJSON(t *testing.T) {
 	for _, c := range [][2]string{
-		{`1.5`, "1.5"}, {`1.0`, "1.0"}, {`1e3`, "1000.0"}, {`-2.50`, "-2.5"}, {`1e21`, "1e21"}, {`1e16`, "1e16"},
-		{`1e15`, "1000000000000000.0"}, {`1.5e-7`, "1.5e-7"}, {`0.00001`, "0.00001"}, {`0.000001`, "1e-6"},
+		{`1.5`, "1.5"}, {`1.0`, "1.0"}, {`1e3`, "1000.0"}, {`-2.50`, "-2.5"}, {`1e21`, "1e+21"}, {`1e16`, "1e+16"},
+		{`1e15`, "1000000000000000.0"}, {`1.5e-7`, "1.5e-7"}, {`0.00001`, "0.00001"}, {`0.000001`, "1e-6"}, {`6.62607015e-34`, "6.62607015e-34"}, {`3.439070283483335e+35`, "3.439070283483335e+35"},
 		{`-0`, "-0.0"}, {`0.0`, "0.0"}, {`9223372036854775808`, "9223372036854775808"},
-		{`-9223372036854775809`, "-9.223372036854776e18"}, {`18446744073709551616`, "1.8446744073709552e19"},
+		{`-9223372036854775809`, "-9.223372036854776e+18"}, {`18446744073709551616`, "1.8446744073709552e+19"},
 		{`123456.789`, "123456.789"}, {`5`, "5"}, {`-5`, "-5"},
 	} {
 		v, err := parseJSON(c[0])

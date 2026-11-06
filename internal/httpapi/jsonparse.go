@@ -16,7 +16,7 @@ import (
 // next byte (read.rs:600-604). The values are serde_json::Value: objects keep the last of a duplicate key,
 // numbers keep their kind (see jsonNumber).
 //
-// Known differences: the text of a float is parsed by strconv, where serde_json's default (no
+// Known difference: the text of a float is parsed by strconv, where serde_json's default (no
 // float_roundtrip) may differ in the last digit of a number with more than 15 significant digits; that
 // only shows in the message about a number that is not an integer.
 
@@ -86,9 +86,10 @@ func (n jsonNumber) String() string {
 	return formatFloat(n.f)
 }
 
-// formatFloat writes a finite float like the ryu family does (serde_json's Number Display): the
-// shortest digits that read back, "1000.0" for a whole number up to 16 digits, positional down to
-// 0.00001, else d.ddde±x without a "+".
+// formatFloat writes a finite float like zmij 1.0.23 does (serde_json's Number Display, number.rs:356): the
+// shortest digits that read back; positional when the decimal exponent of the first digit is -5 to 15
+// ("1000.0", "12.34", "0.00001"), else d.ddde followed by the sign and the exponent without padding
+// ("1e+21", "6.62607015e-34").
 func formatFloat(f float64) string {
 	if f == 0 {
 		if math.Signbit(f) {
@@ -105,19 +106,22 @@ func formatFloat(f float64) string {
 	digits := strings.Replace(mantissa, ".", "", 1)
 	e10, _ := strconv.Atoi(exp)
 	length := len(digits)
-	k := e10 - (length - 1) // the value is digits * 10^k
-	kk := length + k
 	switch {
-	case k >= 0 && kk <= 16:
-		return sign + digits + strings.Repeat("0", k) + ".0"
-	case kk > 0 && kk <= 16:
-		return sign + digits[:kk] + "." + digits[kk:]
-	case kk > -5 && kk <= 0:
-		return sign + "0." + strings.Repeat("0", -kk) + digits
-	case length == 1:
-		return sign + digits + "e" + strconv.Itoa(kk-1)
+	case e10 >= -5 && e10 <= 15 && length-1 <= e10:
+		return sign + digits + strings.Repeat("0", e10-(length-1)) + ".0"
+	case e10 >= 0 && e10 <= 15:
+		return sign + digits[:e10+1] + "." + digits[e10+1:]
+	case e10 >= -5 && e10 < 0:
+		return sign + "0." + strings.Repeat("0", -e10-1) + digits
 	}
-	return sign + digits[:1] + "." + digits[1:] + "e" + strconv.Itoa(kk-1)
+	expSign := "+"
+	if e10 < 0 {
+		expSign, e10 = "-", -e10
+	}
+	if length == 1 {
+		return sign + digits + "e" + expSign + strconv.Itoa(e10)
+	}
+	return sign + digits[:1] + "." + digits[1:] + "e" + expSign + strconv.Itoa(e10)
 }
 
 type jparser struct {
@@ -374,10 +378,13 @@ func (p *jparser) number(start int) (any, error) {
 			return nil, p.peekErr(msgEOFValue)
 		}
 	}
+	mantissaEnd := p.i
 	if e := p.peekOrNull(); e == 'e' || e == 'E' {
 		isFloat = true
 		p.i++
+		positiveExp := true
 		if sign := p.peekOrNull(); sign == '+' || sign == '-' {
+			positiveExp = sign == '+'
 			p.i++
 		}
 		d, ok := p.next()
@@ -387,8 +394,26 @@ func (p *jparser) number(start int) (any, error) {
 		case !isDigit(d):
 			return nil, p.err(msgNumber)
 		}
+		exp := int(d - '0')
 		for isDigit(p.peekOrNull()) {
+			digit := int(p.s[p.i] - '0')
 			p.i++
+			if exp > (math.MaxInt32-digit)/10 {
+				// de.rs:595-603: an exponent that does not fit i32. A non-zero number with a positive
+				// exponent is out of range, reported at this digit; otherwise the rest of the digits are
+				// skipped and the number is a zero.
+				if positiveExp && !zeroSignificand(p.s[start:mantissaEnd]) {
+					return nil, p.err(msgRange)
+				}
+				for isDigit(p.peekOrNull()) {
+					p.i++
+				}
+				if p.s[start] == '-' {
+					return jsonNumber{which: 'f', f: math.Copysign(0, -1)}, nil
+				}
+				return jsonNumber{which: 'f'}, nil
+			}
+			exp = exp*10 + digit
 		}
 	}
 	text := p.s[start:p.i]
@@ -407,6 +432,11 @@ func (p *jparser) number(start int) (any, error) {
 		return nil, p.err(msgRange)
 	}
 	return jsonNumber{which: 'f', f: f}, nil
+}
+
+// zeroSignificand is true when every digit of the mantissa text is 0.
+func zeroSignificand(mantissa string) bool {
+	return strings.Trim(mantissa, "-0.") == ""
 }
 
 func isEscapeByte(b byte) bool { return b == '"' || b == '\\' || b < 0x20 }
@@ -434,6 +464,8 @@ func (p *jparser) str() (any, error) {
 				return nil, err
 			}
 		default:
+			// read.rs:563-566: the byte is consumed before the error is made.
+			p.i++
 			return nil, p.err(msgControl)
 		}
 	}

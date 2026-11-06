@@ -359,17 +359,17 @@ func rootCommand() *command {
 
 // The argument groups that several commands flatten in (Rust DocTypesDir, DataArg, ActorArg, VersionArg).
 func doctypesArg() argSpec {
-	return argSpec{id: "doctypes", long: "doctypes", valueName: "DIR", kind: kindPath, help: "Directory with one DocType `*.toml` file per DocType (not searched recursively). It becomes the app `local`, which depends on the apps installed on the site (every app of the binary unless the site lists `apps`) and is part of every site's registry. Required when the binary has no apps (the stock `forgebase` binary); a binary with apps does not need it"}
+	return argSpec{group: "DocTypesDir", id: "doctypes", long: "doctypes", valueName: "DIR", kind: kindPath, help: "Directory with one DocType `*.toml` file per DocType (not searched recursively). It becomes the app `local`, which depends on the apps installed on the site (every app of the binary unless the site lists `apps`) and is part of every site's registry. Required when the binary has no apps (the stock `forgebase` binary); a binary with apps does not need it"}
 }
 
 func dataArg() argSpec {
-	return argSpec{id: "data", long: "data", valueName: "JSON|-", required: true, help: "A JSON object with the field values, or `-` to read it from standard input"}
+	return argSpec{group: "DataArg", id: "data", long: "data", valueName: "JSON|-", required: true, help: "A JSON object with the field values, or `-` to read it from standard input"}
 }
 
 func actorArg() argSpec {
-	return argSpec{id: "actor", long: "actor", valueName: "NAME", def: "cli", hasDefault: true, help: "The name of the trusted system context these commands run as: recorded as owner / modified_by on insert, update, submit, cancel, amend and transition (and in the workflow log); given to hooks (on delete it is only given to hooks, not stored). Not authenticated, and no permission rules apply to it"}
+	return argSpec{group: "ActorArg", id: "actor", long: "actor", valueName: "NAME", def: "cli", hasDefault: true, help: "The name of the trusted system context these commands run as: recorded as owner / modified_by on insert, update, submit, cancel, amend and transition (and in the workflow log); given to hooks (on delete it is only given to hooks, not stored). Not authenticated, and no permission rules apply to it"}
 }
 
 func versionArg() argSpec {
-	return argSpec{id: "expected_version", long: "version", valueName: "N", kind: kindI64, required: true, help: "The version of the document you last read (the `version` field of `doc get`). The change is refused if someone else changed the document since"}
+	return argSpec{group: "VersionArg", id: "expected_version", long: "version", valueName: "N", kind: kindI64, required: true, help: "The version of the document you last read (the `version` field of `doc get`). The change is refused if someone else changed the document since"}
 }

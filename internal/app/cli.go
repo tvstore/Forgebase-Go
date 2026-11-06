@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // The command-line parser. Forgebase has no command-line framework (ADR 0026, G2); the Rust
@@ -50,6 +51,9 @@ type argSpec struct {
 	kind       valueKind
 	min, max   int64
 	ranged     bool
+	// group is the clap ArgGroup the argument belongs to through a flattened Args struct (DocTypesDir,
+	// DataArg, ActorArg, VersionArg): the derive makes one group per struct (clap_derive args.rs:389-434).
+	group string
 }
 
 // command is one node of the command tree.
@@ -60,6 +64,8 @@ type command struct {
 	args      []argSpec
 	subs      []*command
 	parent    *command
+	// isHelp is clap's generated `help` command, which has no options of its own.
+	isHelp bool
 }
 
 // link sets the parent of every command below c.
@@ -142,7 +148,15 @@ func (c *command) find(path ...string) *command {
 func (a *argSpec) display() string {
 	switch {
 	case a.positional:
-		return "<" + a.valueName + ">"
+		open, closing := "<", ">"
+		if !a.required {
+			open, closing = "[", "]"
+		}
+		text := open + a.valueName + closing
+		if a.multiple {
+			text += "..."
+		}
+		return text
 	case a.flag:
 		return "--" + a.long
 	}
@@ -279,6 +293,9 @@ type level struct {
 	next int
 	// vals are the values given on this level, by argument id.
 	vals map[string][]string
+	// order is every id the matcher holds, in the order it was added: the arguments given and, right after
+	// each, the groups they belong to (parser.rs:1533-1549). Only a few errors list the groups.
+	order []string
 }
 
 type pendingValue struct {
@@ -287,6 +304,21 @@ type pendingValue struct {
 }
 
 func newLevel(c *command) *level { return &level{cmd: c, vals: map[string][]string{}} }
+
+// use records an argument as given, and its groups (ArgMatcher::start_custom_arg).
+func (l *level) use(spec *argSpec) {
+	if l.has(spec.id) {
+		return
+	}
+	l.explicit = append(l.explicit, spec.id)
+	l.order = append(l.order, spec.id)
+	for _, g := range groupsFor(l.cmd, spec.id) {
+		token := "group:" + g.id
+		if !containsString(l.order, token) {
+			l.order = append(l.order, token)
+		}
+	}
+}
 
 func (l *level) has(id string) bool {
 	for _, e := range l.explicit {
@@ -325,6 +357,10 @@ func (p *parser) react(l *level, spec *argSpec, vals []string) *exitRequest {
 	if len(vals) == 0 {
 		return emptyValue(spec)
 	}
+	// An option that was already given is refused before its values are looked at (parser.rs:1172-1193).
+	if !spec.multiple && l.has(spec.id) {
+		return p.conflict(l, spec)
+	}
 	if spec.delimiter != "" {
 		var split []string
 		for _, v := range vals {
@@ -332,21 +368,18 @@ func (p *parser) react(l *level, spec *argSpec, vals []string) *exitRequest {
 		}
 		vals = split
 	}
+	// The argument counts as given even when its value is refused (start_custom_arg comes before
+	// push_arg_values).
+	l.use(spec)
 	for _, v := range vals {
-		if exit := checkValue(spec, v); exit != nil {
+		if exit := checkValue(l.cmd, spec, v); exit != nil {
 			return exit
 		}
-	}
-	if !spec.multiple && l.has(spec.id) {
-		return p.conflict(l, spec)
 	}
 	if spec.multiple {
 		l.vals[spec.id] = append(l.vals[spec.id], vals...)
 	} else {
 		l.vals[spec.id] = vals
-	}
-	if !l.has(spec.id) {
-		l.explicit = append(l.explicit, spec.id)
 	}
 	return nil
 }
@@ -476,18 +509,22 @@ func (p *parser) long(l *level, a string) *exitRequest {
 	if spec == nil {
 		// resolve_pending, its error discarded, then did_you_mean_error with every argument given.
 		_ = p.resolve(l)
-		message := fmt.Sprintf("unexpected argument '--%s' found", name)
+		shown := lossy(name)
+		message := fmt.Sprintf("unexpected argument '--%s' found", shown)
 		if len(l.cmd.positionals()) > 0 {
-			message += fmt.Sprintf("\n\n  tip: to pass '--%s' as a value, use '-- --%s'", name, name)
+			message += fmt.Sprintf("\n\n  tip: to pass '--%s' as a value, use '-- --%s'", shown, shown)
 		}
 		return usageErr(message, usageUsed(l.cmd, l.explicit))
 	}
 	if spec.flag {
 		if hasEq {
-			// The used arguments are those given, not required and not pending, and this one.
+			// The used ids are those the matcher holds that are not required (the groups too, which
+			// clap does not look up and so keeps), and this argument (parser.rs:831-850).
 			var used []string
-			for _, id := range l.explicit {
-				if s := lookupSpec(l.cmd, id); s != nil && !s.required {
+			for _, id := range l.order {
+				if strings.HasPrefix(id, "group:") {
+					used = append(used, id)
+				} else if s := lookupSpec(l.cmd, id); s != nil && !s.required {
 					used = append(used, id)
 				}
 			}
@@ -508,7 +545,7 @@ func (p *parser) long(l *level, a string) *exitRequest {
 		if l.has(spec.id) {
 			return p.conflict(l, spec)
 		}
-		l.explicit = append(l.explicit, spec.id)
+		l.use(spec)
 		return nil
 	}
 	// An option: its value is attached with "=" or is the next argument.
@@ -553,6 +590,7 @@ func (p *parser) versionExit(c *command) *exitRequest {
 // go to (match_arg_error).
 func matchArgError(l *level, a string, afterDashes bool) *exitRequest {
 	c := l.cmd
+	a = lossy(a)
 	if afterDashes && possibleSub(c, a) != "" {
 		return usageErr(fmt.Sprintf("unexpected argument '%s' found\n\n  tip: subcommand '%s' exists; to use it, remove the '--' before it", a, a),
 			plainUsage(c))
@@ -612,9 +650,14 @@ func emptyValue(spec *argSpec) *exitRequest {
 }
 
 // checkValue validates one value of an option with the rules of its value parser (value_parser.rs).
-func checkValue(spec *argSpec, value string) *exitRequest {
+func checkValue(c *command, spec *argSpec, value string) *exitRequest {
 	invalid := func(reason string) *exitRequest {
 		return usageErr(fmt.Sprintf("invalid value '%s' for '%s': %s", value, spec.display(), reason), "")
+	}
+	// Every value but a path must be UTF-8 (StringValueParser, PossibleValuesParser and the integer
+	// parsers; PathBufValueParser takes any bytes).
+	if spec.kind != kindPath && !utf8.ValidString(value) {
+		return usageErr("invalid UTF-8 was detected in one or more arguments", plainUsage(c))
 	}
 	switch {
 	case len(spec.possible) > 0:
@@ -681,19 +724,36 @@ func helpExit(c *command, long bool) *exitRequest {
 	return &exitRequest{text: renderHelp(c, long), stdout: true}
 }
 
+// lossy is OsStr::to_string_lossy: each byte that is not UTF-8 shows as U+FFFD.
+func lossy(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return string([]rune(s))
+}
+
+// helpCommandOf is clap's generated `help` command of a command that has subcommands (command.rs:4850-4870):
+// it has no options, one optional argument, and no help flag.
+func helpCommandOf(parent *command) *command {
+	return &command{
+		name: "help", about: helpCommandAbout, isHelp: true, parent: parent,
+		args: []argSpec{{id: "subcommand", positional: true, valueName: "COMMAND", multiple: true, help: "Print help for the subcommand(s)"}},
+	}
+}
+
 // helpSubcommand is `forgebase help [COMMAND]...` (parse_help_subcommand): the long help of the named
-// command; every argument after help is a subcommand name, so a flag is an unrecognized subcommand.
+// command; every argument after help is a subcommand name, so a flag is an unrecognized subcommand, and
+// `help` itself names the generated help command, which has no subcommands.
 func helpSubcommand(c *command, rest []string) *exitRequest {
 	cur := c
 	for _, name := range rest {
-		next := cur.sub(name)
-		if next == nil {
-			if name == "help" {
-				break
-			}
-			return usageErr(fmt.Sprintf("unrecognized subcommand '%s'", name), plainUsage(cur))
+		if next := cur.sub(name); next != nil {
+			cur = next
+		} else if name == "help" && len(cur.subs) > 0 {
+			cur = helpCommandOf(cur)
+		} else {
+			return usageErr(fmt.Sprintf("unrecognized subcommand '%s'", lossy(name)), plainUsage(cur))
 		}
-		cur = next
 	}
 	return helpExit(cur, true)
 }
