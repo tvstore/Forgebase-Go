@@ -20,11 +20,19 @@ import (
 // (submittable: a Link to the customer and to the group, a table whose rows Link to the group, and a
 // Link at field level 1) and ticket (a workflow with a Link to the group).
 //
-// Deferred, with the phase that has what they need: list, summary, export, link_titles and import
-// (P3, P7), the transition (P6) and the loading and managing of the permissions through the users
-// (auth and the user_permissions module: P3). Where a test mixes them with get, insert, update and
-// the like, it is ported without them, and the visible names (the Rust env.names, a list) are those
-// that get finds: every document is read one by one.
+// Deferred Rust tests, with their phase (the tests that mix them with get and the like are ported
+// without them; the visible names, the Rust env.names, are those get finds, one document at a time):
+//   - link_titles_leave_out_hidden_targets: P3 (link titles)
+//   - an_import_applies_the_rules_to_every_row: P7 (import)
+//   - a_hidden_document_is_not_found_by_a_transition_and_a_visible_one_moves: P6 (transition)
+//   - the_permissions_are_loaded_with_every_authenticated_request: P3 (auth)
+//   - adding_checks_the_user_the_doctype_the_value_and_the_document: P3 (user_permissions module)
+//   - the_list_is_sorted_and_filtered: P3 (user_permissions module)
+//   - a_user_has_at_most_a_thousand_documents_per_doctype: P3 (user_permissions module)
+//   - two_sites_keep_their_own_permissions: P5 (sites)
+//   - a_database_without_the_table_still_serves_its_users: P3 (auth)
+// The list, summary and export parts of every_read_shows_only_what_the_restriction_allows and the
+// filter in a_hidden_link_field_still_restricts_and_its_value_is_not_revealed: P3 and P7.
 
 const upCustomerGroup = `
 name = "customer_group"

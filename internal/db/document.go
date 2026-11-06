@@ -1002,7 +1002,8 @@ func fromWrite(err error, doctype *core.DocType, levels *core.FieldAccess) error
 		message = fmt.Sprintf("a `%s` document with this `%s` already exists (unique field `%s`)",
 			doctype.Name, column.Name, column.Name)
 	}
-	return &Error{Kind: ErrUniqueViolation, Message: message, Err: err}
+	// No driver error is kept: its detail names the column and value that a hidden field must not tell.
+	return &Error{Kind: ErrUniqueViolation, Message: message}
 }
 
 // fromDelete converts an error of a DELETE on a DocType table: a foreign key violation (SQLSTATE
@@ -1013,7 +1014,8 @@ func fromWrite(err error, doctype *core.DocType, levels *core.FieldAccess) error
 func fromDelete(err error, doctype, name string) *Error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23503" {
-		e := &Error{Kind: ErrLinkedDocumentExists, DocType: doctype, Name: name, Err: err}
+		// No driver error is kept (Rust holds none): its table name could tell a hidden DocType.
+		e := &Error{Kind: ErrLinkedDocumentExists, DocType: doctype, Name: name}
 		if by, ok := strings.CutPrefix(pg.TableName, core.TablePrefix); ok {
 			e.ReferencedBy = &by
 		}

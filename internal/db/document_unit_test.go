@@ -398,3 +398,11 @@ func TestNumericColumnsKeepTheirScale(t *testing.T) {
 		}
 	}
 }
+
+// Go: "error serializing parameter N" counts from 0 like tokio-postgres (placeholder $4 is 3).
+func TestSerializingErrorsCountParametersFromZero(t *testing.T) {
+	_, err := bindValue("bigint", core.Text("x"), 4)
+	if err == nil || !strings.Contains(err.Error(), "error serializing parameter 3:") {
+		t.Error(err)
+	}
+}

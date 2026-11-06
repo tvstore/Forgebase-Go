@@ -53,8 +53,10 @@ func castType(ft core.FieldType) string {
 
 // bindValue is the query argument for value v bound to a placeholder cast to cast. Null is SQL
 // NULL for any type. A value of another kind than cast takes is an error (position is the
-// 1-based placeholder number, for the message).
+// 1-based placeholder number; the message counts from 0 like tokio-postgres).
 func bindValue(cast string, v core.Value, position int) (any, error) {
+	// tokio-postgres numbers the parameters of "error serializing parameter N" from 0.
+	position--
 	wrong := func() (any, error) {
 		return nil, fmt.Errorf("error serializing parameter %d: cannot bind a %s value as %s", position, v.KindName(), cast)
 	}

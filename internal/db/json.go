@@ -34,7 +34,12 @@ func FormatDate(t time.Time) (string, error) {
 	if y < minYear || y > maxYear {
 		return "", fmt.Errorf("%s", yearComponentProblem)
 	}
-	return fmt.Sprintf("%04d-%02d-%02d", y, int(m), d), nil
+	// Like the Rust time crate: a sign for a negative year, then the four-digit absolute year.
+	sign := ""
+	if y < 0 {
+		sign, y = "-", -y
+	}
+	return fmt.Sprintf("%s%04d-%02d-%02d", sign, y, int(m), d), nil
 }
 
 // UTCRFC3339 is t in UTC as RFC 3339 with the shortest fractional second ("2026-03-01T10:00:00Z",
