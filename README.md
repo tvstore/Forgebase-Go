@@ -44,7 +44,7 @@ The port has eight phases, then a parity report that compares the Go implementat
 |---|---|---|
 | P0 | Foundations: the Go module and package skeleton, CI (with `ci-result` failing on drafts), licence check, documentation, [ADR 0026](docs/adr/0026-go-implementation.md) | **In progress** |
 | P1 | Metadata and storage (M1): P1.1, the metadata, validation and permission core (`internal/core`, `internal/decimal`), and P1.2, the database foundations (`internal/db`: the pool, the framework migrations and the schema sync), are implemented | **In progress** |
-| P2 | Relationships and lifecycle (M2) | Planned |
+| P2 | Relationships and lifecycle (M2): P2.1, the document pipeline (`internal/db`: insert, get, update, delete, submit, cancel and amend with links, child tables, hooks, series, the docstatus rules and the outbox), is implemented; P2.2 (the CLI) is next | **In progress** |
 | P3 | Auth, permissions and the REST API (M3), the minimal desk (M4) and UX, serving the unchanged desk | Planned |
 | P4 | App model and developer experience (M5), the example apps, `forgebase/testing` | Planned |
 | P5 | Jobs and scheduler (M6), sites (M7), PostgreSQL TLS (M9.0, moved from P7), container and deploy (D1, D2) | Planned |

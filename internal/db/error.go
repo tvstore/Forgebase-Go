@@ -11,9 +11,9 @@ import (
 )
 
 // ErrorKind is the variant of an Error. It mirrors the DbError enum of the Rust crate
-// forgebase-db; only the variants that the code in this package needs are here. The rest arrive
-// with the phases that need them (document operations in P2, and so on): add a kind, its fields
-// and its Error text.
+// forgebase-db; only the variants that the code in this package needs are here (P2.1 added those of the
+// document operations). The rest arrive with the phases that need them (listing in P3, transitions
+// in P6, and so on): add a kind, its fields and its Error text.
 type ErrorKind int
 
 const (
@@ -45,6 +45,56 @@ const (
 	// ErrInvalidMetadata: the DocTypes as a whole are inconsistent (Problems, from
 	// core.Registry.CheckReferences). Nothing was changed.
 	ErrInvalidMetadata
+	// ErrUnknownDocType: the DocType name is not in the registry (Name).
+	ErrUnknownDocType
+	// ErrChildDocType: an operation was called with a child DocType (DocType).
+	ErrChildDocType
+	// ErrChangedWhileReading: the rows of a document changed several times while it was read
+	// (DocType, Name).
+	ErrChangedWhileReading
+	// ErrValidation: the document or the changes break the DocType's rules (Validation).
+	ErrValidation
+	// ErrNotFound: no document of this DocType has this name, or the caller cannot read it
+	// (DocType, Name).
+	ErrNotFound
+	// ErrConflict: the document changed since the caller read it (DocType, Name, ExpectedVersion,
+	// CurrentVersion).
+	ErrConflict
+	// ErrLinkedDocumentExists: the document cannot be deleted because other documents link to it
+	// (DocType, Name, ReferencedBy).
+	ErrLinkedDocumentExists
+	// ErrPermissionDenied: the caller lacks a right (DocType, Right).
+	ErrPermissionDenied
+	// ErrUniqueViolation: a unique constraint was violated, SQLSTATE 23505 (Message).
+	ErrUniqueViolation
+	// ErrInvalidActor: the actor is empty or contains NUL.
+	ErrInvalidActor
+	// ErrNaming: the document name conflicts with the DocType's naming rule (Message).
+	ErrNaming
+	// ErrDecode: a stored value could not be read (DocType, Field, Message).
+	ErrDecode
+	// ErrNoChanges: an update was called without any change.
+	ErrNoChanges
+	// ErrInvalidDocStatus: the operation is not allowed in the document's docstatus (DocType, Name,
+	// DocStatus, Operation).
+	ErrInvalidDocStatus
+	// ErrNotSubmittable: submit, cancel or amend on a DocType that is not submittable (DocType,
+	// Operation).
+	ErrNotSubmittable
+	// ErrFieldLocked: a change to a submitted document touches a locked field (DocType, Name,
+	// Field).
+	ErrFieldLocked
+	// ErrAlreadyAmended: the cancelled document was already amended (DocType, Name, AmendedBy).
+	ErrAlreadyAmended
+	// ErrWorkflowRequired: submit or cancel on a DocType with a workflow (DocType, Operation).
+	ErrWorkflowRequired
+	// ErrEditDenied: the document's workflow state has edit_roles the caller does not have
+	// (DocType, State).
+	ErrEditDenied
+	// ErrJob: a job cannot be enqueued (Message).
+	ErrJob
+	// ErrHook: a lifecycle hook rejected the operation (DocType, Hook, Message).
+	ErrHook
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -63,6 +113,31 @@ type Error struct {
 	Conflicts []Conflict
 	// Problems are the definition errors of ErrInvalidMetadata.
 	Problems []core.DefinitionError
+	// DocType is the DocType of the document errors (Rust: doctype).
+	DocType string
+	// Field is the field of ErrDecode and ErrFieldLocked.
+	Field string
+	// ExpectedVersion and CurrentVersion are the versions of ErrConflict.
+	ExpectedVersion, CurrentVersion int64
+	// ReferencedBy is the DocType of the documents that link to the one ErrLinkedDocumentExists
+	// is about; nil when it is not known or the caller may not read it (ADR 0011).
+	ReferencedBy *string
+	// Right is the right ErrPermissionDenied is about.
+	Right core.Right
+	// Validation are the problems of ErrValidation.
+	Validation []core.ValidationError
+	// DocStatus is the docstatus of ErrInvalidDocStatus.
+	DocStatus core.DocStatus
+	// Operation is the refused operation of ErrInvalidDocStatus, ErrNotSubmittable and
+	// ErrWorkflowRequired: update, delete, submit, cancel or amend.
+	Operation string
+	// AmendedBy is the amendment of ErrAlreadyAmended.
+	AmendedBy string
+	// State is the workflow state of ErrEditDenied.
+	State string
+	// Hook is the failed hook of ErrHook: before_insert, validate, before_delete, before_submit,
+	// before_cancel or before_transition.
+	Hook string
 	// Err is the underlying driver error, if any.
 	Err error
 }
@@ -94,6 +169,56 @@ func (e *Error) Error() string {
 			parts[i] = p.Error()
 		}
 		return "invalid DocType metadata: " + strings.Join(parts, "; ")
+	case ErrUnknownDocType:
+		return fmt.Sprintf("unknown DocType `%s`", e.Name)
+	case ErrChildDocType:
+		return fmt.Sprintf("DocType `%s` is a child DocType: its rows belong to a parent document and are read and written through the parent", e.DocType)
+	case ErrChangedWhileReading:
+		return fmt.Sprintf("%s `%s` was changed while it was being read; retry", e.DocType, e.Name)
+	case ErrValidation:
+		parts := make([]string, len(e.Validation))
+		for i, p := range e.Validation {
+			parts[i] = p.Error()
+		}
+		return "validation failed: " + strings.Join(parts, "; ")
+	case ErrNotFound:
+		return fmt.Sprintf("%s `%s` not found", e.DocType, e.Name)
+	case ErrConflict:
+		return fmt.Sprintf("%s `%s` was changed by someone else: expected version %d, current version %d",
+			e.DocType, e.Name, e.ExpectedVersion, e.CurrentVersion)
+	case ErrLinkedDocumentExists:
+		by := "another document"
+		if e.ReferencedBy != nil {
+			by = *e.ReferencedBy
+		}
+		return fmt.Sprintf("%s `%s` cannot be deleted: it is linked from %s", e.DocType, e.Name, by)
+	case ErrPermissionDenied:
+		return fmt.Sprintf("permission denied: no `%s` right on DocType `%s`", e.Right, e.DocType)
+	case ErrUniqueViolation, ErrNaming:
+		return e.Message
+	case ErrInvalidActor:
+		return "actor must be a non-empty string without NUL characters"
+	case ErrDecode:
+		return fmt.Sprintf("cannot read field `%s` (column \"%s\") of DocType `%s`: %s", e.Field, e.Field, e.DocType, e.Message)
+	case ErrNoChanges:
+		return "update needs at least one changed field"
+	case ErrInvalidDocStatus:
+		return fmt.Sprintf("cannot %s %s `%s`: it is %s", e.Operation, e.DocType, e.Name, e.DocStatus)
+	case ErrNotSubmittable:
+		return fmt.Sprintf("cannot %s: DocType `%s` is not submittable (`submittable = true`)", e.Operation, e.DocType)
+	case ErrFieldLocked:
+		return fmt.Sprintf("%s `%s` is submitted: field `%s` cannot be changed (only fields marked allow_on_submit can; tables are locked)",
+			e.DocType, e.Name, e.Field)
+	case ErrAlreadyAmended:
+		return fmt.Sprintf("%s `%s` was already amended by `%s`", e.DocType, e.Name, e.AmendedBy)
+	case ErrWorkflowRequired:
+		return fmt.Sprintf("DocType `%s` has a workflow; use a transition (cannot %s)", e.DocType, e.Operation)
+	case ErrEditDenied:
+		return fmt.Sprintf("permission denied: a `%s` document in state `%s` can be edited only by the roles of that state", e.DocType, e.State)
+	case ErrJob:
+		return "job: " + e.Message
+	case ErrHook:
+		return fmt.Sprintf("%s hook of DocType `%s` rejected the operation: %s", e.Hook, e.DocType, e.Message)
 	}
 	return "database error"
 }

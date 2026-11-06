@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/db"
 	"github.com/tvstore/forgebase-go/internal/db/dbtest"
 )
@@ -81,10 +82,6 @@ func TestAPlainTableHasNoDocstatusColumns(t *testing.T) {
 }
 
 // Rust: docstatus_schema.rs::making_an_existing_doctype_submittable_adds_the_columns_additively
-//
-// The Rust test reads the document back with get() and expects a draft. Document reads arrive in
-// P2; here the stored row is read with SQL (docstatus 0, amended_from NULL), and the get() part
-// is ported with P2.
 func TestMakingAnExistingDoctypeSubmittableAddsTheColumnsAdditively(t *testing.T) {
 	d := dbtest.Migrated(t)
 	mustSync(t, d, registry(t, plainMemo))
@@ -115,9 +112,11 @@ func TestMakingAnExistingDoctypeSubmittableAddsTheColumnsAdditively(t *testing.T
 		t.Errorf("amended_from: %s", typ)
 	}
 
-	// The document that was there is now a draft.
-	want(t, d.Rows("SELECT docstatus::text, coalesce(amended_from, 'null') FROM doc_memo WHERE name = 'old'"),
-		[][]string{{"0", "null"}}, "the old document")
+	// The document that was there is now a draft, and reads as one.
+	stored := mustGet(t, d, submittable, "memo", "old", sys("cli"))
+	if stored.DocStatus == nil || *stored.DocStatus != core.Draft || stored.AmendedFrom != "" {
+		t.Errorf("%s", describeDoc(stored))
+	}
 	if len(mustSync(t, d, submittable).Steps) != 0 {
 		t.Error("a re-sync did something")
 	}
@@ -140,10 +139,6 @@ func TestADryRunShowsTheAlterStatementsAndChangesNothing(t *testing.T) {
 }
 
 // Rust: docstatus_schema.rs::turning_submittable_off_is_a_warning_and_keeps_the_columns
-//
-// The Rust test ends by inserting a document of the plain DocType through insert() and checking that
-// it has no docstatus; that part needs the document API (P2). Here a row is inserted with SQL: the
-// column has a default, so the plain DocType can still be written.
 func TestTurningSubmittableOffIsAWarningAndKeepsTheColumns(t *testing.T) {
 	d := dbtest.Migrated(t)
 	mustSync(t, d, registry(t, submittableMemo))
@@ -166,9 +161,10 @@ func TestTurningSubmittableOffIsAWarningAndKeepsTheColumns(t *testing.T) {
 		t.Error("the columns are kept")
 	}
 	// Documents of the plain DocType can still be written (the column has a default).
-	d.Exec("INSERT INTO doc_memo (id, name, owner, created_at, modified_at, modified_by, title) " +
-		"VALUES (gen_random_uuid(), 'new', 'ann', now(), now(), 'ann', 'after')")
-	want(t, d.Rows("SELECT docstatus::text FROM doc_memo WHERE name = 'new'"), [][]string{{"0"}}, "default docstatus")
+	stored := mustInsert(t, d, registry(t, plainMemo), "memo", core.Document{}, sys("ann"))
+	if stored.DocStatus != nil {
+		t.Errorf("a plain DocType has no docstatus: %v", *stored.DocStatus)
+	}
 }
 
 // Rust: docstatus_schema.rs::drift_in_the_docstatus_columns_is_a_conflict
