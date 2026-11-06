@@ -6,9 +6,9 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 
 | Module | Licence | Use | Status | Admitted |
 |---|---|---|---|---|
-| `github.com/jackc/pgx/v5` (and its `pgxpool`) | MIT | PostgreSQL driver, pool, TLS configuration | Approved by owner (G2) | P1 |
+| `github.com/jackc/pgx/v5` (and its `pgxpool`) | MIT | PostgreSQL driver, pool, TLS configuration | Approved by owner (G2). **Admitted in P1.2: v5.12.0** (see below) | P1.2 |
 | a decimal library: `github.com/shopspring/decimal` or `github.com/cockroachdb/apd/v3` | MIT or Apache-2.0 | `Decimal` fields (exact, text round-trip) | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): neither; an own `rust_decimal`-compatible type in `internal/decimal` (standard library only), because a parity wrapper would be needed with either** | P1.1 |
-| `github.com/google/uuid` | BSD-3-Clause | UUID values | Approved by owner (G2) | P1 |
+| `github.com/google/uuid` | BSD-3-Clause | UUID values (the v7 `id` of a document is generated in the application) | Approved by owner (G2). Not needed by P1.2 (the schema sync and the framework migrations generate no UUID), so it is admitted with the first document insert | P2 |
 | one TOML library: `github.com/BurntSushi/toml` or `github.com/pelletier/go-toml/v2` | MIT | DocType, overlay and `forgebase.toml` files; **must reject unknown keys** | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): `github.com/BurntSushi/toml` v1.6.0**, decoded into a generic tree with a strict schema decoder | P1.1 |
 | `golang.org/x/crypto` (package `argon2`) | BSD-3-Clause | Argon2id password hashing, m=19456, t=2, p=1 (ADR 0010) | Approved by owner (G2) | P3 |
 
@@ -17,6 +17,30 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 | Module | Version | Licence | Dependencies of its own | Used by | Decision |
 |---|---|---|---|---|---|
 | `github.com/BurntSushi/toml` | v1.6.0 | MIT | none | `internal/core` (DocType, workflow, permission and overlay files) | [ADR 0027](../adr/0027-decimal-and-toml.md) |
+
+**Modules added in P1.2 (`internal/db`).** Licences checked with `go run ./.github/ci/licensecheck` (all on the allow-list).
+
+| Module | Version | Licence | Dependencies of its own | Used by | Decision |
+|---|---|---|---|---|---|
+| `github.com/jackc/pgx/v5` | v5.12.0 | MIT | `pgpassfile`, `pgservicefile`, `puddle/v2`, `golang.org/x/sync`, `golang.org/x/text` (below) | `internal/db`: `pgxpool` (the pool), `pgconn` (server errors with their SQLSTATE), `pgx` (transactions and rows); the test helper `internal/db/dbtest` | G2 of the approved plan. The driver is the one the plan names; the standard library has no PostgreSQL driver. pgx is maintained, has no cgo and is widely used |
+| `github.com/jackc/pgpassfile` | v1.0.0 | MIT | none | pgx (`~/.pgpass` lookup) | transitive |
+| `github.com/jackc/pgservicefile` | v0.0.0-20240606120523-5a60cdf6a761 | MIT | none | pgx (`pg_service.conf` lookup) | transitive |
+| `github.com/jackc/puddle/v2` | v2.2.3 | MIT | `golang.org/x/sync` | pgx (`pgxpool`: the generic resource pool) | transitive |
+| `golang.org/x/sync` | v0.22.0 | BSD-3-Clause | none | pgx, puddle (`errgroup`, `semaphore`) | transitive |
+| `golang.org/x/text` | v0.41.0 | BSD-3-Clause | none | pgx (`pgconn`: SASLprep for SCRAM authentication) | transitive |
+
+**The URL is the only source of connection settings (P1.2).** `tokio-postgres` reads nothing but the URL; `pgx` by default also reads the `PG*` environment variables, `~/.pgpass` (`PGPASSFILE`) and the service file (`PGSERVICE`, `PGSERVICEFILE`), sends every unknown URL key to the server as a run-time parameter, and turns `PGOPTIONS`, `PGTZ` and `PGAPPNAME` into startup parameters. `internal/db` (`url.go`) therefore parses the URL as `tokio-postgres` does (the same keys, `unknown option` for any other, the same value checks; `tokio-postgres` 0.7.18 is the version in the Rust `Cargo.lock`) and gives `pgx` a keyword/value string in which every setting that `pgx` could take elsewhere is set explicitly; the run-time parameters are rebuilt from `options` and `application_name` of the URL alone; no user in the URL means the operating system's user name; `PGSERVICE`, which `pgx` honours and no setting of the connection string can switch off, is **refused** instead (see the first bullet below). A test (`TestTheURLIsTheOnlySourceOfSettings`) sets twenty `PG*` variables and a password and service file and checks that the session is the same as without them. What `pgx` still does differently from `tokio-postgres` after this:
+
+- **Disclosed deviation: `PGSERVICE`.** The Rust implementation ignores `PGSERVICE`; `internal/db.Connect` fails with `ErrCreatePool` ("Forgebase reads the connection settings only from the database URL; unset PGSERVICE") when it is set in the environment, because `pgx` would read the service file and the process environment is not changed to avoid that.
+- **Host lists.** An empty host or a host that contains `,` makes the whole URL fail at connect time, before any host is tried; `tokio-postgres` checks the number of hosts and ports first and then tries the hosts in order, so `postgres://localhost,,/db` connects in Rust and is refused in Go. `keepalives_retries=0` means the operating system's value in Go (Rust sets 0, which Linux refuses), and a `keepalives_idle` above the kernel limit is ignored by Go where Rust fails the connect. Forgebase uses single-host URLs; these differences fail closed or are edge cases.
+- TLS: none until P5 (the URL's `sslmode` is parsed by the Rust scanner and any mode but `disable` is refused); `pgx` defaults to `prefer`, which is forced off.
+- `hostaddr`, `tcp_user_timeout` (above 0) and `load_balance_hosts=random` are refused with an error ("not supported by the Go implementation"); `tokio-postgres` supports them and the Rust implementation never used them.
+- A URL without a password against a server that asks for one: `tokio-postgres` fails with "password missing" before the server answers; `pgx` sends an empty password and the server answers `28P01`.
+- TCP keepalive is configured like `tokio-postgres` (on, idle 2 hours, the URL's `keepalives*` keys; without an interval or retry count the operating system's value is kept).
+- Messages of connection errors differ in wording ("failed to connect to ..." instead of "error connecting to server"); SQLSTATE texts are the same.
+- `pgxpool` pings a connection that was idle for more than a second when it is taken from the pool (`ShouldPing`, default 1 s); deadpool's `Fast` recycling only checks that the connection is not closed.
+- The pool has no connection lifetime or idle limit, like the `deadpool-postgres` default; `pgxpool` would close connections after one hour or 30 idle minutes.
+- `go.sum` also lists, for `go mod tidy`, the test-only modules that pgx's own tests name (`testify`, `go-spew`, `go-difflib`, `yaml.v3`); none is in the build graph of this repository.
 
 `internal/decimal` is part of this module, not a dependency: a `rust_decimal`-compatible fixed-point number on `math/big` and `math/bits` ([ADR 0027](../adr/0027-decimal-and-toml.md)). Evaluated and not chosen: `github.com/shopspring/decimal` (MIT) and `github.com/cockroachdb/apd/v3` (Apache-2.0), both arbitrary-precision, so a parity wrapper for the 28-digit, 96-bit rules would be needed on top; `github.com/pelletier/go-toml/v2` (MIT), equivalent to the chosen TOML library.
 

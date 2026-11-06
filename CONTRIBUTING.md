@@ -54,7 +54,7 @@ The jobs `docker`, `desk`, `e2e`, `sites` and `app-template` of the Rust CI come
 
 ## PostgreSQL for tests
 
-From P1 the integration tests need a PostgreSQL 16 server and a superuser (or `CREATEDB`) URL in `FORGEBASE_TEST_DATABASE_URL`. They **fail with a clear message when it is not set; they never skip.** Each test creates its own `fb_test_*` database and drops it at the end. Later phases also need the PostgreSQL client tools of the server's major version, 16 (`pg_dump`, `pg_restore`; Debian and Ubuntu: `postgresql-client-16`, in `/usr/lib/postgresql/16/bin`).
+From P1 the integration tests need a PostgreSQL 16 server and a superuser (or `CREATEDB`) URL in `FORGEBASE_TEST_DATABASE_URL`. They **fail with a clear message when it is not set; they never skip.** Each test creates its own `fb_test_*` database (helper package `internal/db/dbtest`) and drops it at the end. Later phases also need the PostgreSQL client tools of the server's major version, 16 (`pg_dump`, `pg_restore`; Debian and Ubuntu: `postgresql-client-16`, in `/usr/lib/postgresql/16/bin`).
 
 ```sh
 docker run -d --name forgebase-pg -p 5432:5432 -e POSTGRES_USER=forgebase -e POSTGRES_PASSWORD=forgebase postgres:16
