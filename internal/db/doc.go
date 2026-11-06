@@ -12,6 +12,10 @@
 // Cancel and Amend with links, child tables, lifecycle hooks, naming series and the read scope; the
 // outbox of jobs and webhook deliveries (outbox.go); the JSON form of a document (json.go).
 //
+// Implemented in P2.2: Migrate (migrate_all.go), the framework migrations and the schema sync under
+// one session-level lock, with the report type that the app migrations, schedules and fixtures of
+// later phases fill in.
+//
 // Import direction: db may import internal/core. It must not import internal/httpapi,
 // internal/app or the root package forgebase.
 package db
