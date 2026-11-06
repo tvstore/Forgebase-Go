@@ -1,0 +1,48 @@
+# Example DocType definition. Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "customer"
+label = "Customer"
+naming = { field = "email" }
+
+[[fields]]
+name = "email"
+label = "Email"
+type = "data"
+max_length = 140
+required = true
+unique = true
+
+[[fields]]
+name = "full_name"
+type = "data"
+required = true
+
+[[fields]]
+name = "notes"
+type = "text"
+
+[[fields]]
+name = "loyalty_points"
+type = "int"
+
+[[fields]]
+name = "credit_limit"
+type = "decimal"
+precision = 12
+scale = 2
+
+[[fields]]
+name = "active"
+type = "check"
+
+[[fields]]
+name = "joined_on"
+type = "date"
+
+[[fields]]
+name = "last_seen_at"
+type = "datetime"
+
+[[fields]]
+name = "tier"
+type = "select"
+options = ["standard", "silver", "gold"]

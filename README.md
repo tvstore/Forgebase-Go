@@ -43,7 +43,7 @@ The port has eight phases, then a parity report that compares the Go implementat
 | Phase | Scope (Rust milestone) | Status |
 |---|---|---|
 | P0 | Foundations: the Go module and package skeleton, CI (with `ci-result` failing on drafts), licence check, documentation, [ADR 0026](docs/adr/0026-go-implementation.md) | **In progress** |
-| P1 | Metadata and storage (M1) | Planned |
+| P1 | Metadata and storage (M1): P1.1, the metadata, validation and permission core (`internal/core`, `internal/decimal`), is implemented; the database layer follows | **In progress** |
 | P2 | Relationships and lifecycle (M2) | Planned |
 | P3 | Auth, permissions and the REST API (M3), the minimal desk (M4) and UX, serving the unchanged desk | Planned |
 | P4 | App model and developer experience (M5), the example apps, `forgebase/testing` | Planned |

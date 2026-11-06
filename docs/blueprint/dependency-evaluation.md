@@ -7,10 +7,18 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 | Module | Licence | Use | Status | Admitted |
 |---|---|---|---|---|
 | `github.com/jackc/pgx/v5` (and its `pgxpool`) | MIT | PostgreSQL driver, pool, TLS configuration | Approved by owner (G2) | P1 |
-| a decimal library: `github.com/shopspring/decimal` or `github.com/cockroachdb/apd/v3` | MIT or Apache-2.0 | `Decimal` fields (exact, text round-trip) | Approved by owner (G2); the choice is made in P1 with an ADR | P1 |
+| a decimal library: `github.com/shopspring/decimal` or `github.com/cockroachdb/apd/v3` | MIT or Apache-2.0 | `Decimal` fields (exact, text round-trip) | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): neither; an own `rust_decimal`-compatible type in `internal/decimal` (standard library only), because a parity wrapper would be needed with either** | P1.1 |
 | `github.com/google/uuid` | BSD-3-Clause | UUID values | Approved by owner (G2) | P1 |
-| one TOML library: `github.com/BurntSushi/toml` or `github.com/pelletier/go-toml/v2` | MIT | DocType, overlay and `forgebase.toml` files; **must reject unknown keys** | Approved by owner (G2); the choice is made in P1 | P1 |
+| one TOML library: `github.com/BurntSushi/toml` or `github.com/pelletier/go-toml/v2` | MIT | DocType, overlay and `forgebase.toml` files; **must reject unknown keys** | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): `github.com/BurntSushi/toml` v1.6.0**, decoded into a generic tree with a strict schema decoder | P1.1 |
 | `golang.org/x/crypto` (package `argon2`) | BSD-3-Clause | Argon2id password hashing, m=19456, t=2, p=1 (ADR 0010) | Approved by owner (G2) | P3 |
+
+**Modules in `go.mod` (P1.1).** Each has its licence checked by the `licenses` job.
+
+| Module | Version | Licence | Dependencies of its own | Used by | Decision |
+|---|---|---|---|---|---|
+| `github.com/BurntSushi/toml` | v1.6.0 | MIT | none | `internal/core` (DocType, workflow, permission and overlay files) | [ADR 0027](../adr/0027-decimal-and-toml.md) |
+
+`internal/decimal` is part of this module, not a dependency: a `rust_decimal`-compatible fixed-point number on `math/big` and `math/bits` ([ADR 0027](../adr/0027-decimal-and-toml.md)). Evaluated and not chosen: `github.com/shopspring/decimal` (MIT) and `github.com/cockroachdb/apd/v3` (Apache-2.0), both arbitrary-precision, so a parity wrapper for the 28-digit, 96-bit rules would be needed on top; `github.com/pelletier/go-toml/v2` (MIT), equivalent to the chosen TOML library.
 
 Transitive dependencies of these modules (for example `golang.org/x/sync`, `golang.org/x/text` or `golang.org/x/sys`) are listed here with their licences when they enter `go.sum`; they must pass the same allow-list (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC).
 

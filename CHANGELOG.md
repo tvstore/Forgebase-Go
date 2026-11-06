@@ -8,6 +8,10 @@ This repository is the Go implementation of Forgebase ([ADR 0026](docs/adr/0026-
 
 ### Added
 
+- **P1.1 The core of the Go port (`internal/core`).** The whole of the Rust crate `forgebase-core` is ported: identifier rules, the DocType model and its validation (every rule and every message text of `DefinitionError`), the registry with owners, hooks, jobs, reports and methods, TOML loading of DocTypes, overlays and custom fields, documents and their validation (child tables included), naming series, the workflow definition, the permission evaluator (rights, `if_owner`, field levels, user permissions and the row scope), query report and app method definitions, and lifecycle hooks as an interface with a no-op base struct (`core.BaseHooks`). All 177 Rust unit and integration tests are ported with a `// Rust: file::test` comment each.
+  - New package `internal/decimal`: a `rust_decimal`-compatible fixed-point number (96-bit mantissa, scale 0 to 28, the same accepted text forms, rounding and error messages), tested with the vectors of the `rust_decimal` 1.43.0 test suite.
+  - New dependency: `github.com/BurntSushi/toml` v1.6.0 (MIT, no dependencies of its own); `go.sum` is committed. [ADR 0027](docs/adr/0027-decimal-and-toml.md) records this and the decimal decision.
+  - Known difference: the wording of TOML parse errors (the key is named, no line excerpt for schema errors); every input that Rust refuses is refused.
 - **P0 Foundations of the Go port (ADR 0026).**
   - The Go module `github.com/tvstore/forgebase-go` (`go 1.26.0`, `toolchain go1.27.3`, no dependencies) with the root package `forgebase` (`Version = "0.0.0"`), the `internal/core`, `internal/db`, `internal/httpapi` and `internal/app` packages (documentation only; the import direction is stated in each), and the placeholder package `forgebase/testing`.
   - `forgebase --version` and `forgebase -V` print `forgebase 0.0.0`; any other command prints a usage to standard error and exits with status 2.
