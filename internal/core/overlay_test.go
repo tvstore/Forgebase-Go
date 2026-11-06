@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -356,19 +357,74 @@ func TestACustomFieldMayCarryALevelButStillNotRequired(t *testing.T) {
 }
 
 func TestParseFieldJSONNumbers(t *testing.T) {
-	// A float64 with an integral value is accepted (encoding/json decodes every number to
-	// float64 unless UseNumber is set); a fractional number and a string are refused.
-	if _, err := ParseFieldJSON(map[string]any{"name": "a", "type": "data", "max_length": float64(20)}); err != nil {
-		t.Errorf("integral float: %v", err)
+	decode := func(text string) any {
+		dec := json.NewDecoder(strings.NewReader(text))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
 	}
-	for _, v := range []any{1.5, "20", true} {
+	plain := func(text string) any {
+		var v any
+		if err := json.Unmarshal([]byte(text), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	// Integers: accepted as json.Number and as Go ints.
+	if _, err := ParseFieldJSON(decode(`{"name":"a","type":"data","max_length":20,"perm_level":1}`)); err != nil {
+		t.Errorf("integers: %v", err)
+	}
+	// Floats are refused for integer keys, through UseNumber and through plain Unmarshal (float64).
+	for _, key := range []string{"max_length", "perm_level"} {
+		for _, num := range []string{"5.0", "1e2", "1.5", "-0"} {
+			text := `{"name":"a","type":"data","` + key + `":` + num + `}`
+			for label, v := range map[string]any{"UseNumber": decode(text), "float64": plain(text)} {
+				_, err := ParseFieldJSON(v)
+				if overlayKind(err) != OverlayParse || !strings.Contains(err.Error(), "invalid type: floating point") {
+					t.Errorf("%s %s=%s: %v", label, key, num, err)
+				}
+			}
+		}
+	}
+	if _, err := ParseFieldJSON(decode(`{"name":"a","type":"data","max_length":-0}`)); err == nil || !strings.Contains(err.Error(), "floating point `-0.0`, expected u32") {
+		t.Errorf("-0 message: %v", err)
+	}
+	if _, err := ParseFieldJSON(map[string]any{"name": "a", "type": "int", "perm_level": math.Copysign(0, -1)}); err == nil || !strings.Contains(err.Error(), "floating point `-0.0`, expected i64") {
+		t.Errorf("float64 -0 message: %v", err)
+	}
+	_, err := ParseFieldJSON(decode(`{"name":"a","type":"data","max_length":5.0}`))
+	if err == nil || !strings.Contains(err.Error(), "floating point `5.0`, expected u32") {
+		t.Errorf("message: %v", err)
+	}
+	for _, v := range []any{"20", true} {
 		if _, err := ParseFieldJSON(map[string]any{"name": "a", "type": "data", "max_length": v}); overlayKind(err) != OverlayParse {
 			t.Errorf("max_length %v: %v", v, err)
 		}
 	}
-	// A JSON null is "absent" for an optional key, like serde's Option.
-	if _, err := ParseFieldJSON(map[string]any{"name": "a", "type": "int", "label": nil}); err != nil {
-		t.Errorf("null label: %v", err)
+	// A JSON null is absent only for an Option field of the Rust struct (label, max_length,
+	// precision, scale, options, target); for the others serde refuses it.
+	for _, key := range []string{"label", "max_length", "target"} {
+		text := `{"name":"a","type":"data","` + key + `":null}`
+		if _, err := ParseFieldJSON(decode(text)); err != nil {
+			t.Errorf("null %s: %v", key, err)
+		}
+	}
+	if _, err := ParseFieldJSON(decode(`{"name":"a","type":"select","options":null}`)); overlayKind(err) != OverlayInvalid {
+		t.Errorf("null options is absent, so a select lacks them: %v", err)
+	}
+	for key, want := range map[string]string{
+		"required": "expected a boolean", "unique": "expected a boolean", "allow_on_submit": "expected a boolean",
+		"read_only": "expected a boolean", "perm_level": "expected i64", "name": "expected a string", "type": "expected a string",
+	} {
+		v := map[string]any{"name": "a", "type": "int"}
+		v[key] = nil
+		_, err := ParseFieldJSON(v)
+		if overlayKind(err) != OverlayParse || !strings.Contains(err.Error(), "invalid type: null, "+want) {
+			t.Errorf("null %s: %v", key, err)
+		}
 	}
 	if _, err := ParseFieldJSON("not an object"); overlayKind(err) != OverlayParse {
 		t.Errorf("not an object: %v", err)

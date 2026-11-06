@@ -22,7 +22,14 @@ func TestAHookEnqueuesIntoTheCollectorInOrder(t *testing.T) {
 	if len(taken) != 2 || taken[0].Name() != "crm.welcome" || taken[1].Name() != "crm.audit" {
 		t.Fatalf("taken = %v", taken)
 	}
-	sameValue(t, taken[0].Payload(), map[string]any{"n": 1}, "payload")
+	sameValue(t, string(taken[0].Payload()), `{"n":1}`, "payload")
+	// The payload is serialized when it is enqueued: a later change has no effect.
+	m := map[string]any{"n": 1}
+	if err := ctx.Enqueue("crm.x", m); err != nil {
+		t.Fatal(err)
+	}
+	m["n"] = 2
+	sameValue(t, string(jobs.Take()[0].Payload()), `{"n":1}`, "payload after mutation")
 	if len(jobs.Take()) != 0 {
 		t.Error("take leaves the collector empty")
 	}

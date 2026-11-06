@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -35,7 +36,7 @@ func describe(v any) string {
 	case int64:
 		return fmt.Sprintf("integer `%d`", x)
 	case float64:
-		return fmt.Sprintf("floating point `%v`", x)
+		return "floating point `" + formatFloat(x) + "`"
 	case bool:
 		return fmt.Sprintf("boolean `%v`", x)
 	case nil:
@@ -46,6 +47,15 @@ func describe(v any) string {
 		return "sequence"
 	}
 	return fmt.Sprintf("%T", v)
+}
+
+// formatFloat prints a float like serde does in "invalid type" messages (5.0, 1.5, 100.0).
+func formatFloat(f float64) string {
+	s := strconv.FormatFloat(f, 'g', -1, 64) // -0 formats as "-0"
+	if !strings.ContainsAny(s, ".eEIN") {
+		s += ".0"
+	}
+	return s
 }
 
 func newDecoder(path string, v any, allowed ...string) *decoder {
@@ -100,13 +110,19 @@ func (d *decoder) fail(format string, args ...any) {
 	d.err = msg
 }
 
-// get returns the value of key, and whether it is present (a JSON null counts as absent, like
-// serde's Option).
+// get returns the value of key, and whether it is present. A JSON null is present (as nil): for
+// a field that is not an Option in the Rust struct, serde refuses it ("invalid type: null").
 func (d *decoder) get(key string) (any, bool) {
 	if d.err != "" {
 		return nil, false
 	}
 	v, ok := d.m[key]
+	return v, ok
+}
+
+// getOpt is get for an Option<T> field of the Rust struct: a JSON null counts as absent.
+func (d *decoder) getOpt(key string) (any, bool) {
+	v, ok := d.get(key)
 	if !ok || v == nil {
 		return nil, false
 	}
@@ -129,7 +145,7 @@ func (d *decoder) reqString(key string) string {
 }
 
 func (d *decoder) optString(key string) *string {
-	v, ok := d.get(key)
+	v, ok := d.getOpt(key)
 	if !ok {
 		return nil
 	}
@@ -179,7 +195,7 @@ func (d *decoder) reqInteger(key string) int64 {
 
 // optUint is an optional unsigned integer key that must fit in bits bits.
 func (d *decoder) optUint(key string, bits uint, typeName string) *uint64 {
-	v, ok := d.get(key)
+	v, ok := d.getOpt(key)
 	if !ok {
 		return nil
 	}
@@ -210,10 +226,15 @@ func asSlice(v any) ([]any, bool) {
 	return nil, false
 }
 
-// stringList is an optional list of strings; present is false when the key is absent. A present
-// list is never nil (an empty one is empty).
-func (d *decoder) stringList(key string) (list []string, present bool) {
-	v, ok := d.get(key)
+// stringList is a list of strings (option: the Rust field is an Option, so a JSON null is
+// absent); present is false when the key is absent. A present list is never nil (an empty one is
+// empty).
+func (d *decoder) stringList(key string, option bool) (list []string, present bool) {
+	get := d.get
+	if option {
+		get = d.getOpt
+	}
+	v, ok := get(key)
 	if !ok {
 		return nil, false
 	}
@@ -319,7 +340,7 @@ func decodeDocType(root any) (*rawDocType, string) {
 	raw := &rawDocType{}
 	raw.name = d.reqString("name")
 	raw.label = d.reqString("label")
-	if v, ok := d.get("naming"); ok {
+	if v, ok := d.getOpt("naming"); ok {
 		raw.naming, raw.hasNaming = v, true
 	}
 	raw.isChild = d.boolean("is_child")
@@ -341,9 +362,9 @@ func decodeDocType(root any) (*rawDocType, string) {
 		raw.permissions = append(raw.permissions, *p)
 	}
 	raw.titleField = d.optString("title_field")
-	raw.listFields, raw.hasList = d.stringList("list_fields")
+	raw.listFields, raw.hasList = d.stringList("list_fields", true)
 	raw.icon = d.optString("icon")
-	if v, ok := d.get("workflow"); ok {
+	if v, ok := d.getOpt("workflow"); ok {
 		w, msg := decodeWorkflow("workflow", v)
 		if msg != "" {
 			d.fail("%s", msg)
@@ -362,7 +383,7 @@ func decodeWorkflow(path string, v any) (*rawWorkflow, string) {
 		s.name = sd.reqString("name")
 		s.docstatus = sd.reqInteger("docstatus")
 		s.style = sd.optString("style")
-		s.editRoles, _ = sd.stringList("edit_roles")
+		s.editRoles, _ = sd.stringList("edit_roles", false)
 		if sd.err != "" {
 			d.fail("%s", sd.err)
 			break
@@ -375,7 +396,7 @@ func decodeWorkflow(path string, v any) (*rawWorkflow, string) {
 		t.action = td.reqString("action")
 		t.from = td.reqString("from")
 		t.to = td.reqString("to")
-		t.roles, _ = td.stringList("roles")
+		t.roles, _ = td.stringList("roles", false)
 		if td.err != "" {
 			d.fail("%s", td.err)
 			break
@@ -426,7 +447,7 @@ func decodeRawField(path string, v any) (*rawField, string) {
 		u := uint8(*n)
 		f.scale = &u
 	}
-	f.options, f.hasOptions = d.stringList("options")
+	f.options, f.hasOptions = d.stringList("options", true)
 	f.target = d.optString("target")
 	return f, d.err
 }
@@ -766,16 +787,23 @@ func fieldFromTOMLString(text string) (DocField, error) {
 }
 
 // normalizeJSON turns the numbers of a decoded JSON tree into int64 when they are integers (a
-// json.Number without a fraction or exponent, any Go integer, a float64 with an integral value) and
-// float64 otherwise, so that the decoder sees what a TOML tree has.
+// json.Number without a fraction or exponent, any Go integer) and float64 otherwise (a float64, or
+// a json.Number such as 5.0 or 1e2), so that the decoder sees what a TOML tree has and refuses a
+// float where serde_json refuses it.
 func normalizeJSON(v any) any {
 	switch x := v.(type) {
 	case json.Number:
-		if n, err := x.Int64(); err == nil {
-			return n
+		// serde_json reads a number with a fraction or an exponent (5.0, 1e2) as a float.
+		// JSON -0 is a float too (serde_json: "convert into a float on -0").
+		if !strings.ContainsAny(string(x), ".eE") && string(x) != "-0" {
+			if n, err := x.Int64(); err == nil {
+				return n
+			}
 		}
 		f, _ := x.Float64()
 		return f
+	case float64:
+		return x // never converted to an integer; -0 stays a float
 	case int:
 		return int64(x)
 	case int32:
@@ -784,11 +812,6 @@ func normalizeJSON(v any) any {
 		return int64(x)
 	case uint32:
 		return int64(x)
-	case float64:
-		if x == math.Trunc(x) && math.Abs(x) < 1<<53 {
-			return int64(x)
-		}
-		return x
 	case map[string]any:
 		m := make(map[string]any, len(x))
 		for k, item := range x {

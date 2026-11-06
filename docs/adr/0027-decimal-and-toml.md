@@ -15,7 +15,7 @@ The Rust implementation uses the `toml` crate 1.1.8 (TOML spec 1.1.0, `Cargo.loc
 
 **How it is used.** The text is decoded into a generic tree (`map[string]any`) and the schema of the Rust serde structs is applied by a small strict decoder in `internal/core/load.go`: exact key names (no other keys: `deny_unknown_fields` at every level), the value types, the defaults, the integer ranges (`u8`, `u32`, `i64`), a JSON `null` as an absent optional. The proposed `MetaData.Undecoded()` approach is **not** used, because BurntSushi matches struct field names **case-insensitively**: `NAME = "x"` decodes into a field called `Name` and is not reported as undecoded (verified), whereas serde rejects it. Decoding into structs would therefore accept files that Rust refuses.
 
-**What differs from Rust.** The parse-error text. The `toml` crate prints "TOML parse error at line 3, column 1" with an excerpt; BurntSushi's syntax errors have their own wording, and the schema errors (unknown key, missing key, wrong type, out of range) are produced by the decoder in serde's words without the line number: ``fields[1]: unknown field `extra`, expected one of `name`, `label`, ...``. Every input that Rust refuses as a parse error is refused (this is tested case by case), the error is a `MetaError` of kind `MetaParse` as in Rust, and the message begins with the same `cannot parse doctype definition:`. Nothing parses the text of the message. A caller that needs line numbers for a syntax error gets them from BurntSushi's own message.
+**What differs from Rust (to be listed in the parity report).** The parse-error text. The `toml` crate prints "TOML parse error at line 3, column 1" with an excerpt; BurntSushi's syntax errors have their own wording, and the schema errors (unknown key, missing key, wrong type, out of range) are produced by the decoder in serde's words without the line number: ``fields[1]: unknown field `extra`, expected one of `name`, `label`, ...``. Every input that Rust refuses as a parse error is refused (this is tested case by case), the error is a `MetaError` of kind `MetaParse` as in Rust, and the message begins with the same `cannot parse doctype definition:`. Nothing parses the text of the message. A caller that needs line numbers for a syntax error gets them from BurntSushi's own message.
 
 ### Decimal: an own type in `internal/decimal`, no dependency
 
@@ -23,12 +23,12 @@ The values must behave exactly like `rust_decimal` 1.43.0 (the version in `Cargo
 
 | Behaviour | `rust_decimal` 1.43.0 |
 |---|---|
-| Representation | 96-bit unsigned mantissa (up to 79 228 162 514 264 337 593 543 950 335), a scale 0 to 28, a sign; zero is never negative |
+| Representation | 96-bit unsigned mantissa (up to 79 228 162 514 264 337 593 543 950 335), a scale 0 to 28, a sign; zero is not negative, except for one case below |
 | Accepted text (`FromStr`) | optional leading `+` or `-`; digits with at most one `.` (`.5`, `5.` are fine, `.` alone is not); `_` separators after a first digit (`1_000`, `1._5`); no whitespace, no `inf`/`NaN`; exponent forms `1e3`, `1.2E-5`, `-2.5e+3` through `from_scientific_lossy` when the plain parse fails and the text has an `e` or `E` |
 | More than 28 fractional digits | **rounded**, not an error: half up on the 29th digit (`1.234567890123456789012345678949999` gives `...6789`), the rest of the text must still be valid |
 | Mantissa beyond 96 bits | with a fractional part: the same rounding at the digit that would overflow (a carry that overflows again is an error, `overflow from mantissa after rounding`); without one: the error `Invalid decimal: overflow from too many digits` |
 | Exponent forms | an exponent above 28 is the error `Scale exceeds the maximum precision allowed: N > 28`; a negative exponent that would pass scale 28 rounds the mantissa; a positive exponent multiplies the mantissa and strips trailing zeros (`1e3` is `1000`, `1.50e1` is `15.0`); `12345E28` is `Number exceeds maximum value that can be represented.` |
-| `Display` | the scale is kept: `12.50` stays `12.50`, `0.00` stays `0.00`, `-0` and `-0.00` print without the sign (`0`, `0.00`), `1e3` prints `1000` |
+| `Display` | the scale is kept: `12.50` stays `12.50`, `0.00` stays `0.00`, `-0` and `-0.00` (plain forms) print without the sign (`0`, `0.00`), but an exponent form whose mantissa rounds to zero keeps it: `-0.1e-28` and `-0.4e-28` print `-0.0000000000000000000000000000`; `1e3` prints `1000` |
 | Equality and order | numeric: `1.0 == 1.00`, `-0 == 0` |
 | Errors | `Invalid decimal: empty`, `no digits found`, `two decimal points`, `unknown character`, `must start lead with a number`, `Failed to parse` (a bad exponent) |
 
@@ -36,7 +36,7 @@ An own type on `math/bits` and `math/big` (about 500 lines: `internal/decimal/de
 
 **Test vectors** are taken from `rust_decimal` itself: `tests/decimal_tests.rs` (the parse, scientific, rounding and underscore tests) and the tests of `src/str.rs` (the rounding position, the overflow and the edge cases), each Go test names its source. `internal/decimal/decimal_test.go` has over a hundred vector entries.
 
-**Known limits of the Go type.** Only what Forgebase uses is implemented: parse, `String`, `Scale`, comparison, `Normalize`, `Neg`, `New`, `FromInt`, `Mantissa`. There is no arithmetic (the core does none). One corner of the exponent parse is approximated: a positive exponent whose product needs more than 96 bits while the value has a fraction (`1.2345678901234567890123456789e20`) drops the fractional digits that do not fit with round-half-to-even; `rust_decimal` does the same through a different digit estimate and could differ in the last digit. Such input is an error in all but the most contrived cases.
+**Known limits of the Go type.** Only what Forgebase uses is implemented: parse, `String`, `Scale`, comparison, `Normalize`, `Neg`, `New`, `FromInt`, `Mantissa`. There is no arithmetic (the core does none). The multiplication of a positive exponent is exact: a product above 96 bits is only possible with a fraction, and then only trailing zeros are dropped (`1.1e28` is `11000000000000000000000000000`), exactly as in `rust_decimal`; a product that does not fit even then is the error `Number exceeds maximum value that can be represented.` (`12345E28`).
 
 ### Dates and times
 

@@ -94,6 +94,15 @@ const MaxJobPayloadBytes = 64 * 1024
 // MaxJobPayloadBytes of serialized JSON, and no string with a NUL character (PostgreSQL jsonb cannot
 // store one). It returns the reason when refused, "" when the payload is fine.
 func CheckJobPayload(payload any) string {
+	_, reason := marshalPayload(payload)
+	return reason
+}
+
+// marshalPayload serializes a payload to compact JSON (HTML escaping off, like serde_json) and
+// checks it. Note that encoding/json writes U+2028 and U+2029 as six-byte escapes where serde_json
+// writes them as three raw bytes, so a payload full of those characters counts a little larger near
+// the 64 KiB limit than in Rust.
+func marshalPayload(payload any) (json.RawMessage, string) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -102,15 +111,16 @@ func CheckJobPayload(payload any) string {
 		size = buf.Len() - 1 // Encode appends a newline
 	}
 	if size < 0 || size > MaxJobPayloadBytes {
-		return fmt.Sprintf("the job payload is larger than %d bytes of JSON", MaxJobPayloadBytes)
+		return nil, fmt.Sprintf("the job payload is larger than %d bytes of JSON", MaxJobPayloadBytes)
 	}
-	dec := json.NewDecoder(&buf)
+	raw := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var generic any
 	if err := dec.Decode(&generic); err == nil && hasNul(generic) {
-		return "the job payload contains a NUL character"
+		return nil, "the job payload contains a NUL character"
 	}
-	return ""
+	return json.RawMessage(append([]byte(nil), raw...)), ""
 }
 
 func hasNul(v any) bool {
@@ -146,14 +156,15 @@ func containsNul(s string) bool {
 // document change.
 type EnqueuedJob struct {
 	name    string
-	payload any
+	payload json.RawMessage
 }
 
 // Name is the full job name, <app>.<job>.
 func (j EnqueuedJob) Name() string { return j.name }
 
-// Payload is the payload.
-func (j EnqueuedJob) Payload() any { return j.payload }
+// Payload is the payload as the JSON text it was serialized to when it was enqueued (a
+// json.RawMessage); unmarshal it into what the job handler expects.
+func (j EnqueuedJob) Payload() json.RawMessage { return j.payload }
 
 // EnqueuedJobs collects the jobs that the hooks of one operation enqueue. internal/db makes one per
 // operation, gives it to every hook call through HookContext.WithJobs and, after the hooks and
@@ -279,16 +290,20 @@ func (c HookContext) Equal(o HookContext) bool {
 // fails the whole operation when the job is written. Never put secrets in a payload: it is stored
 // in clear text.
 //
+// The payload is serialized to JSON when Enqueue is called, so changing the value afterwards has
+// no effect on the job (in Rust the payload is moved).
+//
 // It fails if the payload is larger than MaxJobPayloadBytes bytes of JSON, or when this context has
 // no collector (a context made by NewHookContext in a test: add one with WithJobs).
 func (c HookContext) Enqueue(name string, payload any) error {
 	if c.jobs == nil {
 		return NewHookError("jobs cannot be enqueued here: this HookContext has no job collector (use HookContext::with_jobs in a test)")
 	}
-	if reason := CheckJobPayload(payload); reason != "" {
+	raw, reason := marshalPayload(payload)
+	if reason != "" {
 		return NewHookError(reason)
 	}
-	c.jobs.push(EnqueuedJob{name: name, payload: payload})
+	c.jobs.push(EnqueuedJob{name: name, payload: raw})
 	return nil
 }
 
@@ -334,7 +349,8 @@ type DocTypeHooks interface {
 	Validate(ctx HookContext, doc *Document) error
 
 	// BeforeDelete runs before a document is deleted. doc is a read-only view of the stored
-	// document, including its table rows: do not change it.
+	// document, including its table rows: do not change it. (Rust passes a shared reference; Go
+	// cannot enforce that, so the pipeline ignores any change a hook makes to doc.)
 	BeforeDelete(ctx HookContext, doc *Document) error
 
 	// BeforeSubmit runs when a draft is submitted, after Validate. doc is the whole stored
@@ -345,7 +361,8 @@ type DocTypeHooks interface {
 	BeforeSubmit(ctx HookContext, doc *Document) error
 
 	// BeforeCancel runs before a submitted document is cancelled. doc is a read-only view of the
-	// stored document, including its table rows (like BeforeDelete: a veto, not a modification).
+	// stored document, including its table rows (like BeforeDelete: a veto, not a modification;
+	// the pipeline ignores any change a hook makes to doc).
 	BeforeCancel(ctx HookContext, doc *Document) error
 
 	// BeforeTransition runs when a document of a DocType with a workflow takes a transition (M8.1,

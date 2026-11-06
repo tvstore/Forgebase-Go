@@ -102,8 +102,13 @@ func ParseOverlay(text string) ([]DocField, error) { return overlayFromTOMLStrin
 func ParseFieldTOML(text string) (DocField, error) { return fieldFromTOMLString(text) }
 
 // ParseFieldJSON parses one field written as a JSON object with the keys of a TOML [[fields]]
-// table. value is what encoding/json decodes into an any (a map[string]any); integers may be
-// json.Number (decode with UseNumber), int, int64 or a float64 with an integral value.
+// table. value is a map[string]any as encoding/json decodes it, but decode with
+// json.Decoder.UseNumber: integers must be json.Number (without a fraction or exponent), int or
+// int64. A float64, or a json.Number such as 5.0 or 1e2, is a float and is refused for an integer
+// key, as serde_json does; plain json.Unmarshal decodes every number to float64 and so cannot be
+// used. A JSON null is "absent" for an optional key (label, max_length, precision, scale, options,
+// target) and an error for the others (required, unique, allow_on_submit, read_only, perm_level,
+// name, type).
 func ParseFieldJSON(value any) (DocField, error) { return fieldFromJSON(value) }
 
 // FieldToJSON is the field as the JSON object that ParseFieldJSON reads back (what a site stores):
