@@ -100,6 +100,13 @@ func TestParsesScientificNotation(t *testing.T) {
 		{"2.710505431213761e-20", "0.0000000000000000000271050543"},
 		{"2.5e-28", "0.0000000000000000000000000003"},
 		{"-2.5e-28", "-0.0000000000000000000000000003"},
+		// rust_decimal keeps the sign when the mantissa rounds to zero (rescale keeps the flags).
+		{"-0.1e-28", "-0.0000000000000000000000000000"},
+		{"-0.4e-28", "-0.0000000000000000000000000000"},
+		{"-0.5e-28", "-0.0000000000000000000000000001"},
+		{"0.4e-28", "0.0000000000000000000000000000"},
+		// a product above 96 bits with a fraction: only the trailing zero is dropped (exact)
+		{"1.1e28", "11000000000000000000000000000"},
 		// The HTTP JSON header: "1e3"
 		{"1e3", "1000"},
 		// exponent not above the scale: only the scale moves, trailing zeros stay
@@ -347,6 +354,9 @@ func TestNormalizeAndCompare(t *testing.T) {
 	}
 	if got := mustParse(t, "0.000").Normalize(); got != (Decimal{}) {
 		t.Errorf("normalize 0.000: %v", got)
+	}
+	if d := mustParse(t, "-0.4e-28"); !d.IsNegative() || !d.IsZero() || !d.Equal(Decimal{}) {
+		t.Errorf("negative zero of an exponent form: %v", d)
 	}
 	eq := [][2]string{{"1.0", "1.00"}, {"0", "0.000"}, {"-0", "0"}, {"1e3", "1000"}}
 	for _, p := range eq {

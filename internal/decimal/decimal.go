@@ -22,7 +22,8 @@ const MaxScale = 28
 const maxHi = 1 << 32
 
 // Decimal is a signed fixed-point number: (-1)^neg * mantissa / 10^scale, mantissa < 2^96.
-// A zero mantissa is never negative.
+// A zero mantissa is not negative, with one exception that rust_decimal has too: a negative
+// exponent form that rounds to zero ("-0.4e-28") keeps its sign and prints with a "-".
 type Decimal struct {
 	lo, hi uint64
 	scale  uint8
@@ -106,7 +107,8 @@ func (d Decimal) Scale() uint32 { return uint32(d.scale) }
 // IsZero reports whether the value is 0 (of any scale).
 func (d Decimal) IsZero() bool { return d.mantissa().isZero() }
 
-// IsNegative reports whether the value is below zero (zero is never negative).
+// IsNegative reports whether the sign flag is set: the value is below zero, or it is the zero of
+// an exponent form that rounded to zero ("-0.4e-28"). Every other zero is not negative.
 func (d Decimal) IsNegative() bool { return d.neg }
 
 // Mantissa is the signed mantissa (Decimal::mantissa).
@@ -438,7 +440,10 @@ func parseScientificLossy(s string) (Decimal, error) {
 		}
 		if cur+e > MaxScale {
 			m := rescaleDown(ret.mantissa().big(), uint(cur), uint(MaxScale-e))
-			ret = build(fromBig(m), MaxScale, ret.neg)
+			// rescale and set_scale keep the sign flag, so a mantissa that rounds to zero stays
+			// negative ("-0.4e-28" prints as -0.0000000000000000000000000000), like rust_decimal.
+			m128 := fromBig(m)
+			ret = Decimal{lo: m128.lo, hi: m128.hi, scale: MaxScale, neg: ret.neg}
 		} else {
 			ret.scale = uint8(cur + e)
 		}

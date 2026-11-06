@@ -1397,8 +1397,10 @@ func (r *Registry) AddHooks(doctype string, hooks DocTypeHooks) error {
 }
 
 // Hooks are the hook sets registered for a DocType, in registration order (empty when there are none
-// or the DocType is unknown).
-func (r *Registry) Hooks(doctype string) []DocTypeHooks { return r.hooks[doctype] }
+// or the DocType is unknown). The slice is clipped: appending to it never changes the registry.
+func (r *Registry) Hooks(doctype string) []DocTypeHooks {
+	return slices.Clip(r.hooks[doctype])
+}
 
 // CheckReferences checks that the DocTypes of this registry fit together. It returns every problem
 // found (nil when all is well):
