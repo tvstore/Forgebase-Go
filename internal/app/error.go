@@ -44,6 +44,12 @@ func isUsage(err error) bool {
 
 // describeError is the text printed after "error: ".
 func describeError(err error) string {
+	// A user, role or token error prints as it is, a database error inside it too (Rust
+	// CliError::Auth is transparent).
+	var ae *db.AuthError
+	if errors.As(err, &ae) {
+		return ae.Error()
+	}
 	var dbe *db.Error
 	if errors.As(err, &dbe) {
 		return describeDB(dbe)

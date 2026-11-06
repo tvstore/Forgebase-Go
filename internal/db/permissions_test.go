@@ -15,9 +15,9 @@ import (
 // if_owner, deny by default, the union of roles, hidden documents that look missing (also for stale
 // versions and links), and what errors may say. Ported from crates/forgebase-db/tests/permissions.rs.
 //
-// Deferred, with the phase that has what they need: the calls to list (P3), the export and import
-// rights of the matrix and the export, transition and available_transitions parts of
-// the_matrix_with_user_permissions (P3, P6 and P7). Each place says so.
+// Deferred, with the phase that has what they need: the export and import rights of the matrix (P7)
+// and the export, transition and available_transitions parts of the_matrix_with_user_permissions (P6
+// and P7). Each place says so. The calls to list are ported (P3).
 
 // permTicket is submittable, one role per right (each also reads), and Own, which has every right
 // on own documents only. A Link to party in the document and in its rows.
@@ -261,8 +261,8 @@ func attempt(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Right, c
 		return err
 	}
 	// Export and import are rights of a file, not of one document: the Rust test calls the export
-	// and the import here; they arrive with P3 and P7.
-	t.Fatalf("right %v is not an operation of this matrix (export and import are P3 and P7)", right)
+	// and the import here; they arrive with P7.
+	t.Fatalf("right %v is not an operation of this matrix (export and import are P7)", right)
 	return nil
 }
 
@@ -348,7 +348,7 @@ func TestARuleOfAFieldLevelGrantsNoDocumentRight(t *testing.T) {
 // Rust: permissions.rs::administrator_and_the_system_context_bypass_every_rule
 func TestAdministratorAndTheSystemContextBypassEveryRule(t *testing.T) {
 	d, reg := permSetup(t)
-	// The seven rights of the matrix; export and import are P3 and P7.
+	// The seven rights of the matrix; export and import are P7.
 	for _, c := range roleOf {
 		for _, caller := range []core.Caller{admin(), sys("sys"), user("u", "Nobody", core.Administrator)} {
 			if err := attempt(t, d, reg, c.right, caller); err != nil {
@@ -363,8 +363,6 @@ func TestAdministratorAndTheSystemContextBypassEveryRule(t *testing.T) {
 }
 
 // Rust: permissions.rs::a_doctype_without_rules_is_denied_to_users_and_open_to_administrator_and_system
-//
-// The two calls to list are ported with P3.
 func TestADoctypeWithoutRulesIsDeniedToUsersAndOpenToAdministratorAndSystem(t *testing.T) {
 	d, reg := permSetup(t)
 	made := mustInsert(t, d, reg, "secret", doc("body", text("s")), admin())
@@ -374,6 +372,10 @@ func TestADoctypeWithoutRulesIsDeniedToUsersAndOpenToAdministratorAndSystem(t *t
 		t.Error(err)
 	}
 	_, err = db.Get(bg, d.Pool, reg, "secret", made.Name, nobody)
+	if !isDenied(err, "secret", core.RightRead) {
+		t.Error(err)
+	}
+	_, err = db.List(bg, d.Pool, reg, "secret", nobody, db.ListQuery{})
 	if !isDenied(err, "secret", core.RightRead) {
 		t.Error(err)
 	}
@@ -389,6 +391,9 @@ func TestADoctypeWithoutRulesIsDeniedToUsersAndOpenToAdministratorAndSystem(t *t
 	}
 	if got, err := db.Get(bg, d.Pool, reg, "secret", made.Name, admin()); err != nil || got == nil {
 		t.Errorf("%v %v", got, err)
+	}
+	if listed, err := db.List(bg, d.Pool, reg, "secret", admin(), db.ListQuery{}); err != nil || len(listed) != 1 {
+		t.Errorf("%v %v", listed, err)
 	}
 }
 
@@ -979,8 +984,8 @@ func TestABeforeSubmitHookCannotLinkToAnUnreadableDocument(t *testing.T) {
 // ---- the matrix with user permissions (M10.3, ADR 0025) ----------------------------------------
 
 // attemptLinked is a ticket made by the system with this Link ("" for none), moved to the state right
-// needs, then right attempted by caller: the result of the attempt only. (The Rust read also lists
-// the ticket and checks that get and list agree; list is P3.)
+// needs, then right attempted by caller: the result of the attempt only (a list counts as a read of
+// that one ticket).
 func attemptLinked(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Right, caller core.Caller, customer string) error {
 	t.Helper()
 	document := doc("title", text("m"))
@@ -997,9 +1002,17 @@ func attemptLinked(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Ri
 	}
 	switch right {
 	case core.RightRead:
+		// Both paths: get, and the page of a list that finds the ticket by its name.
 		got, err := db.Get(bg, d.Pool, reg, "ticket", name, caller)
 		if err != nil {
 			return err
+		}
+		listed, err := db.List(bg, d.Pool, reg, "ticket", caller, db.ListQuery{Filters: []db.Filter{f("name", db.Eq(text(name)))}})
+		if err != nil {
+			return err
+		}
+		if (got != nil) != (len(listed) == 1) {
+			t.Errorf("get and list disagree: %v and %d documents", got != nil, len(listed))
 		}
 		if got == nil {
 			return &db.Error{Kind: db.ErrNotFound, DocType: "ticket", Name: name}
@@ -1031,8 +1044,8 @@ func attemptLinked(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Ri
 // NotFound for every operation (before the right, the version or the state), a visible one behaves as
 // without the restriction, and the Administrator and the system ignore the rows.
 //
-// Not ported here: the workflow transition, available_transitions and export on agent_case (P6, P3
-// and P7); the get-and-list agreement of the read (P3).
+// Not ported here: the workflow transition and available_transitions on agent_case (P6) and the
+// export (P7).
 func TestTheMatrixWithUserPermissions(t *testing.T) {
 	d, reg := permSetup(t)
 	makeParty(t, d, reg, "ok@x.y", sys("sys"))

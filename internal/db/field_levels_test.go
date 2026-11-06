@@ -16,12 +16,13 @@ import (
 // field does not exist at all), that hidden data survives an update by a lower-level user, hooks,
 // if_owner and the leak review. Ported from crates/forgebase-db/tests/field_levels.rs.
 //
-// Deferred, with the phase that has what they need: every call to list, summary, export and the saved
-// views (P3 and P6, tests hidden_fields_are_unknown_to_filters_sort_summary_and_export_with_identical_errors,
+// Deferred, with the phase that has what they need: summary (P6), export (P7) and the saved views (P6;
+// the group-by and aggregate parts of
+// hidden_fields_are_unknown_to_filters_sort_summary_and_export_with_identical_errors, the tests
 // export_leaves_out_hidden_fields_and_refuses_them_as_unknown and
 // a_saved_view_on_a_hidden_field_is_unknown_and_hidden_from_the_list) and the transition (P6, test
-// a_transition_returns_a_redacted_document_and_takes_no_field_input). The tests that mix them with
-// get, insert or update are ported without the deferred calls; each says so.
+// a_transition_returns_a_redacted_document_and_takes_no_field_input). The calls to list are ported
+// (P3); each test that mixes the deferred calls with the others says so.
 
 // flAccount is the account: credit_limit (level 1), vault_code (level 2, no rule names it), a table
 // ledger at level 1, a unique internal_ref and a Link partner at level 1. Without withLevels it
@@ -279,6 +280,20 @@ func (e *flEnv) update(doctype string, stored *db.StoredDocument, c core.Changes
 	return db.Update(bg, e.d.Pool, e.reg, doctype, stored.Name, stored.Version, c, who)
 }
 
+func (e *flEnv) list(who core.Caller, query db.ListQuery) ([]*db.StoredDocument, error) {
+	return db.List(bg, e.d.Pool, e.reg, "account", who, query)
+}
+
+// listIn is list on another registry (the reference of an unknown field).
+func (e *flEnv) listIn(reg *core.Registry, who core.Caller, query db.ListQuery) ([]*db.StoredDocument, error) {
+	return db.List(bg, e.d.Pool, reg, "account", who, query)
+}
+
+// flQueryFilter is a list query that filters field = 500.
+func flQueryFilter(field string) db.ListQuery {
+	return db.ListQuery{Filters: []db.Filter{f(field, db.Eq(core.Int(500)))}}
+}
+
 func (e *flEnv) get(doctype, name string, who core.Caller) *db.StoredDocument {
 	e.t.Helper()
 	got, err := db.Get(bg, e.d.Pool, e.reg, doctype, name, who)
@@ -323,8 +338,6 @@ func (e *flEnv) calls() int {
 // ----- Reads ---------------------------------------------------------------------------------
 
 // Rust: field_levels.rs::a_user_without_level_one_does_not_see_the_field_anywhere
-//
-// The list part (the same fields in a list, and the administrator's list) is ported with P3.
 func TestAUserWithoutLevelOneDoesNotSeeTheFieldAnywhere(t *testing.T) {
 	env := newFlEnv(t)
 	stored := env.fullAccount()
@@ -341,8 +354,20 @@ func TestAUserWithoutLevelOneDoesNotSeeTheFieldAnywhere(t *testing.T) {
 	if _, ok := got.Tables["ledger"]; ok {
 		t.Error("the ledger is visible")
 	}
-	if got.Values["title"].Text != "Acme" || got.Values["revenue"].Int != 10 || got.Owner != "root" {
+	if got.Values["title"].Text != "Acme" || got.Values["revenue"].Int != 10 {
 		t.Error(describeDoc(got))
+	}
+	// List.
+	rows, err := env.list(u, db.ListQuery{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list: %v %v", rows, err)
+	}
+	if _, ok := rows[0].Values["credit_limit"]; ok {
+		t.Error("credit_limit is listed")
+	}
+	// The standard columns are level 0.
+	if rows[0].Owner != "root" {
+		t.Error(rows[0].Owner)
 	}
 	// Administrator and System see every level.
 	for _, who := range []core.Caller{admin(), sys("sys")} {
@@ -350,13 +375,14 @@ func TestAUserWithoutLevelOneDoesNotSeeTheFieldAnywhere(t *testing.T) {
 		if all.Values["credit_limit"].Int != 500 || all.Values["vault_code"].Text != "1234" || len(all.Tables["ledger"]) != 2 {
 			t.Error(describeDoc(all))
 		}
+		rows, err := env.list(who, db.ListQuery{})
+		if err != nil || rows[0].Values["internal_ref"].Text != "REF-1" {
+			t.Errorf("%v %v", rows, err)
+		}
 	}
 }
 
 // Rust: field_levels.rs::manager_sees_and_writes_level_one_but_not_level_two
-//
-// The part where the Spy role cannot list is ported with P3 (it gets PermissionDenied from list; get
-// is covered below).
 func TestManagerSeesAndWritesLevelOneButNotLevelTwo(t *testing.T) {
 	env := newFlEnv(t)
 	stored := env.fullAccount()
@@ -387,6 +413,8 @@ func TestManagerSeesAndWritesLevelOneButNotLevelTwo(t *testing.T) {
 	want(t, message(t, got2, err), "validation failed: unknown field `vault_code`", "message")
 	// The Spy role has a level 2 rule but no level 0 right: it gets nothing.
 	_, err = db.Get(bg, env.d.Pool, env.reg, "account", stored.Name, user("s", "Spy"))
+	wantKind(t, err, db.ErrPermissionDenied)
+	_, err = env.list(user("s", "Spy"), db.ListQuery{})
 	wantKind(t, err, db.ErrPermissionDenied)
 	// Spy with a level 0 role too reads and writes level 2, and not level 1.
 	both := env.get("account", stored.Name, user("s", "Spy", "Viewer"))
@@ -584,11 +612,46 @@ func TestHooksSeeTheWholeDocumentDuringAnUpdateByAUser(t *testing.T) {
 	}
 }
 
+// Rust: field_levels.rs::hidden_fields_are_unknown_to_filters_sort_summary_and_export_with_identical_errors
+//
+// The filter and the sort of a list, and the administrator's filter; the group-by and the aggregate of
+// a summary (P6) and the export (P7) are not ported yet.
+func TestHiddenFieldsAreUnknownToFiltersAndSortsWithIdenticalErrors(t *testing.T) {
+	env := newFlEnv(t)
+	env.fullAccount()
+	u := user("u", "User")
+	// The reference: the same query on a registry where the field does not exist.
+	for _, field := range []string{"credit_limit", "vault_code", "internal_ref", "partner", "ledger"} {
+		// Filter.
+		query := flQueryFilter(field)
+		rows, err := env.list(u, query)
+		hidden := message(t, rows, err)
+		rows, err = env.listIn(env.plain, u, query)
+		missing := message(t, rows, err)
+		// ledger does not exist in the plain registry either, so the messages are those of an unknown
+		// field in both.
+		if hidden != missing || !strings.Contains(hidden, "unknown field") {
+			t.Errorf("filter %s: %q and %q", field, hidden, missing)
+		}
+		// Sort.
+		sortQuery := db.ListQuery{Sort: []db.Sort{db.Desc(field)}}
+		rows, err = env.list(u, sortQuery)
+		hidden = message(t, rows, err)
+		rows, err = env.listIn(env.plain, u, sortQuery)
+		if missing = message(t, rows, err); hidden != missing {
+			t.Errorf("sort %s: %q and %q", field, hidden, missing)
+		}
+	}
+	// The Administrator may use them.
+	rows, err := env.list(admin(), flQueryFilter("credit_limit"))
+	if err != nil || len(rows) != 1 {
+		t.Errorf("admin filter: %v %v", rows, err)
+	}
+}
+
 // ----- if_owner ------------------------------------------------------------------------------
 
 // Rust: field_levels.rs::if_owner_at_level_zero_limits_the_documents_a_level_is_seen_on
-//
-// The list of the other's document with a filter on the level 1 field is ported with P3.
 func TestIfOwnerAtLevelZeroLimitsTheDocumentsALevelIsSeenOn(t *testing.T) {
 	env := newFlEnv(t)
 	mine := user("mine", "Mine")
@@ -606,6 +669,10 @@ func TestIfOwnerAtLevelZeroLimitsTheDocumentsALevelIsSeenOn(t *testing.T) {
 	// The other's document is not found at all.
 	if env.get("account", other.Name, mine) != nil {
 		t.Error("found")
+	}
+	rows, err := env.list(mine, flQueryFilter("credit_limit"))
+	if err != nil || len(rows) != 0 {
+		t.Errorf("list: %v %v", rows, err)
 	}
 	// Level 1 is read only for Mine: writing it is not permitted (and a level 0 write works).
 	s, err := env.update("account", own, changes("credit_limit", core.Int(1)), mine)

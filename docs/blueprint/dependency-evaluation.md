@@ -10,7 +10,7 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 | a decimal library: `github.com/shopspring/decimal` or `github.com/cockroachdb/apd/v3` | MIT or Apache-2.0 | `Decimal` fields (exact, text round-trip) | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): neither; an own `rust_decimal`-compatible type in `internal/decimal` (standard library only), because a parity wrapper would be needed with either** | P1.1 |
 | `github.com/google/uuid` | BSD-3-Clause | UUID values (the v7 `id` of a document is generated in the application) | Approved by owner (G2). Not needed by P1.2 (the schema sync and the framework migrations generate no UUID). **Admitted in P2.1: v1.6.0** (see below) | P2 |
 | one TOML library: `github.com/BurntSushi/toml` or `github.com/pelletier/go-toml/v2` | MIT | DocType, overlay and `forgebase.toml` files; **must reject unknown keys** | Approved by owner (G2). **Decided in [ADR 0027](../adr/0027-decimal-and-toml.md): `github.com/BurntSushi/toml` v1.6.0**, decoded into a generic tree with a strict schema decoder | P1.1 |
-| `golang.org/x/crypto` (package `argon2`) | BSD-3-Clause | Argon2id password hashing, m=19456, t=2, p=1 (ADR 0010) | Approved by owner (G2) | P3 |
+| `golang.org/x/crypto` (package `argon2`) | BSD-3-Clause | Argon2id password hashing, m=19456, t=2, p=1 (ADR 0010) | Approved by owner (G2). **Admitted in P3.1: v0.58.0** (see below) | P3 |
 
 **Modules in `go.mod` (P1.1).** Each has its licence checked by the `licenses` job.
 
@@ -27,8 +27,17 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 | `github.com/jackc/pgpassfile` | v1.0.0 | MIT | none | pgx (`~/.pgpass` lookup) | transitive |
 | `github.com/jackc/pgservicefile` | v0.0.0-20240606120523-5a60cdf6a761 | MIT | none | pgx (`pg_service.conf` lookup) | transitive |
 | `github.com/jackc/puddle/v2` | v2.2.3 | MIT | `golang.org/x/sync` | pgx (`pgxpool`: the generic resource pool) | transitive |
-| `golang.org/x/sync` | v0.22.0 | BSD-3-Clause | none | pgx, puddle (`errgroup`, `semaphore`) | transitive |
-| `golang.org/x/text` | v0.41.0 | BSD-3-Clause | none | pgx (`pgconn`: SASLprep for SCRAM authentication) | transitive |
+| `golang.org/x/sync` | v0.22.0, raised to v0.24.0 in P3.1 | BSD-3-Clause | none | pgx, puddle (`errgroup`, `semaphore`) | transitive |
+| `golang.org/x/text` | v0.41.0, raised to v0.43.0 in P3.1 | BSD-3-Clause | none | pgx (`pgconn`: SASLprep for SCRAM authentication) | transitive |
+
+**Modules added in P3.1 (`internal/db`: `auth.go`).** Licences checked with `go run ./.github/ci/licensecheck` (all on the allow-list).
+
+| Module | Version | Licence | Dependencies of its own | Used by | Decision |
+|---|---|---|---|---|---|
+| `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause | `golang.org/x/sys` (below) | `internal/db/auth.go`: `argon2` (`IDKey` and `Key`, with `blake2b` inside it) hashes and verifies passwords. Only these packages are linked into the binary | G2 of the approved plan ("Argon2id, m=19456, t=2, p=1"). The Rust `argon2` crate is the RustCrypto implementation of the same algorithm; the PHC string it writes is the string `internal/db` writes and reads (tested against a string of the reference C implementation). Maintained by the Go team, no cgo. The standard library has no Argon2. `go get` for this module also raised the indirect `golang.org/x/sync` and `golang.org/x/text` to the versions that its own `go.mod` requires |
+| `golang.org/x/sys` | v0.49.0 | BSD-3-Clause | none | `golang.org/x/crypto/blake2b` (CPU feature detection, `cpu`) | transitive |
+
+`govulncheck` (v1.9.0) lists GO-2026-5932 for `golang.org/x/crypto` v0.58.0: the `openpgp` package is unmaintained and unsafe by design. Nothing in this repository imports it and the tool reports no affected code; the advisory names a later pseudo-version as the fix, which is not a release and is not adopted. Recheck when a release newer than v0.58.0 exists.
 
 **The URL is the only source of connection settings (P1.2).** `tokio-postgres` reads nothing but the URL; `pgx` by default also reads the `PG*` environment variables, `~/.pgpass` (`PGPASSFILE`) and the service file (`PGSERVICE`, `PGSERVICEFILE`), sends every unknown URL key to the server as a run-time parameter, and turns `PGOPTIONS`, `PGTZ` and `PGAPPNAME` into startup parameters. `internal/db` (`url.go`) therefore parses the URL as `tokio-postgres` does (the same keys, `unknown option` for any other, the same value checks; `tokio-postgres` 0.7.18 is the version in the Rust `Cargo.lock`) and gives `pgx` a keyword/value string in which every setting that `pgx` could take elsewhere is set explicitly; the run-time parameters are rebuilt from `options` and `application_name` of the URL alone; no user in the URL means the operating system's user name; `PGSERVICE`, which `pgx` honours and no setting of the connection string can switch off, is **refused** instead (see the first bullet below). A test (`TestTheURLIsTheOnlySourceOfSettings`) sets twenty `PG*` variables and a password and service file and checks that the session is the same as without them. What `pgx` still does differently from `tokio-postgres` after this:
 

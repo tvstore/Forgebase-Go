@@ -85,9 +85,13 @@ func (s readScope) conditions(table string, bind func(value, cast string) string
 // andSQL is the conditions as " AND ..." for a statement that already has a WHERE, and the values
 // to bind after the first first-1 parameters (the placeholders are numbered from first).
 // Unqualified columns: only for a statement on a single table.
-func (s readScope) andSQL(first int) scopeSQL {
+func (s readScope) andSQL(first int) scopeSQL { return s.andSQLFor("", first) }
+
+// andSQLFor is like andSQL with the columns qualified by table (a quoted table name), for a statement
+// whose WHERE has other tables or subqueries around.
+func (s readScope) andSQLFor(table string, first int) scopeSQL {
 	var params []string
-	conditions := s.conditions("", func(value, cast string) string {
+	conditions := s.conditions(table, func(value, cast string) string {
 		params = append(params, value)
 		return fmt.Sprintf("$%d::%s", first+len(params)-1, cast)
 	})

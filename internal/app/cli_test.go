@@ -368,9 +368,6 @@ func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
 		name  string
 	}{
 		{[]string{"serve", "--doctypes", "d"}, "P3", "serve"},
-		{[]string{"doc", "list", "customer", "--doctypes", "d"}, "P3", "doc list"},
-		{[]string{"user", "create", "ann"}, "P3", "user create"},
-		{[]string{"token", "revoke", "k"}, "P3", "token revoke"},
 		{[]string{"new-app", "crm", "--forgebase-path", "/x"}, "P4", "new-app"},
 		{[]string{"worker", "--doctypes", "d"}, "P5", "worker"},
 		{[]string{"job", "list"}, "P5", "job list"},
