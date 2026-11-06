@@ -128,11 +128,9 @@ func (d Decimal) MantissaDigits() uint32 {
 	return uint32(len(d.mantissa().big().String()))
 }
 
-// Neg is the value with the opposite sign.
+// Neg flips the sign flag, also for zero, like rust_decimal's Neg (whose Display then prints
+// "-0" for a negative zero).
 func (d Decimal) Neg() Decimal {
-	if d.IsZero() {
-		return d
-	}
 	d.neg = !d.neg
 	return d
 }

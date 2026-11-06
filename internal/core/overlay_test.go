@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -378,7 +379,7 @@ func TestParseFieldJSONNumbers(t *testing.T) {
 	}
 	// Floats are refused for integer keys, through UseNumber and through plain Unmarshal (float64).
 	for _, key := range []string{"max_length", "perm_level"} {
-		for _, num := range []string{"5.0", "1e2", "1.5"} {
+		for _, num := range []string{"5.0", "1e2", "1.5", "-0"} {
 			text := `{"name":"a","type":"data","` + key + `":` + num + `}`
 			for label, v := range map[string]any{"UseNumber": decode(text), "float64": plain(text)} {
 				_, err := ParseFieldJSON(v)
@@ -387,6 +388,12 @@ func TestParseFieldJSONNumbers(t *testing.T) {
 				}
 			}
 		}
+	}
+	if _, err := ParseFieldJSON(decode(`{"name":"a","type":"data","max_length":-0}`)); err == nil || !strings.Contains(err.Error(), "floating point `-0.0`, expected u32") {
+		t.Errorf("-0 message: %v", err)
+	}
+	if _, err := ParseFieldJSON(map[string]any{"name": "a", "type": "int", "perm_level": math.Copysign(0, -1)}); err == nil || !strings.Contains(err.Error(), "floating point `-0.0`, expected i64") {
+		t.Errorf("float64 -0 message: %v", err)
 	}
 	_, err := ParseFieldJSON(decode(`{"name":"a","type":"data","max_length":5.0}`))
 	if err == nil || !strings.Contains(err.Error(), "floating point `5.0`, expected u32") {

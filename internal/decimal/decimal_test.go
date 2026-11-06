@@ -387,3 +387,17 @@ func TestNewPanicsAboveMaxScale(t *testing.T) {
 	}()
 	New(1, 29)
 }
+
+// rust_decimal Neg (set_sign_negative(is_sign_positive)): the flag flips even for zero, and Display
+// prints the sign when the flag is set.
+func TestNegFlipsTheSignFlagAlsoForZero(t *testing.T) {
+	if got := mustParse(t, "12.50").Neg().String(); got != "-12.50" {
+		t.Errorf("got %q", got)
+	}
+	if got := mustParse(t, "0").Neg().String(); got != "-0" {
+		t.Errorf("got %q", got)
+	}
+	if got := mustParse(t, "0").Neg().Neg().String(); got != "0" {
+		t.Errorf("got %q", got)
+	}
+}

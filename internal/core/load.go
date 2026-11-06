@@ -51,7 +51,7 @@ func describe(v any) string {
 
 // formatFloat prints a float like serde does in "invalid type" messages (5.0, 1.5, 100.0).
 func formatFloat(f float64) string {
-	s := strconv.FormatFloat(f, 'g', -1, 64)
+	s := strconv.FormatFloat(f, 'g', -1, 64) // -0 formats as "-0"
 	if !strings.ContainsAny(s, ".eEIN") {
 		s += ".0"
 	}
@@ -226,8 +226,9 @@ func asSlice(v any) ([]any, bool) {
 	return nil, false
 }
 
-// stringList is a list of strings (option: the Rust field is an Option, so a JSON null is absent); present is false when the key is absent. A present
-// list is never nil (an empty one is empty).
+// stringList is a list of strings (option: the Rust field is an Option, so a JSON null is
+// absent); present is false when the key is absent. A present list is never nil (an empty one is
+// empty).
 func (d *decoder) stringList(key string, option bool) (list []string, present bool) {
 	get := d.get
 	if option {
@@ -793,13 +794,16 @@ func normalizeJSON(v any) any {
 	switch x := v.(type) {
 	case json.Number:
 		// serde_json reads a number with a fraction or an exponent (5.0, 1e2) as a float.
-		if !strings.ContainsAny(string(x), ".eE") {
+		// JSON -0 is a float too (serde_json: "convert into a float on -0").
+		if !strings.ContainsAny(string(x), ".eE") && string(x) != "-0" {
 			if n, err := x.Int64(); err == nil {
 				return n
 			}
 		}
 		f, _ := x.Float64()
 		return f
+	case float64:
+		return x // never converted to an integer; -0 stays a float
 	case int:
 		return int64(x)
 	case int32:

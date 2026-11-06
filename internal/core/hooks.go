@@ -156,7 +156,7 @@ func containsNul(s string) bool {
 // document change.
 type EnqueuedJob struct {
 	name    string
-	payload any
+	payload json.RawMessage
 }
 
 // Name is the full job name, <app>.<job>.
@@ -164,7 +164,7 @@ func (j EnqueuedJob) Name() string { return j.name }
 
 // Payload is the payload as the JSON text it was serialized to when it was enqueued (a
 // json.RawMessage); unmarshal it into what the job handler expects.
-func (j EnqueuedJob) Payload() any { return j.payload }
+func (j EnqueuedJob) Payload() json.RawMessage { return j.payload }
 
 // EnqueuedJobs collects the jobs that the hooks of one operation enqueue. internal/db makes one per
 // operation, gives it to every hook call through HookContext.WithJobs and, after the hooks and
@@ -284,14 +284,14 @@ func (c HookContext) Equal(o HookContext) bool {
 	return *c.Transition == *o.Transition
 }
 
-// The payload is serialized to JSON when Enqueue is called, so changing the value afterwards has
-// no effect on the job (in Rust the payload is moved).
-//
 // Enqueue asks for a background job name (<app>.<job>) with payload. The job is written to the job
 // table in the same transaction as the document change, after all hooks have run, so it exists if
 // and only if the change is committed (the transactional outbox, ADR 0013). An unknown job name
 // fails the whole operation when the job is written. Never put secrets in a payload: it is stored
 // in clear text.
+//
+// The payload is serialized to JSON when Enqueue is called, so changing the value afterwards has
+// no effect on the job (in Rust the payload is moved).
 //
 // It fails if the payload is larger than MaxJobPayloadBytes bytes of JSON, or when this context has
 // no collector (a context made by NewHookContext in a test: add one with WithJobs).
