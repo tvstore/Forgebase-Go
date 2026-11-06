@@ -1,5 +1,7 @@
 # Integrating with other systems
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 For the person who connects Forgebase to other systems: a warehouse tool that reads order totals, an accounting system that wants every approved order, a spreadsheet full of customers. This page is a walkthrough on the [`sales` example app](../../examples/sales/README.md) with four tools: an **app method** (another system asks a question), a **webhook** (Forgebase tells another system something happened), **import and export** (files in and out) and **fixtures** (records the app ships). It links the reference pages instead of repeating them.
 
 Every command and snippet below was run against the `sales` binary (`cargo run -p sales -- ...`) on a scratch PostgreSQL database at the time of writing (each section on its own; the sample outputs are illustrative, as the setup creates no orders). Set it up like this; the examples assume a Sales Manager `max` and a Sales User `ann`:

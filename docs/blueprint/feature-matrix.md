@@ -1,5 +1,7 @@
 # Feature matrix
 
+> This document was written for the Rust implementation; the Go mapping of crates, libraries and tooling is in [ADR 0026](../adr/0026-go-implementation.md). Behaviour described here is normative for the Go port (G1).
+
 Compares Frappe Framework capabilities with Forgebase's plan. Research date: 2026-10-28. Design details are in [architecture](architecture.md); milestones in [milestones](milestones.md).
 
 ## How to read this

@@ -1,5 +1,7 @@
 # Vision
 
+> This document was written for the Rust implementation; the Go mapping of crates, libraries and tooling is in [ADR 0026](../adr/0026-go-implementation.md). Behaviour described here is normative for the Go port (G1).
+
 Status: the Project Goal section is **Accepted (owner decision 2026-10-29)**; the other sections are Proposed (awaiting owner review). Workflow and model policy: [AGENTS.md](../../AGENTS.md).
 
 ## Project Goal

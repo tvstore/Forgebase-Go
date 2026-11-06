@@ -1,5 +1,7 @@
 # Your first Forgebase app
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 This guide takes you from nothing to an app with tests that runs, extends another app and upgrades safely. Every command here was run against the repository at the time of writing. Background and decisions: [ADR 0012](../adr/0012-app-model-and-public-api-boundary.md) and [the architecture](../blueprint/architecture.md#the-app-model-m51-accepted-by-adr-0012).
 
 An app is a Rust crate with three kinds of content: **DocTypes** (TOML files that describe your data and who may use it), **hooks** (Rust code that runs at fixed points of a document operation) and **migrations** (SQL that changes data once per database). Apps are compiled into one binary that you build and run. There are no plugins and no runtime discovery: everything is listed explicitly in `src/lib.rs` and `src/main.rs`.

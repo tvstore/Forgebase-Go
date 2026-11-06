@@ -1,5 +1,7 @@
 # The command-line tool
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 Walkthrough of the `forgebase` commands (or the binary of your app) for users and tokens, background jobs, webhooks and sites. The document commands (`doc`) are in [Getting started](getting-started.md#quick-start). Run `forgebase --help` for every option.
 
 ## Users and tokens

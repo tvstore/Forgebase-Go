@@ -1,5 +1,7 @@
 # Milestones
 
+> This document was written for the Rust implementation; the Go mapping of crates, libraries and tooling is in [ADR 0026](../adr/0026-go-implementation.md). Behaviour described here is normative for the Go port (G1).
+
 Milestones are **Proposed** until their Stage 1 plan is approved; each milestone's status line says otherwise. There are no dates. **Each milestone needs its own Stage 1 plan and explicit owner approval before implementation starts** (see [AGENTS.md](../../AGENTS.md#3-mandatory-four-stage-workflow)); the scope below is the starting proposal for that plan, not an approval. Design context: [architecture](architecture.md); capability status: [feature matrix](feature-matrix.md).
 
 | Milestone | Theme |

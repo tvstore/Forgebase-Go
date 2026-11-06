@@ -1,5 +1,31 @@
 # Dependency evaluation
 
+## Go dependencies (ADR 0026)
+
+Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1–G8"; [ADR 0026](../adr/0026-go-implementation.md)). The Go port uses the standard library first: HTTP (`net/http`), TLS (`crypto/tls`), HMAC and SHA-256, CSV (`encoding/csv`), JSON, `embed` and the command line (`flag`) need no dependency, and there is **no web framework, ORM or CLI framework**. A module is added to `go.mod` only when the first code needs it (the phase in the last column); the version is chosen and recorded then, with its licence checked by the `licenses` CI job. Any dependency not in this table needs the owner's approval.
+
+| Module | Licence | Use | Status | Admitted |
+|---|---|---|---|---|
+| `github.com/jackc/pgx/v5` (and its `pgxpool`) | MIT | PostgreSQL driver, pool, TLS configuration | Approved by owner (G2) | P1 |
+| a decimal library: `github.com/shopspring/decimal` or `github.com/cockroachdb/apd/v3` | MIT or Apache-2.0 | `Decimal` fields (exact, text round-trip) | Approved by owner (G2); the choice is made in P1 with an ADR | P1 |
+| `github.com/google/uuid` | BSD-3-Clause | UUID values | Approved by owner (G2) | P1 |
+| one TOML library: `github.com/BurntSushi/toml` or `github.com/pelletier/go-toml/v2` | MIT | DocType, overlay and `forgebase.toml` files; **must reject unknown keys** | Approved by owner (G2); the choice is made in P1 | P1 |
+| `golang.org/x/crypto` (package `argon2`) | BSD-3-Clause | Argon2id password hashing, m=19456, t=2, p=1 (ADR 0010) | Approved by owner (G2) | P3 |
+
+Transitive dependencies of these modules (for example `golang.org/x/sync`, `golang.org/x/text` or `golang.org/x/sys`) are listed here with their licences when they enter `go.sum`; they must pass the same allow-list (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC).
+
+CI tools are **not module dependencies**. They are installed or run with `go install` or `go run` at pinned versions and do not appear in `go.mod`:
+
+| Tool | Version | Licence | Use |
+|---|---|---|---|
+| `honnef.co/go/tools/cmd/staticcheck` | v0.8.2 (2026.2.2) | MIT | Static analysis in the job `check` |
+| `golang.org/x/vuln/cmd/govulncheck` | v1.9.0 | BSD-3-Clause | Known vulnerabilities in called code, in the job `check` |
+| `github.com/rhysd/actionlint/cmd/actionlint` | latest, local use only | MIT | Optional local lint of the workflow file; not run in CI |
+
+The GitHub Actions are unchanged: `actions/checkout` and `actions/cache`, pinned by SHA. Go itself is installed from <https://go.dev/dl/> with a verified sha256 (BSD-3-Clause licence of Go).
+
+**The rest of this file is the historical evaluation made for the Rust implementation** (2026-10-28 and later). It is kept as the record of the reasoning and of the licences of the Rust crates; it does not apply to the Go port except where the same reasoning is carried over by [ADR 0026](../adr/0026-go-implementation.md). The npm (desk) section still applies, because the desk is the same.
+
 Condensed from research done on 2026-10-28; sources are given inline. **Versions, licenses and MSRVs are as of 2026-10-28**; re-run `cargo info` at decision time. Recommendations are **Proposed** unless marked Accepted (the `time` and `rust_decimal` choices below were Accepted by the owner on 2026-10-28): the axum, tokio and tokio-postgres + deadpool-postgres (with the custom migration runner) directions are Accepted by the owner (ADRs 0004 and 0005, 2026-10-28; ADR 0004 confirmed by the M1 spike, see below), as are React + TypeScript for the desk (ADR 0002) and TLS termination at a reverse proxy (ADR 0005); everything not marked Accepted is not decided. Admission rules: [maintenance-policy](maintenance-policy.md). Related decisions: [ADR 0004](../adr/0004-database-access-layer.md), [ADR 0005](../adr/0005-http-stack.md).
 
 Selection criteria, in priority order: long-term maintenance cost, simplicity, small dependency count, then fit with runtime-metadata DocTypes (tables and columns created from metadata at runtime; documents cross the boundary as validated maps/JSON). Popularity is not a criterion.

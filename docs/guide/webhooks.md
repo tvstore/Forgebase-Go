@@ -1,5 +1,7 @@
 # Webhooks
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 For the person who connects another system to Forgebase: a warehouse tool that wants every new sales order, an accounting system that wants every submitted invoice. A **webhook** makes a site `POST` a signed JSON snapshot of a document to a URL after the document operation has committed. The design and its reasons are in [ADR 0020](../adr/0020-outgoing-webhooks.md); the risks are in the [security model](../blueprint/security-model.md#outgoing-webhooks-m92-adr-0020). The commands are in the [CLI guide](cli.md#webhook-commands-m92).
 
 Webhooks are configured by an operator, per site, with the command line. There is no desk screen and no HTTP route. Receiving a request from another system (the other direction) is an [app method](http-api.md#app-methods) plus an API token.

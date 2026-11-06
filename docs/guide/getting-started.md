@@ -1,6 +1,8 @@
 # Getting started
 
-Install Forgebase and try it end to end with the example app: the full quick start, the document commands, permissions and workflow, and how apps are built. The short version is in the [README](../../README.md#quick-start-in-5-minutes).
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
+Install Forgebase and try it end to end with the example app: the full quick start, the document commands, permissions and workflow, and how apps are built. The short version is in the [README](../../README.md#quick-start).
 
 ```sh
 cargo build

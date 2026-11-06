@@ -1,5 +1,7 @@
 # Architecture
 
+> This document was written for the Rust implementation; the Go mapping of crates, libraries and tooling is in [ADR 0026](../adr/0026-go-implementation.md). Behaviour described here is normative for the Go port (G1).
+
 M1 is implemented: the metadata model and document validation (`forgebase-core`), the PostgreSQL pool, migrations, schema sync and document CRUD (`forgebase-db`) and the `forgebase` command-line tool (then `forgebase-cli`, renamed `forgebase` in M5.1). M2 is implemented in four PRs: M2.1 (Link fields and optimistic concurrency), M2.2 (child tables), M2.3 (lifecycle pipeline and hooks, [ADR 0009](../adr/0009-lifecycle-pipeline-and-hooks.md)) and M2.4 (docstatus with submit, cancel and amend, and naming series). M3 is implemented in three PRs: M3.1 (users, sessions, API tokens, [ADR 0010](../adr/0010-authentication-and-sessions.md)), M3.2 (role permissions, enforced document operations and the list query, [ADR 0011](../adr/0011-permission-model-phase-1.md)) and M3.3 (the HTTP API, section 7). M4 (the desk) is implemented, and M5 (the app model) is implemented in three PRs: M5.1 is the framework part ([ADR 0012](../adr/0012-app-model-and-public-api-boundary.md), sections 1, 2 and 5), M5.2 `forgebase new-app` and the first-app guide, and M5.3 the example apps; everything from M6 on is design only. Sections and statements marked Accepted are owner-accepted ADRs or owner decisions recorded in these docs; the rest is a design proposal. Workflow and approval rules: [AGENTS.md](../../AGENTS.md).
 
 **Status vocabulary**

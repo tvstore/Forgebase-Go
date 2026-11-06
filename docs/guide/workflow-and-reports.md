@@ -1,5 +1,7 @@
 # Workflow, saved views and reports
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 For the person who builds an app on Forgebase and has done the [first-app guide](first-app.md). This page covers the three parts of M8 that an app uses: an **approval workflow** on a DocType, **saved views and the summary** that the desk gives every list, and **query reports** (SQL that the app ships). Everything here is in the `sales` example, [`examples/sales`](../../examples/sales/README.md), and uses only the public `forgebase` crate. The rules and the reasons are in [ADR 0015](../adr/0015-workflow-states-and-transitions.md) (workflow), [ADR 0016](../adr/0016-query-reports-read-only-execution.md) (reports) and [architecture, section 11](../blueprint/architecture.md#11-desk-reports-workflow) (desk, views, summary).
 
 ## 1. An approval workflow

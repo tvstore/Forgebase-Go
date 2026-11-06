@@ -1,5 +1,7 @@
 # Security model
 
+> This document was written for the Rust implementation; the Go mapping of crates, libraries and tooling is in [ADR 0026](../adr/0026-go-implementation.md). Behaviour described here is normative for the Go port (G1).
+
 Status: **Proposed** unless stated; of the sections below identifier and value handling in `forgebase-db` (M1.2, M1.3, M2.1, M2.2), the trust note for the command-line tool, the storage side of authentication (M3.1, [ADR 0010](../adr/0010-authentication-and-sessions.md), Accepted) the role permission model with its enforcement and the list query (M3.2, [ADR 0011](../adr/0011-permission-model-phase-1.md), Accepted) and the HTTP layer (M3.3: cookies, CSRF, Host validation, no CORS, the login concurrency bound, the error envelope) are implemented; the trust note for apps and app migrations (M5.1) is recorded below. Multi-site isolation is not. Architecture context: [architecture](architecture.md). Frappe behavior referenced is labelled in the [feature matrix](feature-matrix.md). Changes to authentication, authorization or multi-site isolation are high-impact: they need Stage 1 planning and independent Stage 3 review per [AGENTS.md](../../AGENTS.md).
 
 ## Principles

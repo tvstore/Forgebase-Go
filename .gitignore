@@ -1,0 +1,19 @@
+# Go
+/forgebase
+/bin/
+*.exe
+*.test
+*.out
+coverage.txt
+coverage.html
+go.work
+go.work.sum
+
+# Environment and local files
+deploy/.env
+.env
+__pycache__/
+
+# Desk (arrives in P3)
+desk/node_modules/
+desk/dist/

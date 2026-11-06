@@ -1,5 +1,7 @@
 # Deploy Forgebase on a VM
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 This guide puts Forgebase on one small virtual machine with Docker: PostgreSQL, the web server, a background worker and Caddy, which gets and renews the HTTPS certificate by itself. It works on Oracle Cloud Always Free and on any Ubuntu 22.04 or 24.04 VM with 1 GB of RAM or more. The files are in [`deploy/`](../../deploy/) and the [`Dockerfile`](../../Dockerfile). For what the pieces do and how to run them without Docker, see [Operating Forgebase](operations.md).
 
 What was checked: the image, the single-container mode, the compose file, a backup and a restore were run on a Linux machine with Docker (amd64). What was **not** run for this guide: a real VM, Let's Encrypt and Oracle Cloud. The steps for those come from their documentation; the first person to follow them should report any difference.
@@ -197,7 +199,7 @@ The path in short: a Neon database, the first Administrator created from your ow
 
 ### 3.2 Migrate and create the first Administrator, from your computer
 
-Render's free tier has no shell, so create the schema and the first Administrator **before** the first deploy, against the Neon URL, from a clone of this repository (Rust installed, see the [README](../../README.md#quick-start-in-5-minutes)). There is no bootstrap feature: this is the normal `user create` command.
+Render's free tier has no shell, so create the schema and the first Administrator **before** the first deploy, against the Neon URL, from a clone of this repository (Rust installed, see the [README](../../README.md#quick-start)). There is no bootstrap feature: this is the normal `user create` command.
 
 ```sh
 git clone https://github.com/tvstore/Forgebase && cd Forgebase

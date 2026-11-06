@@ -1,5 +1,7 @@
 # Customizing and restricting data
 
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+
 A walkthrough of M10 on the [`sales`](../../examples/sales/README.md) example: add a field to a DocType you do not own, add a field to one site, keep a field away from most users, and show a user only some of the documents. It links the reference pages instead of repeating them; every command and request below was run against a scratch database with the composed binary of [`sales_extension`](../../examples/sales_extension/README.md) (single-site mode, so no `--site`; with a [config file](cli.md#sites) add `--site NAME`).
 
 The pieces and where each one is decided:
