@@ -1,7 +1,9 @@
 package db_test
 
 import (
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
 	"testing"
 	"time"
@@ -256,5 +258,43 @@ func TestDocumentErrorTexts(t *testing.T) {
 		if got := c.err.Error(); got != c.text {
 			t.Errorf("kind %d: %q, want %q", c.err.Kind, got, c.text)
 		}
+	}
+}
+
+// Go: dates with a negative year are written like the Rust time crate: a sign, then four digits.
+func TestFormatDateNegativeYears(t *testing.T) {
+	for _, c := range []struct {
+		year int
+		want string
+	}{{-1, "-0001-03-05"}, {-9999, "-9999-03-05"}, {0, "0000-03-05"}, {9999, "9999-03-05"}} {
+		got, err := db.FormatDate(time.Date(c.year, 3, 5, 0, 0, 0, 0, time.UTC))
+		if err != nil || got != c.want {
+			t.Errorf("%d: %q %v", c.year, got, err)
+		}
+	}
+	if _, err := db.FormatDate(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)); err == nil {
+		t.Error("year 10000")
+	}
+	// A datetime before year 0 has no RFC 3339 form (the Rust time crate refuses it too).
+	for _, y := range []int{-1, -9999} {
+		if _, err := db.UTCRFC3339(time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)); err == nil {
+			t.Errorf("datetime year %d", y)
+		}
+	}
+	if got, err := db.UTCRFC3339(time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil || got != "0000-01-01T00:00:00Z" {
+		t.Errorf("%q %v", got, err)
+	}
+}
+
+// Go: a hidden referencing DocType and a hidden field are not reachable through the driver error.
+func TestHiddenNamesAreNotReachableThroughUnwrap(t *testing.T) {
+	d, reg := permSetup(t)
+	party := makeParty(t, d, reg, "p@x.y", sys("sys"))
+	mustInsert(t, d, reg, "ticket", ticketLinking("p@x.y", ""), sys("sys"))
+	err := db.Delete(bg, d.Pool, reg, "party", party.Name, party.Version, user("u", "PartyAdmin"))
+	e := wantKind(t, err, db.ErrLinkedDocumentExists)
+	var pg *pgconn.PgError
+	if e.ReferencedBy != nil || errors.As(err, &pg) || errors.Unwrap(err) != nil {
+		t.Errorf("%+v", e)
 	}
 }
