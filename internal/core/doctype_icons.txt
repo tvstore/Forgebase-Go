@@ -1,0 +1,16 @@
+file-text
+users
+user
+shopping-cart
+package
+building-2
+receipt
+briefcase
+calendar
+clipboard-list
+folder
+tag
+truck
+wallet
+settings
+box
