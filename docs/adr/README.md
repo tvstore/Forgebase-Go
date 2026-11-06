@@ -54,5 +54,5 @@ An ADR records one significant decision: the context, what was decided, what els
 | [0022](0022-fixtures.md) | Fixtures | Accepted (Rust-specific parts superseded by 0026 for this repository) |
 | [0023](0023-metadata-overlays.md) | Metadata overlays: app overlays, site custom fields, live reload | Accepted (Rust-specific parts superseded by 0026 for this repository) |
 | [0024](0024-field-permission-levels.md) | Field permission levels: `perm_level`, rule `level`, hidden fields are unknown | Accepted |
-| [0025](0025-user-permissions.md) | User permissions: restrict a user to some documents, `row_scope`, SQL on every path | Accepted |
+| [0025](0025-user-permissions.md) | User permissions: restrict a user to some documents, `row_scope`, SQL on every path | Accepted (Rust-specific parts superseded by 0026 for this repository) |
 | [0026](0026-go-implementation.md) | Go implementation | Accepted by owner |

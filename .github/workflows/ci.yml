@@ -121,14 +121,14 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Go toolchain
         run: .github/ci/install-go.sh
-      # Module downloads, the build cache and the installed CI tools. The key follows go.mod, go.sum
-      # and the tool versions; restore-keys gives a partial hit after a change of any of them.
+      # Module downloads and the build cache (the CI tools are installed with `go install` on every
+      # run, so they are not cached). The key follows go.mod, go.sum and the tool versions;
+      # restore-keys gives a partial hit after a change of any of them.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-            ~/go/bin
           key: ${{ runner.os }}-check-${{ env.STATICCHECK_VERSION }}-${{ env.GOVULNCHECK_VERSION }}-${{ hashFiles('go.mod', 'go.sum') }}
           restore-keys: |
             ${{ runner.os }}-check-${{ env.STATICCHECK_VERSION }}-${{ env.GOVULNCHECK_VERSION }}-
@@ -154,6 +154,8 @@ jobs:
       - run: govulncheck ./...
       - run: go test -race ./...
       - run: go build ./...
+      # No cgo (maintenance policy, toolchain): the build must also work with CGO_ENABLED=0.
+      - run: CGO_ENABLED=0 go build ./...
       - run: go mod verify
       # Fails when go.mod or go.sum is not tidy.
       - run: go mod tidy -diff
@@ -209,7 +211,7 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           if [ "$EVENT" = pull_request ] && [ "$DRAFT" = true ]; then
-            echo "ci-result: this pull request is a draft; CI does not run on drafts. Mark it ready for review to run CI. A draft run never satisfies the required check."
+            echo "::error::ci-result: this pull request is a draft; CI does not run on drafts. Mark it ready for review to run CI. A draft run never satisfies the required check."
             exit 1
           fi
       - name: Fail if any job failed or was cancelled

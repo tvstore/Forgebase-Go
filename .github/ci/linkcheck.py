@@ -13,8 +13,9 @@ port has not created yet (examples/, deploy/, the Dockerfile, the desk end-to-en
 exist only in the Rust repository (crates/, Cargo.toml). `.github/ci/linkcheck-pending.txt` lists
 those repository-relative paths, one per line (a trailing `/` means everything under it; `#`
 starts a comment). A link to a file that is missing but listed there is counted as pending, not as
-a problem; remove the line when the phase that creates the file lands. A listed path that exists
-is checked like any other.
+a problem. An entry applies only while its path does not exist: once it exists, links under it are
+checked normally, and the entry is reported as stale (a problem) until the line is removed. crates/
+and Cargo.toml are permanent and never exist in the Go repository, so they never go stale.
 """
 
 import os
@@ -66,8 +67,11 @@ def pending_paths(root):
     return [line for line in lines if line]
 
 
-def is_pending(rel_dest, pending):
+def is_pending(rel_dest, pending, root):
+    """True when rel_dest is under a pending entry whose own path does not exist in the repository."""
     for entry in pending:
+        if os.path.exists(os.path.join(root, entry.rstrip("/"))):
+            continue
         if entry.endswith("/"):
             if (rel_dest + "/").startswith(entry):
                 return True
@@ -90,6 +94,10 @@ def main(argv):
     )
     checked = problems = deferred = 0
     pending = pending_paths(root)
+    for entry in pending:
+        if os.path.exists(os.path.join(root, entry.rstrip("/"))):
+            print(f"STALE   linkcheck-pending.txt: {entry} exists now; remove the entry")
+            problems += 1
     for md in markdown_files(root):
         with open(md, encoding="utf-8") as f:
             text = INLINE_CODE.sub("", strip_fences(f.read()))
@@ -104,7 +112,7 @@ def main(argv):
                 dest = os.path.normpath(os.path.join(base, unquote(path).lstrip("/")))
             else:
                 dest = md
-            if not os.path.exists(dest) and is_pending(os.path.relpath(dest, root), pending):
+            if not os.path.exists(dest) and is_pending(os.path.relpath(dest, root), pending, root):
                 deferred += 1
             elif not os.path.exists(dest):
                 print(f"MISSING {rel}: {target}")

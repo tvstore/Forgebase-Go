@@ -1,8 +1,11 @@
 # Paths that the Markdown files link to but that do not exist in the Go repository yet (see
-# linkcheck.py). Repository-relative; a trailing slash means everything under it. Remove a line
-# when the phase that creates the path lands.
+# linkcheck.py). Repository-relative; a trailing slash means everything under it. An entry applies
+# only while its path does not exist; once it exists, the entry is stale and the check fails until
+# the line is removed. crates/ and Cargo.toml are permanent: the unchanged Rust ADRs link to them
+# and the Go repository never has them (so they never go stale). Every other entry is removed when
+# the phase that creates the path lands.
 
-# Rust-only (the frozen reference implementation; never created here)
+# Permanent (the frozen Rust implementation)
 crates/
 Cargo.toml
 
@@ -13,6 +16,3 @@ deploy/
 
 # Created by P3 (the desk is copied with its end-to-end specs)
 desk/
-
-# Copied from the Rust repository when P7 ports TLS to PostgreSQL
-.github/ci/pg-tls.sh

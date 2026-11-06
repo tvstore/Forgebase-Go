@@ -27,8 +27,10 @@ GO_PREFIXES = ("cmd/", "internal/", "testing/", "examples/")
 GO_FILES = {"go.mod", "go.sum"}
 DOCKER_FILES = {"Dockerfile", ".dockerignore"}
 DOC_FILES = {"AGENTS.md", "CHANGELOG.md", "LICENSE"}
-# Files outside desk/ that the desk reads (desk/src/icons.test.ts imports the first one). They
-# stay Go and also run the desk job. Add a path here when a desk file imports from outside desk/.
+# Files outside desk/ that the desk reads. They stay Go and also run the desk job. Empty for now:
+# P3 adds the Go equivalent of the Rust doctype_icons.txt (the icon list that the desk's icon test
+# imports) here, at its new path in the Go module. Add a path whenever a desk file imports from
+# outside desk/.
 DESK_ALSO = set()
 
 
@@ -39,6 +41,9 @@ def classify_path(path):
         path = path[2:]
     if path.startswith(".github/"):
         return "all"
+    # A .go file outside desk/ is Go wherever it is, deploy/ included.
+    if path.endswith(".go") and not path.startswith("desk/"):
+        return "go"
     # The image build copies the whole module, but only these paths make it run: the weekly run
     # (schedule) covers the rest. deploy/ is not Go: nothing under it is compiled.
     if path in DOCKER_FILES or path.startswith("deploy/"):
