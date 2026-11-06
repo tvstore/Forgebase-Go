@@ -4,7 +4,9 @@ Permanent instructions for every agent (and human) working in this repository. T
 
 ## 1. Overview and guiding principle
 
-Forgebase is a Rust framework for building business applications. It is inspired by the concepts and capabilities of the Frappe Framework. Current project status is kept in [README.md](README.md); see also [docs/blueprint/vision.md](docs/blueprint/vision.md).
+Forgebase is a Go framework for building business applications. It is inspired by the concepts and capabilities of the Frappe Framework. Current project status is kept in [README.md](README.md); see also [docs/blueprint/vision.md](docs/blueprint/vision.md).
+
+**Go port.** This repository is the Go implementation of Forgebase (owner decision of 2026-11-06, [ADR 0026](docs/adr/0026-go-implementation.md)). The Rust implementation at <https://github.com/tvstore/Forgebase> is the **frozen reference implementation** during the port: it is not changed, and the port reproduces its behaviour (HTTP API, database schema, metadata formats, CLI, configuration) without new features. The port follows the plan approved by the owner and recorded in [docs/owner-decisions.md](docs/owner-decisions.md#go-port-2026-11-06-setuju-g1g8-information-session) (G1 to G8, phases P0 to P7 and a parity report). Where a document written for the Rust implementation names a crate, a Rust library or cargo, read the Go equivalent in ADR 0026.
 
 > Build for longevity, not complexity. Maintenance is the most expensive part of software ownership.
 
@@ -27,7 +29,7 @@ Do not copy Frappe source code. Implement designs independently.
 
 Permanent owner constraints:
 
-- Do not choose a dependency only because it is popular; record important decisions as ADRs.
+- Do not choose a dependency only because it is popular; record important decisions as ADRs. The Go dependency set is limited to the list approved in ADR 0026 (standard library first); any other dependency needs the owner's approval.
 - Start as a modular monolith. Do not build dynamic libraries, a WASM plugin runtime or a complex extension system unless an approved requirement needs it.
 - The intended feature scope in the docs is a direction for exploration, not permission to implement everything at once.
 - Verify dependency licenses and their compatibility, and document the license decision.
@@ -88,10 +90,10 @@ Keep Plan, Doing and Review separate. Do not rely on the implementing agent to d
 | [README.md](README.md) | Purpose, status, how to get started |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, run local checks and contribute |
 | [CHANGELOG.md](CHANGELOG.md) | Notable changes, Keep a Changelog format |
-| [docs/blueprint/](docs/blueprint/) | `vision`, `feature-matrix`, `architecture`, `dependency-evaluation`, `security-model`, `milestones`, `maintenance-policy` |
+| [docs/blueprint/](docs/blueprint/) | `vision`, `feature-matrix`, `architecture`, `dependency-evaluation`, `security-model`, `milestones`, `maintenance-policy` (written for the Rust implementation; the Go mapping is in ADR 0026) |
 | [docs/README.md](docs/README.md) | Index of all documentation (guides, blueprint, ADRs, records) and the project status |
 | [docs/guide/](docs/guide/first-app.md) | Guides for people who build on Forgebase and run it: [getting started](docs/guide/getting-started.md), [first app](docs/guide/first-app.md), [CLI](docs/guide/cli.md), [HTTP API](docs/guide/http-api.md), [desk](docs/guide/desk.md), [workflow and reports](docs/guide/workflow-and-reports.md), [customizing and restricting data](docs/guide/customizing.md), [integration](docs/guide/integration.md), [operations](docs/guide/operations.md), [deploy](docs/guide/deploy.md) |
-| [docs/adr/](docs/adr/README.md) | Architecture Decision Records |
+| [docs/adr/](docs/adr/README.md) | Architecture Decision Records, including [ADR 0026](docs/adr/0026-go-implementation.md) (the Go implementation) |
 | [docs/owner-decisions.md](docs/owner-decisions.md) | The owner's decisions, comments and way of thinking, with links to the detailed records; read before planning, keep current |
 
 Do not duplicate content across documents; link instead.
@@ -233,7 +235,7 @@ See also [ADR 0008](docs/adr/0008-model-selection-policy.md) (records the adopti
 
 ## 10. Operating model
 
-Owner decision of 2026-10-28, confirmed by the owner on 2026-10-29. It changes who carries out the workflow, not the workflow itself: sections 3 to 9 still apply. The standing merge authorization in section 10.3 is the prior approval that section 3 (Stage 4), section 5 and section 9.6 require, for merges that meet its conditions and for nothing else.
+Owner decision of 2026-10-28, confirmed by the owner on 2026-10-29 and carried unchanged into the Go port on 2026-11-06 (G7). It changes who carries out the workflow, not the workflow itself: sections 3 to 9 still apply. The standing merge authorization in section 10.3 is the prior approval that section 3 (Stage 4), section 5 and section 9.6 require, for merges that meet its conditions and for nothing else.
 
 ### 10.1 Sessions
 
@@ -252,7 +254,7 @@ Owner decision of 2026-10-28, confirmed by the owner on 2026-10-29. It changes w
 The working session may merge a pull request into `main` without asking again, using a merge commit, only when all of these hold:
 
 1. the work is part of a plan the owner approved;
-2. CI is green on the pull request head;
+2. CI is green on the pull request head. "CI is green" means the `ci-result` check of the run on the pull request while it is **ready for review** (not a draft) and on its current head commit. A run on a draft never counts: on a draft every job is skipped and `ci-result` fails on purpose with a clear message (owner decision G8, [ADR 0026](docs/adr/0026-go-implementation.md)), so a draft run cannot satisfy the required check;
 3. an independent review (section 10.2) reports PASS on the diff being merged. A code change pushed after that PASS (a CI fix included) needs a new review round; only a disclosed documentation-only fix (section 10.2) is exempt.
 
 Red or unreviewed work is never merged. Force pushes to `main` are never allowed. Publishing a release still needs explicit approval.

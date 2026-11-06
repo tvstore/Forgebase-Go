@@ -1,0 +1,229 @@
+name: CI
+
+# Triggers (cost control, see docs/blueprint/maintenance-policy.md, "CI"): pull requests that are not
+# drafts, a weekly run and a manual run. There is no run on push to main: the PR was green on its
+# head before it was merged (AGENTS.md section 10.3). The weekly run and `workflow_dispatch` on main
+# also warm the Go module and build caches that every pull request can read (a cache saved on a PR
+# ref is visible to that PR only; one saved on the default branch is visible to all).
+# `converted_to_draft` starts a run so that a run in progress on the pull request is cancelled by the
+# concurrency group below when the pull request is turned back into a draft (that run skips every
+# job and `ci-result` fails, see the end of this file).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The Go toolchain is installed by .github/ci/install-go.sh from the `toolchain` line of go.mod
+  # (no setup action) and GOTOOLCHAIN=local keeps every `go` command on it. The CI tools below are
+  # not module dependencies: they are installed with `go install` at these pinned versions.
+  STATICCHECK_VERSION: v0.8.2
+  GOVULNCHECK_VERSION: v1.9.0
+
+jobs:
+  # Which parts of the repository changed (C-4). Draft pull requests run nothing: the first job is
+  # skipped and every job that needs it is skipped with it. A skipped job counts as a success for a
+  # required status check, which is why `ci-result` refuses a draft by itself (G8). (The owner's
+  # branch ruleset on main requires only the job `ci-result`, once the owner enables it; see the end
+  # of this file.) The classification is .github/ci/classify-paths.py, unit-tested below. `schedule`
+  # and `workflow_dispatch` do not diff: everything runs.
+  changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.classify.outputs.go }}
+      desk: ${{ steps.classify.outputs.desk }}
+      e2e: ${{ steps.classify.outputs.e2e }}
+      docker: ${{ steps.classify.outputs.docker }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      all: ${{ steps.classify.outputs.all }}
+    steps:
+      # Full history, so that the merge base of the pull request exists.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test the classifier
+        run: python3 .github/ci/test_classify_paths.py
+      # `base...head` diffs against the merge base, so commits that main gained later are not
+      # counted. --no-renames lists both the old and the new path of a rename.
+      - name: Classify the changed paths
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/changed.txt"
+          if [ "$EVENT" = pull_request ]; then
+            git -c core.quotepath=false diff --name-only --no-renames "$BASE...$HEAD" > "$RUNNER_TEMP/changed.txt"
+            cat "$RUNNER_TEMP/changed.txt"
+          fi
+          python3 .github/ci/classify-paths.py --event "$EVENT" < "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/outputs.txt"
+          # Fail closed: an empty or malformed result must fail the job, not skip every check.
+          cat "$RUNNER_TEMP/outputs.txt"
+          [ "$(cut -d= -f1 "$RUNNER_TEMP/outputs.txt" | paste -sd,)" = "go,desk,e2e,docker,docs_only,all" ]
+          [ "$(grep -cE '^[a-z0-9_]+=(true|false)$' "$RUNNER_TEMP/outputs.txt")" = 6 ]
+          cat "$RUNNER_TEMP/outputs.txt" >> "$GITHUB_OUTPUT"
+
+  # Offline check of the relative links and anchors in the Markdown files (about 10 seconds).
+  docs:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 .github/ci/linkcheck.py
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
+    # Pinned to 24.04, not ubuntu-latest: the PostgreSQL client tools that later phases need
+    # (pg_dump, pg_restore) must match the postgres:16 service, and 24.04 ships
+    # postgresql-client-16 in its own archive (26.04 does not). Re-evaluate when the PostgreSQL
+    # floor or the service version changes, or when 24.04 runners are retired.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The integration tests (from P1) need PostgreSQL: they create and drop fb_test_* databases and
+    # fail clearly when FORGEBASE_TEST_DATABASE_URL is not set; they are never skipped.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forgebase
+          POSTGRES_PASSWORD: forgebase
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgebase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FORGEBASE_TEST_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Go toolchain
+        run: .github/ci/install-go.sh
+      # Module downloads, the build cache and the installed CI tools. The key follows go.mod, go.sum
+      # and the tool versions; restore-keys gives a partial hit after a change of any of them.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/go/bin
+          key: ${{ runner.os }}-check-${{ env.STATICCHECK_VERSION }}-${{ env.GOVULNCHECK_VERSION }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-check-${{ env.STATICCHECK_VERSION }}-${{ env.GOVULNCHECK_VERSION }}-
+            ${{ runner.os }}-check-
+      - name: Install staticcheck and govulncheck (pinned)
+        run: |
+          set -eu
+          go install "honnef.co/go/tools/cmd/staticcheck@$STATICCHECK_VERSION"
+          go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted (run gofmt -w):" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      # ./... skips directories that start with a dot, so the licence checker under .github/ is
+      # named explicitly.
+      - run: go vet ./... ./.github/ci/licensecheck
+      - run: staticcheck ./... ./.github/ci/licensecheck
+      - run: govulncheck ./...
+      - run: go test -race ./...
+      - run: go build ./...
+      - run: go mod verify
+      # Fails when go.mod or go.sum is not tidy.
+      - run: go mod tidy -diff
+
+  # Every third-party module in the build graph must have an allowed licence (MIT, Apache-2.0,
+  # BSD-2-Clause, BSD-3-Clause, ISC). The checker is .github/ci/licensecheck, standard library only.
+  licenses:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Go toolchain
+        run: .github/ci/install-go.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-licenses-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: ${{ runner.os }}-licenses-
+      - name: Test the licence checker
+        run: go test ./.github/ci/licensecheck
+      # The module directories must exist for the checker to read their licence files.
+      - run: go mod download
+      - name: Check the licences
+        run: go run ./.github/ci/licensecheck
+
+  # The single required status check of the branch ruleset on main (owner decision of 2026-10-31,
+  # docs/blueprint/maintenance-policy.md, "CI"). It runs always, also when a job failed or was
+  # cancelled, and fails unless every job it needs finished with `success` or `skipped` (a skipped
+  # job is how path filtering leaves jobs out). Any other result, including one this script does
+  # not know, fails.
+  #
+  # G8 (Go port, ADR 0026): on a draft pull request this job FAILS, with a clear message. On a draft
+  # every other job is skipped, which a required check would count as a pass; failing here means
+  # that a draft run can never satisfy the required check. CI runs again, and `ci-result` passes
+  # or fails on its merits, when the pull request is marked ready for review; merging needs the
+  # `ci-result` of the run on the READY pull request head (AGENTS.md section 10.3).
+  #
+  # Later phases add jobs (docker, desk, e2e, sites, app-template, ...). Every new job must be added
+  # to `needs` here, or the ruleset does not guard it.
+  ci-result:
+    if: always()
+    needs: [changes, docs, check, licenses]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a draft pull request
+        env:
+          EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ "$DRAFT" = true ]; then
+            echo "ci-result: this pull request is a draft; CI does not run on drafts. Mark it ready for review to run CI. A draft run never satisfies the required check."
+            exit 1
+          fi
+      - name: Fail if any job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          if not needs:
+              sys.exit("no job result to check")
+          bad = {name: job.get("result") for name, job in needs.items() if job.get("result") not in ("success", "skipped")}
+          for name, job in sorted(needs.items()):
+              print(f"{name}: {job.get('result')}")
+          if bad:
+              sys.exit(f"failed, cancelled or unknown: {bad}")
+          PY
