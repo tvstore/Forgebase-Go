@@ -1,0 +1,47 @@
+# A DocType of the `sales` example app (examples/sales): one row per lifecycle event of a sales order, written by the
+# background job `sales.log_order_event` (src/lib.rs), never by a user.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "sales_order_log"
+label = "Sales Order Log"
+# The key `<order>-<event>` (for example `SO-2026-00001-submitted`) is the name. It is unique, so a job that runs twice cannot
+# write a second row for the same event. The job checks first, which keeps the normal path quiet; if two deliveries run at the
+# same moment, the unique key refuses the second insert and the job looks again and finds the row, so it succeeds.
+naming = { field = "key" }
+title_field = "key"
+icon = "clipboard-list"
+list_fields = ["key", "sales_order", "event", "total"]
+
+[[fields]]
+name = "key"
+type = "data"
+max_length = 140
+required = true
+unique = true
+
+# A Link is a foreign key (ON DELETE RESTRICT): a cancelled order that has log rows cannot be deleted, which is wanted here
+# (the log is the history of the order). It can still be amended.
+[[fields]]
+name = "sales_order"
+type = "link"
+target = "sales_order"
+required = true
+
+[[fields]]
+name = "event"
+type = "select"
+options = ["submitted", "cancelled"]
+
+[[fields]]
+name = "total"
+type = "decimal"
+precision = 12
+scale = 2
+
+# Read only for everyone: the job writes as the trusted system context, which ignores permission rules, so no role needs write.
+[[permissions]]
+role = "Sales User"
+read = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true

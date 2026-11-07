@@ -19,7 +19,8 @@ import (
 // crates/forgebase/tests/cli.rs and sites.rs; the exec-based ones (exit codes of the real process,
 // standard input of a pipe) are in cmd/forgebase.
 //
-// Deferred, with the phase that brings the command: serve_* (P3.2, the HTTP API), the_worker_of_a_binary_without_app_jobs_... (P5),
+// The serve_* tests run the real binary (cmd/forgebase, serve_test.go). Deferred, with the phase that brings the
+// command: the_worker_of_a_binary_without_app_jobs_... (P5),
 // doc_transition_takes_a_workflow_transition_as_the_system_context and
 // migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone (P6), the webhook_*,
 // data_*, customize_* and user_permission_* tests (P7).

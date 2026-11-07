@@ -54,20 +54,17 @@ class ClassifyTest(unittest.TestCase):
         # the desk job reads it, not the Go jobs).
         self.assertEqual(flags(["desk/e2e/seed.go"]), expect(desk=True, e2e=True))
 
-    def test_desk_also_is_empty_for_now(self):
-        self.assertEqual(cp.DESK_ALSO, set())
+    def test_desk_also_is_the_icon_list(self):
+        # desk/src/icons.test.ts imports it: the desk reads one file outside desk/.
+        self.assertEqual(cp.DESK_ALSO, {"internal/core/doctype_icons.txt"})
 
     def test_desk_also_file_runs_desk_and_go(self):
-        # The set is empty in P0; P3 adds the icon list. Exercise the logic with a stand-in path.
-        original = cp.DESK_ALSO
-        cp.DESK_ALSO = {"internal/core/doctype_icons.txt"}
-        try:
-            self.assertEqual(flags(["internal/core/doctype_icons.txt"]),
-                             expect(go=True, desk=True, e2e=True))
-            self.assertEqual(flags(["./internal/core/doctype_icons.txt"]),
-                             expect(go=True, desk=True, e2e=True))
-        finally:
-            cp.DESK_ALSO = original
+        # A change of the icon list is Go (it is compiled in) and also runs the desk and e2e jobs.
+        self.assertEqual(flags(["internal/core/doctype_icons.txt"]), expect(go=True, desk=True, e2e=True))
+        self.assertEqual(flags(["./internal/core/doctype_icons.txt"]), expect(go=True, desk=True, e2e=True))
+        self.assertEqual(flags(["internal/core/doctype_icons.txt", "docs/a.md"]), expect(go=True, desk=True, e2e=True))
+        # Another file of internal/core does not run the desk job.
+        self.assertEqual(flags(["internal/core/meta.go"]), expect(go=True, e2e=True))
 
     def test_go_file_under_deploy_is_go_and_docker(self):
         self.assertEqual(flags(["deploy/tools/check.go"]), expect(go=True, e2e=True))

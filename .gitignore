@@ -14,6 +14,6 @@ deploy/.env
 .env
 __pycache__/
 
-# Desk (arrives in P3)
+# Desk (npm)
 desk/node_modules/
 desk/dist/

@@ -45,7 +45,7 @@ The port has eight phases, then a parity report that compares the Go implementat
 | P0 | Foundations: the Go module and package skeleton, CI (with `ci-result` failing on drafts), licence check, documentation, [ADR 0026](docs/adr/0026-go-implementation.md) | **In progress** |
 | P1 | Metadata and storage (M1): P1.1, the metadata, validation and permission core (`internal/core`, `internal/decimal`), and P1.2, the database foundations (`internal/db`: the pool, the framework migrations and the schema sync), are implemented | **In progress** |
 | P2 | Relationships and lifecycle (M2): P2.1, the document pipeline (`internal/db`: insert, get, update, delete, submit, cancel and amend with links, child tables, hooks, series, the docstatus rules and the outbox), is implemented; P2.2, the command-line skeleton (`forgebase --help`, `migrate` and the `doc` commands insert, get, update, delete, submit, cancel and amend on the stock binary), is implemented | **In progress** |
-| P3 | Auth, permissions and the REST API (M3), the minimal desk (M4) and UX, serving the unchanged desk: P3.1, authentication storage (users, sessions, API tokens, lockout), the list query, link titles and the `user`, `token` and `doc list` commands, is implemented | **In progress** |
+| P3 | Auth, permissions and the REST API (M3), the minimal desk (M4) and UX, serving the unchanged desk: P3.1, authentication storage (users, sessions, API tokens, lockout), the list query, link titles and the `user`, `token` and `doc list` commands, and P3.2, the HTTP API (`internal/httpapi`), `forgebase serve` and the desk served by Go (the **first visible result**), are implemented | **In progress** |
 | P4 | App model and developer experience (M5), the example apps, `forgebase/testing` | Planned |
 | P5 | Jobs and scheduler (M6), sites (M7), PostgreSQL TLS (M9.0, moved from P7), container and deploy (D1, D2) | Planned |
 | P6 | Workflow and reports (M8) | Planned |
@@ -56,21 +56,30 @@ The milestones of the Rust implementation (M0 to M10) and their exit criteria ar
 
 ## Quick start
 
-Coming in **P3 and P4** (`serve`, then the example apps and the desk served by the Go server). Today the stock binary has `migrate`, the `doc` commands insert, get, list, update, delete, submit, cancel and amend, and the `user` and `token` commands (every other command parses its arguments and says in which phase it arrives):
+**The first visible result (P3.2).** The stock binary serves the HTTP API and the unchanged desk. The example apps, the app model and the rest of the routes (workflow transitions, saved views, summaries, reports, export and import, custom fields) come in P4 to P7; the guides describe them already, and their code examples still show the Rust API until the phase that ports them.
 
 ```sh
 export GOTOOLCHAIN=go1.27.3 FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/database
+(cd desk && npm ci && npm run build)                      # writes desk/dist (Node.js ^20.19.0 || >=22.12.0)
+go run ./cmd/forgebase migrate --doctypes internal/app/testdata/quickstart
+echo 'a long password' | go run ./cmd/forgebase user create root --role Administrator
+FORGEBASE_DEV_INSECURE_COOKIES=1 FORGEBASE_DESK_DIR=desk/dist \
+  go run ./cmd/forgebase serve --doctypes internal/app/testdata/quickstart
+# open http://localhost:8000/desk/ and log in as root; the API is under http://localhost:8000/api/v1
+```
+
+`FORGEBASE_DEV_INSECURE_COOKIES=1` leaves `Secure` off the session cookie, for plain HTTP on localhost only; behind HTTPS leave it out. `serve` does not run migrations. The other settings (`FORGEBASE_LISTEN`, `FORGEBASE_ALLOWED_HOSTS`, the config file and its sites) are in the [HTTP API guide](docs/guide/http-api.md) and the [CLI guide](docs/guide/cli.md#sites). The command line works without the server too:
+
+```sh
 go run ./cmd/forgebase --version                          # forgebase 0.0.0
 go run ./cmd/forgebase --help
-go run ./cmd/forgebase migrate --doctypes internal/app/testdata/quickstart
 go run ./cmd/forgebase doc insert customer --doctypes internal/app/testdata/quickstart \
   --data '{"email":"ann@example.com","full_name":"Ann"}'
 go run ./cmd/forgebase doc list customer --doctypes internal/app/testdata/quickstart --limit 5
-echo 'a long password' | go run ./cmd/forgebase user create ann --role "Sales Manager"
-go run ./cmd/forgebase token create ann                   # prints key:secret once
+go run ./cmd/forgebase token create root                  # prints key:secret once, for "Authorization: token key:secret"
 ```
 
-Until then, the quick start of the Rust implementation in the [getting started guide](docs/guide/getting-started.md) shows what the Go port will do.
+Every command that is not ported yet parses its arguments and says in which phase it arrives. The quick start of the Rust implementation in the [getting started guide](docs/guide/getting-started.md) shows the rest of what the Go port will do.
 
 ## Documentation
 

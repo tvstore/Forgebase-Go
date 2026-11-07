@@ -39,7 +39,6 @@ type Options struct {
 // notYet maps the commands that are not ported yet to the phase that brings them. The commands are
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
-	"serve":           "P3",
 	"new-app":         "P4",
 	"worker":          "P5",
 	"job":             "P5",
@@ -127,6 +126,10 @@ func (r *runner) run(ctx context.Context) error {
 	cfg, err := loadConfig(r.m.str("config"), r.o.Getenv, nil)
 	if err != nil {
 		return err
+	}
+	// serve serves every site (or the one --site names); the other commands work on exactly one.
+	if r.m.path[0] == "serve" {
+		return r.serve(ctx, cfg)
 	}
 	siteName, named := r.m.opt("site")
 	site, err := cfg.selectSite(siteName, named)

@@ -9,10 +9,15 @@
 crates/
 Cargo.toml
 
-# Created by P4 (example apps, tests) and P5 (container, deploy, sites)
-examples/
+# Created by P4 (the example apps). P3.2 copied only the DocType files of examples/sales/doctypes/
+# (the end-to-end seed needs them), so the rest of examples/ is listed path by path.
+examples/sales/README.md
+examples/sales/src/
+examples/sales/tests/
+examples/sales/fixtures/
+examples/sales_extension/
+examples/sites/
+
+# Created by P5 (container, deploy, sites)
 Dockerfile
 deploy/
-
-# Created by P3 (the desk is copied with its end-to-end specs)
-desk/

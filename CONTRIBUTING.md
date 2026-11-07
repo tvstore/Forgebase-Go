@@ -7,7 +7,7 @@ Workflow, approval gates, git safety and review rules are defined only in [AGENT
 - Go **1.27.3**, the version of the `toolchain` line of `go.mod` (the minimum, the `go` line, is 1.26.0). With a Go of 1.21 or newer installed, running `go` in this repository downloads the pinned toolchain automatically; to be explicit, set `GOTOOLCHAIN=go1.27.3`. CI installs the same version from <https://go.dev/dl/> with a verified checksum.
 - A PostgreSQL 16 server for the integration tests (from P1), see [below](#postgresql-for-tests).
 - Python 3 (standard library only) for the CI helper scripts.
-- For the desk (`desk/`, from P3): Node.js `^20.19.0 || >=22.12.0` (Vite 8) with npm. `desk/.npmrc` sets `ignore-scripts=true`, so `npm ci` runs no install scripts of dependencies.
+- For the desk (`desk/`, from P3.2): Node.js `^20.19.0 || >=22.12.0` (Vite 8) with npm. `desk/.npmrc` sets `ignore-scripts=true`, so `npm ci` runs no install scripts of dependencies.
 - The CI tools are not module dependencies; `go run` fetches them at pinned versions: `honnef.co/go/tools/cmd/staticcheck@v0.8.2` and `golang.org/x/vuln/cmd/govulncheck@v1.9.0`.
 
 ## Local checks
@@ -50,7 +50,20 @@ npm run licenses    # license allow-list over package-lock.json
 npm audit --audit-level=high
 ```
 
-The jobs `docker`, `desk`, `e2e`, `sites` and `app-template` of the Rust CI come back with the phases that port what they check; the local commands for them are added to this file then.
+The `e2e` job runs Playwright against a real `forgebase serve` with the built desk. To run it locally (Playwright and a Chromium must be installed: `cd desk && npx playwright install chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium binary), with a scratch database that nothing else uses:
+
+```sh
+go build -o bin/forgebase ./cmd/forgebase
+(cd desk && npm ci && npm run build)
+export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/forgebase_e2e   # an EMPTY database
+.github/ci/e2e-seed.sh                                   # the temporary P3 seed; writes bin/e2e/doctypes, migrates, creates the users
+FORGEBASE_DESK_DIR=desk/dist FORGEBASE_DEV_INSECURE_COOKIES=1 bin/forgebase serve --doctypes bin/e2e/doctypes &
+(cd desk && E2E_BASE_URL=http://127.0.0.1:8000 npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts --grep "<E2E_GREP of the e2e job in ci.yml>")
+```
+
+The seed runs against an empty database each time (drop and create it again for a second run). The tests of the specs that need routes of later phases are not selected yet; the pattern in `ci.yml` grows with the phases.
+
+The jobs `docker`, `sites` and `app-template` of the Rust CI come back with the phases that port what they check; the local commands for them are added to this file then.
 
 ## PostgreSQL for tests
 
