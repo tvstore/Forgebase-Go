@@ -152,8 +152,9 @@ func smartUsage(c *command, used []string) string {
 }
 
 // A group is the ArgGroup the clap derive makes (args.rs:389-434): one per flattened Args struct, with
-// its arguments as members, and one per command or variant, which has members only when it flattens
-// nothing (it then has no group members at all, args.rs:404-418).
+// that struct's arguments as members, and one per command or variant. The group of a command that
+// flattens an Args struct has no members of its own, so groupsOf gives it none; the group of a command
+// that flattens nothing has all of its arguments as members (args.rs:404-418).
 type group struct {
 	id      string
 	members []string
