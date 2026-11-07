@@ -155,6 +155,67 @@ func (d *DB) Migrate(b *forgebase.Binary, dryRun bool) (*Migrated, error) {
 	return done, nil
 }
 
+// JobRun is what [RunJobs] did. Only read it.
+type JobRun struct {
+	// Done is the number of jobs that ended done.
+	Done int
+	// Retried is the number of attempts that failed and were queued again (after a delay; see [RunJobs]).
+	Retried int
+	// Dead is the number of jobs that ended dead.
+	Dead int
+}
+
+// RunJobs runs every job of b that is due, one at a time, until none is due, with the same code the worker
+// uses (claim, handler in one transaction with the completion, retry or dead). Jobs that hooks and other
+// jobs enqueue while it runs are run too.
+//
+// A job that fails and is retried is queued again after its backoff (30 seconds by default), so it is not
+// run again by this call: Retried counts it, and the test can check the row, or make it due with SQL
+// (UPDATE fb_job SET run_at = now()) and call RunJobs again. Jobs of names the binary does not know are left
+// alone. The worker's log lines go to standard error.
+//
+// It fails the test when the apps do not fit together, on a database error, and after 10 000 jobs (a job that
+// enqueues itself without end).
+func RunJobs(b *forgebase.Binary, d *DB) JobRun {
+	d.t.Helper()
+	composed, err := app.ComposeBinary(b)
+	if err != nil {
+		d.t.Fatalf("the apps do not fit together: %v", err)
+	}
+	run, err := app.RunJobs(context.Background(), composed, d.pool)
+	if err != nil {
+		d.t.Fatalf("RunJobs: %v", err)
+	}
+	return JobRun{Done: run.Done, Retried: run.Retried, Dead: run.Dead}
+}
+
+// RunSchedulesAt enqueues the job of every schedule of b that is due at at (its next_run_at is not after at)
+// and returns how many jobs it enqueued. It runs the worker's own tick with at in place of the database's
+// now(); [RunJobs] then runs the jobs. After a tick the schedule's next_run_at is the first time after at, so
+// the same at enqueues nothing more, and a test moves time forward by passing a later at.
+//
+// [DB.Migrate] writes the schedules, so migrate first (a database that was not migrated has no schedule
+// table). The payload of each job is {"scheduled_for": ...} with the time that was due. The built-in
+// clean-up jobs are scheduled like the app's, so a due built-in job is enqueued too and counted.
+//
+//	db.Migrate(binary, false)
+//	fbtest.RunSchedulesAt(binary, db, time.Now().Add(24*time.Hour))
+//	fbtest.RunJobs(binary, db)
+//
+// It fails the test when the apps do not fit together or on a database error (for example, before Migrate).
+func RunSchedulesAt(b *forgebase.Binary, d *DB, at time.Time) int {
+	d.t.Helper()
+	composed, err := app.ComposeBinary(b)
+	if err != nil {
+		d.t.Fatalf("the apps do not fit together: %v", err)
+	}
+	n, err := app.RunSchedulesAt(context.Background(), composed, d.pool, at)
+	if err != nil {
+		d.t.Fatalf("RunSchedulesAt: %v", err)
+	}
+	return n
+}
+
 // Exec runs SQL (several statements are fine). It fails the test when the SQL fails.
 func (d *DB) Exec(sql string) {
 	d.t.Helper()

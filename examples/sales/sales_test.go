@@ -6,8 +6,10 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tvstore/forgebase-go"
 	fbtest "github.com/tvstore/forgebase-go/testing"
@@ -19,12 +21,13 @@ import (
 // need PostgreSQL (see README.md) fail, they do not skip, when FORGEBASE_TEST_DATABASE_URL is not set.
 //
 // Ported in P4 (the app model): the hooks without a database, the data migration, the computed amounts and
-// total over HTTP and the level 1 field credit_limit. Deferred, with the phase whose feature the Rust test
-// uses:
+// total over HTTP and the level 1 field credit_limit. Ported in P5 (jobs): the job tests, adapted where the Rust
+// test submits or cancels an order with a workflow transition (that is P6): the job is queued with SQL, and an
+// order is made submitted with SQL, so the handlers are tested as they run in a worker. Deferred, with the phase
+// whose feature the Rust test uses:
 //
-//   - P5 (jobs): a_submit_and_a_cancel_are_logged_by_a_job, a_job_delivered_twice_logs_once,
-//     a_refused_submit_leaves_no_job, a_job_for_a_missing_order_is_dead_at_once,
-//     the_daily_summary_counts_the_submitted_orders_of_the_day_before_the_tick;
+//   - P6 (the transitions of the job tests): the transition half of a_submit_and_a_cancel_are_logged_by_a_job
+//     (the outbox over HTTP) and a_refused_submit_leaves_no_job;
 //   - P6 (workflow transitions and reports): a_draft_may_have_no_items_but_cannot_be_submitted,
 //     an_order_with_items_can_be_submitted, permissions_are_enforced (the transitions),
 //     an_order_goes_from_draft_to_cancelled_through_the_workflow, plain_submit_and_cancel_are_refused_on_an_order,
@@ -659,5 +662,194 @@ func TestAnUpdateWithoutTheCreditLimitKeepsTheStoredValue(t *testing.T) {
 	read := e.manager.Get(customers + "/ada@example.com")
 	if at(read.Data(), "credit_limit") != "1250.50" || at(read.Data(), "loyalty_points") != float64(5) {
 		t.Errorf("%s", read.Text)
+	}
+}
+
+// ---- Jobs and the schedule (P5) ---------------------------------------------------------------
+
+func binary() *forgebase.Binary { return forgebase.New().App(sales.App()) }
+
+// draft creates an order of items (and order_date when given) as the Sales User and returns its name. The first
+// item is 3 x 10.50 and the second 2 x 0.25, so twoItems totals 32.00.
+func draft(t *testing.T, e *env, orderDate string, items []any) string {
+	t.Helper()
+	body := map[string]any{"customer": "ada@example.com", "items": items}
+	if orderDate != "" {
+		body["order_date"] = orderDate
+	}
+	created := e.user.Post(orders, body)
+	expectStatus(t, created, 201)
+	return at(created.Data(), "name").(string)
+}
+
+// queueJob queues a job as the test: the outbox of a submit or cancel is P6.
+func queueJob(e *env, name, payload string) {
+	e.db.Exec(fmt.Sprintf("INSERT INTO fb_job (id, name, payload, status, enqueued_by) "+
+		"VALUES (gen_random_uuid(), '%s', '%s', 'queued', 'test')", name, payload))
+}
+
+// duplicateJobs copies the job rows named name into new queued rows: the same job delivered twice.
+func duplicateJobs(e *env, name string) {
+	e.db.Exec(fmt.Sprintf("INSERT INTO fb_job (id, name, payload, status, enqueued_by) "+
+		"SELECT gen_random_uuid(), name, payload, 'queued', 'test' FROM fb_job WHERE name = '%s'", name))
+}
+
+func scalar(e *env, sql string) string { return e.db.Rows(sql)[0][0] }
+
+func run(counts fbtest.JobRun) [3]int { return [3]int{counts.Done, counts.Retried, counts.Dead} }
+
+// Rust: sales.rs::a_submit_and_a_cancel_are_logged_by_a_job (the job half: the submit and the cancel are
+// transitions, P6, so the events are queued with SQL)
+func TestALogJobWritesTheLogOfASubmitAndACancel(t *testing.T) {
+	e := newEnv(t)
+	customer(t, e.manager)
+	name := draft(t, e, "", twoItems())
+	queueJob(e, "sales.log_order_event", fmt.Sprintf(`{"order": "%s", "event": "submitted"}`, name))
+
+	got := fbtest.RunJobs(binary(), e.db)
+	if run(got) != [3]int{1, 0, 0} {
+		t.Fatalf("%+v", got)
+	}
+	logs := e.db.Rows("SELECT name, event, total::text, owner, modified_by FROM doc_sales_order_log")
+	want := [][]string{{name + "-submitted", "submitted", "32.00", "job:sales.log_order_event", "job:sales.log_order_event"}}
+	if !reflect.DeepEqual(logs, want) {
+		t.Errorf("%v, want %v", logs, want)
+	}
+	// The log links to the order, and a Sales User can read it but not change it.
+	read := e.user.Get("/api/v1/resource/sales_order_log/" + name + "-submitted")
+	expectStatus(t, read, 200)
+	if at(read.Data(), "sales_order") != name {
+		t.Errorf("%s", read.Text)
+	}
+	expectStatus(t, e.user.Post("/api/v1/resource/sales_order_log", map[string]any{"key": "x", "sales_order": name}), 403)
+
+	queueJob(e, "sales.log_order_event", fmt.Sprintf(`{"order": "%s", "event": "cancelled"}`, name))
+	if got := fbtest.RunJobs(binary(), e.db); got.Done != 1 {
+		t.Fatalf("%+v", got)
+	}
+	events := e.db.Rows(`SELECT event FROM doc_sales_order_log ORDER BY event COLLATE "C"`)
+	if !reflect.DeepEqual(events, [][]string{{"cancelled"}, {"submitted"}}) {
+		t.Errorf("%v", events)
+	}
+}
+
+// Rust: sales.rs::a_job_delivered_twice_logs_once
+func TestAJobDeliveredTwiceLogsOnce(t *testing.T) {
+	e := newEnv(t)
+	customer(t, e.manager)
+	name := draft(t, e, "", twoItems())
+	queueJob(e, "sales.log_order_event", fmt.Sprintf(`{"order": "%s", "event": "submitted"}`, name))
+	// At-least-once delivery: the same job twice, as after a worker crash.
+	duplicateJobs(e, "sales.log_order_event")
+
+	got := fbtest.RunJobs(binary(), e.db)
+	if run(got) != [3]int{2, 0, 0} {
+		t.Fatalf("%+v", got)
+	}
+	if n := scalar(e, "SELECT count(*)::text FROM doc_sales_order_log"); n != "1" {
+		t.Errorf("%s log rows", n)
+	}
+	if status := e.db.Rows("SELECT status, count(*)::text FROM fb_job GROUP BY status"); !reflect.DeepEqual(status, [][]string{{"done", "2"}}) {
+		t.Errorf("%v", status)
+	}
+}
+
+// Rust: sales.rs::a_job_for_a_missing_order_is_dead_at_once
+func TestAJobForAMissingOrderIsDeadAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.db.Exec(`INSERT INTO fb_job (id, name, payload, status, enqueued_by)
+		VALUES (gen_random_uuid(), 'sales.log_order_event', '{"order": "SO-0", "event": "submitted"}', 'queued', 'test'),
+		       (gen_random_uuid(), 'sales.log_order_event', '{}', 'queued', 'test')`)
+	got := fbtest.RunJobs(binary(), e.db)
+	if run(got) != [3]int{0, 0, 2} {
+		t.Fatalf("%+v", got)
+	}
+	errors := e.db.Rows(`SELECT attempts::text, last_error FROM fb_job ORDER BY last_error COLLATE "C"`)
+	if len(errors) != 2 || errors[0][0] != "1" || errors[1][0] != "1" {
+		t.Fatalf("%v", errors)
+	}
+	if !strings.HasPrefix(errors[0][1], "the payload must be") {
+		t.Errorf("%v", errors)
+	}
+	if errors[1][1] != "the sales order SO-0 does not exist" {
+		t.Errorf("%v", errors)
+	}
+}
+
+// Rust: sales.rs::the_daily_summary_counts_the_submitted_orders_of_the_day_before_the_tick (the orders are
+// made submitted or cancelled with SQL: the transitions are P6)
+func TestTheDailySummaryCountsTheSubmittedOrdersOfTheDayBeforeTheTick(t *testing.T) {
+	e := newEnv(t)
+	customer(t, e.manager)
+
+	// migrate stored the schedule: due at the next 02:00 UTC. The summary is of the day before that tick. Both
+	// are read from the database, so the test does not depend on when it runs.
+	due := e.db.Rows(`SELECT ((next_run_at AT TIME ZONE 'UTC')::date - 1)::text, extract(epoch FROM next_run_at)::bigint::text
+		FROM fb_schedule WHERE name = 'sales.daily_summary'`)[0]
+	day := due[0]
+	epoch, err := strconv.ParseInt(due[1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick := time.Unix(epoch, 0).UTC()
+
+	setStatus := func(name string, docstatus int) {
+		e.db.Exec(fmt.Sprintf("UPDATE doc_sales_order SET docstatus = %d WHERE name = '%s'", docstatus, name))
+	}
+	// Two submitted orders on the day (32.00 and 5.00) are counted.
+	for _, items := range [][]any{
+		twoItems(),
+		{map[string]any{"description": "Pen", "qty": 1, "rate": "5.00"}},
+	} {
+		setStatus(draft(t, e, day, items), 1)
+	}
+	// Not counted: a draft of the day, a cancelled order of the day, a submitted order of another day.
+	draft(t, e, day, twoItems())
+	setStatus(draft(t, e, day, twoItems()), 2)
+	setStatus(draft(t, e, "2000-01-01", twoItems()), 1)
+
+	// The tick: the schedule enqueues the job once, and a second call for the same time does not enqueue it
+	// again.
+	if n := fbtest.RunSchedulesAt(binary(), e.db, tick); n < 1 {
+		t.Fatalf("%d", n)
+	}
+	if n := fbtest.RunSchedulesAt(binary(), e.db, tick); n != 0 {
+		t.Fatalf("enqueued once: %d", n)
+	}
+	queued := e.db.Rows("SELECT count(*)::text, min(payload->>'scheduled_for') FROM fb_job WHERE name = 'sales.daily_summary'")
+	if queued[0][0] != "1" || !strings.HasPrefix(queued[0][1], tick.Format(time.DateOnly)+"T02:00:00") {
+		t.Errorf("%v", queued)
+	}
+
+	if got := fbtest.RunJobs(binary(), e.db); got.Dead != 0 {
+		t.Fatalf("%+v", got)
+	}
+	summary := e.db.Rows("SELECT name, day, orders::text, total::text, owner FROM doc_sales_daily_summary")
+	if want := [][]string{{day, day, "2", "37.00", "job:sales.daily_summary"}}; !reflect.DeepEqual(summary, want) {
+		t.Errorf("%v, want %v", summary, want)
+	}
+
+	// The same tick delivered again (an operator enqueued it): the handler finds the summary and does nothing,
+	// and the job still ends done.
+	duplicateJobs(e, "sales.daily_summary")
+	if got := fbtest.RunJobs(binary(), e.db); got.Done != 1 || got.Dead != 0 {
+		t.Fatalf("%+v", got)
+	}
+	if n := scalar(e, "SELECT count(*)::text FROM doc_sales_daily_summary"); n != "1" {
+		t.Errorf("%s summaries", n)
+	}
+}
+
+func TestADailySummaryNeedsAScheduledForTime(t *testing.T) {
+	e := newEnv(t)
+	for _, payload := range []string{`{}`, `{"scheduled_for": "tomorrow"}`, `{"scheduled_for": 5}`} {
+		queueJob(e, "sales.daily_summary", payload)
+	}
+	got := fbtest.RunJobs(binary(), e.db)
+	if run(got) != [3]int{0, 0, 3} {
+		t.Fatalf("%+v", got)
+	}
+	if n := scalar(e, "SELECT count(*)::text FROM fb_job WHERE last_error LIKE 'the payload must be {\"scheduled_for\"%'"); n != "3" {
+		t.Errorf("%s jobs with the message", n)
 	}
 }

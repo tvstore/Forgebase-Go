@@ -13,9 +13,9 @@ import (
 // migrations of the apps, under one session-level lock (the Rust functions migrate, migrate_apps and
 // migrate_all of forgebase-db).
 //
-// The schedules, the workflow backfill and the fixtures arrive with the job queue (P5), workflows
-// (P6) and fixtures (P7): the report already has their places (and the app's text report prints
-// them), so adding them does not change these signatures.
+// The workflow backfill and the fixtures arrive with workflows (P6) and fixtures (P7): the report already
+// has their places (and the app's text report prints them), so adding them does not change these
+// signatures. The schedules (P5) are synced by MigrateAll.
 
 // AppliedAppMigration is one app data migration that was applied (or, in a dry run, is pending).
 type AppliedAppMigration struct {
@@ -40,7 +40,9 @@ type MigrateReport struct {
 	Sync *SyncReport
 	// AppMigrations are the app data migrations, in the order they run.
 	AppMigrations []AppliedAppMigration
-	// Schedules are the changes made to the schedules, one line each (P5).
+	// Schedules are the changes made to the schedules (add, change, remove; see SyncSchedules), one
+	// line each; with a dry run, the planned ones. Empty when the schedules were not given (MigrateApps)
+	// or, in a dry run, while framework migrations are pending.
 	Schedules []string
 	// WorkflowWarnings are documents in a workflow state the workflow no longer defines (P6).
 	WorkflowWarnings []string
@@ -86,6 +88,14 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, registry *core.Registry, o
 //
 // The rest is as for Migrate.
 func MigrateApps(ctx context.Context, pool *pgxpool.Pool, registry *core.Registry, apps []AppSpec, options SyncOptions) (*MigrateReport, error) {
+	return MigrateAll(ctx, pool, registry, apps, nil, options)
+}
+
+// MigrateAll is MigrateApps and then, in the same run and under the same lock, the sync of the schedules
+// the binary declares (SyncSchedules) when schedules is not nil: schedules the binary does not declare are
+// deleted, so the binary that migrates is the source of truth. A non-nil empty slice therefore deletes
+// them all; nil leaves the schedule table alone (Rust: Option<&[Declared]>).
+func MigrateAll(ctx context.Context, pool *pgxpool.Pool, registry *core.Registry, apps []AppSpec, schedules []DeclaredSchedule, options SyncOptions) (*MigrateReport, error) {
 	acquired, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, &Error{Kind: ErrPool, Message: err.Error(), Err: err}
@@ -109,13 +119,13 @@ func MigrateApps(ctx context.Context, pool *pgxpool.Pool, registry *core.Registr
 	if resetErr != nil {
 		return nil, wrap(resetErr)
 	}
-	report, err := migrateLocked(ctx, conn, registry, apps, options)
+	report, err := migrateLocked(ctx, conn, registry, apps, schedules, options)
 	// Released explicitly as well, so that a caller that keeps going does not wait for the close.
 	_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", MigrateLockKey)
 	return report, err
 }
 
-func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry, apps []AppSpec, options SyncOptions) (*MigrateReport, error) {
+func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry, apps []AppSpec, schedules []DeclaredSchedule, options SyncOptions) (*MigrateReport, error) {
 	migrations, err := MigrateFramework(ctx, conn, options.DryRun)
 	if err != nil {
 		return nil, err
@@ -175,7 +185,13 @@ func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry,
 			}
 		}
 	}
-	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, FixturesPlanned: true}, nil
+	var lines []string
+	if schedules != nil {
+		if lines, err = SyncSchedules(ctx, conn, schedules, options.DryRun); err != nil {
+			return nil, err
+		}
+	}
+	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, Schedules: lines, FixturesPlanned: true}, nil
 }
 
 func applied(app string, m AppMigration) AppliedAppMigration {

@@ -15,8 +15,8 @@ import (
 // The outbox (ADR 0013, ADR 0020): the jobs a document operation causes are inserted in the
 // operation's transaction, so a job exists if and only if the operation committed. This file has
 // the two ways in: the jobs that hooks enqueued (Rust jobs.rs enqueue and enqueue_collected) and
-// the webhook deliveries (webhooks.rs enqueue). The rest of the job queue (claim, complete, ...) is
-// P5 and the rest of the webhooks (add, list, ...) is P7.
+// the webhook deliveries (webhooks.rs enqueue). The rest of the job queue (claim, complete, ...) is in
+// jobs.go and the rest of the webhooks (add, list, ...) is P7.
 
 // Enqueue inserts a job and returns its id. name must be a job of registry, and the payload (any
 // value encoding/json can marshal) must pass core.CheckJobPayload (64 KiB of JSON); otherwise

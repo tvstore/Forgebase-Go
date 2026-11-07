@@ -1,6 +1,6 @@
 # The command-line tool
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command (`site`, `doc transition`, `data`, `webhook`, `customize`, `user permission`) parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
 
 Walkthrough of the `forgebase` commands (or the binary of your app) for users and tokens, background jobs, webhooks and sites. The document commands (`doc`) are in [Getting started](getting-started.md#quick-start). Run `forgebase --help` for every option.
 
@@ -51,28 +51,26 @@ cargo run -p sales -- user permission remove --user ann --doctype customer_group
 
 ## Background jobs
 
-An app registers a job with `App::job`; a hook, another job or the command line enqueues it, and `forgebase worker` runs it. A job runs in **one database transaction together with its completion**; a failure is retried (5 attempts, 30 s doubling up to 1 h, 5 min timeout) and then the job is `dead`. Delivery is at-least-once, so effects outside the database must be safe to repeat. A hook's `ctx.enqueue(..)` is written in the same transaction as the document change (the transactional outbox), so the job exists if and only if the change is committed. Never put a secret in a payload: it is stored in clear text. Design: [ADR 0013](../adr/0013-jobs-scheduler-and-transactional-outbox.md).
+An app registers a job with `App.Job`; a hook, another job or the command line enqueues it, and `forgebase worker` runs it. A job runs in **one database transaction together with its completion**; a failure is retried (5 attempts, 30 s doubling up to 1 h, 5 min timeout) and then the job is `dead`. Delivery is at-least-once, so effects outside the database must be safe to repeat. A hook's `ctx.Enqueue(..)` is written in the same transaction as the document change (the transactional outbox), so the job exists if and only if the change is committed. Never put a secret in a payload: it is stored in clear text. Design: [ADR 0013](../adr/0013-jobs-scheduler-and-transactional-outbox.md); the Go API: [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md#background-jobs-and-schedules-p51) and [your first app](first-app.md#7-background-jobs-and-schedules).
 
-```rust
-use forgebase::{App, JobContext, JobFuture, JobHandler};
-
-struct Welcome;
-
-impl JobHandler for Welcome {
-    fn run<'a>(&'a self, ctx: &'a mut JobContext<'_>) -> JobFuture<'a> {
-        Box::pin(async move {
-            let name = ctx.payload()["customer"].as_str().unwrap_or_default().to_owned();
-            // The system context, as `job:crm.welcome`, inside this job's transaction.
-            let _customer = ctx.documents().get("customer", &name).await?;
-            Ok(())
-        })
-    }
+```go
+func App() *forgebase.App {
+	return forgebase.NewApp("crm").DocTypes(doctypes).Job("welcome", welcome) // the job is `crm.welcome`
 }
 
-pub fn app() -> App {
-    App::new("crm").job("welcome", Welcome) // the job is `crm.welcome`
+func welcome(ctx context.Context, job *forgebase.JobContext) error {
+	var p struct {
+		Customer string `json:"customer"`
+	}
+	if err := job.DecodePayload(&p); err != nil {
+		return forgebase.NewPermanentJobError(err.Error())
+	}
+	// The system context, as `job:crm.welcome`, inside this job's transaction.
+	_, err := job.Documents().Get(ctx, "customer", p.Customer)
+	return err
 }
-// in a hook: ctx.enqueue("crm.welcome", forgebase::serde_json::json!({"customer": doc_name}))?;
+
+// in a hook: return ctx.Enqueue("crm.welcome", map[string]string{"customer": doc.Name})
 ```
 
 ```sh
@@ -84,23 +82,21 @@ forgebase job show <id>                             # every field as JSON, the p
 forgebase job retry <id>                            # a dead job goes back to the queue
 ```
 
-The first signal stops the worker from claiming and lets running jobs finish for 30 seconds (then they are given back, without counting an attempt); a second signal exits at once, and another worker recovers what was running when its lease expires. In an app's tests, `forgebase::testing::run_jobs(&binary, &db)` runs the jobs that are due. Two complete examples: `cargo run -p sales -- worker` runs the log and daily-summary jobs of [`examples/sales`](../../examples/sales/README.md) (and `cargo run -p sales_extension -- worker` those of both example apps), after `migrate`.
+The first signal stops the worker from claiming and lets running jobs finish for 30 seconds (then they are given back, without counting an attempt); a second signal exits at once, and another worker recovers what was running when its lease expires. A handler that ignores its `context` does not hold the process: it is abandoned after the grace period (and a wait of at most 5 seconds, while the pool has a free connection: handlers abandoned earlier keep theirs), and a second signal exits within about a second; its job stays `running` until the lease expires. In an app's tests, `fbtest.RunJobs(binary, db)` (`forgebase/testing`) runs the jobs that are due. Two complete examples: `cd examples/sales && go run ./cmd/sales worker` runs the log and daily-summary jobs of [`examples/sales`](../../examples/sales/README.md) (and `go run ./cmd/sales_extension worker` in `examples/sales_extension` those of both example apps), after `migrate`. Go-specific: the worker's log lines go to standard error (`worker: started ...`, `worker: job crm.welcome <id> done (attempt 1)`, `... dead after attempt n: ...`, `worker: stopped`), and the handler's `context` is cancelled when an attempt times out or the worker stops, so a handler should pass it to every call (it is documented on `JobHandler`). The built-in `forgebase.deliver_webhook` arrives with the webhooks (P7): until then the worker of the stock binary says `3 job type(s)`.
 
 ### Scheduled jobs
 
 An app runs one of its own jobs on a schedule: every N minutes, every day at a time, or every week on a day at a time. **All times are UTC**; there is no cron and there are no time zones.
 
-```rust
-use forgebase::{App, Schedule, Weekday};
-
-App::new("crm")
-    .job("send_digest", SendDigest)
-    .schedule("send_digest", Schedule::daily_at(6, 30))
-    .job("weekly_report", WeeklyReport)
-    .schedule("weekly_report", Schedule::weekly_on(Weekday::Monday, 7, 0))
+```go
+forgebase.NewApp("crm").
+	Job("send_digest", sendDigest).
+	Schedule("send_digest", forgebase.DailyAt(6, 30)).
+	Job("weekly_report", weeklyReport).
+	Schedule("weekly_report", forgebase.WeeklyOn(time.Monday, 7, 0))
 ```
 
-`Schedule::every_minutes(n)` (1 to 1440) ticks at the times where the minutes since the Unix epoch are divisible by `n`: every 15 gives :00, :15, :30 and :45. Run `forgebase migrate` after you add, change or remove a schedule (it stores the schedules the binary declares and **deletes the others**), and keep `forgebase worker` running: it enqueues each tick once, however many workers run, with the payload `{"scheduled_for": "<the tick, RFC 3339 UTC>"}` (use it for idempotency). Ticks missed while no worker ran are not caught up: one job runs, then the next future time. In tests, `forgebase::testing::run_schedules_at(&binary, &db, at)` enqueues what is due at `at`, and `run_jobs` runs it.
+`forgebase.EveryMinutes(n)` (1 to 1440) ticks at the times where the minutes since the Unix epoch are divisible by `n`: every 15 gives :00, :15, :30 and :45. Run `forgebase migrate` after you add, change or remove a schedule (it stores the schedules the binary declares and **deletes the others**), and keep `forgebase worker` running: it enqueues each tick once, however many workers run, with the payload `{"scheduled_for": "<the tick, RFC 3339 UTC>"}` (use it for idempotency). Ticks missed while no worker ran are not caught up: one job runs, then the next future time. In tests, `fbtest.RunSchedulesAt(binary, db, at)` enqueues what is due at `at`, and `RunJobs` runs it. `migrate` prints what it changed (`schedules: changed 1`, then `add crm.send_digest (daily 06:30)`; with `--dry-run`, `would change`).
 
 The framework schedules its own clean-up in every binary (app name `forgebase`, reserved): finished jobs, done or dead, 7 days after they finished (daily at 03:00 UTC), stale login-failure rows and expired sessions (every 60 minutes). They need a running worker.
 

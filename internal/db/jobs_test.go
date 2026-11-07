@@ -1,18 +1,19 @@
 package db_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/db"
 	"github.com/tvstore/forgebase-go/internal/db/dbtest"
 )
 
-// The outbox of the job queue (M6.1) against a real PostgreSQL: jobs that hooks enqueue are written in
-// the operation's transaction. Ported from crates/forgebase-db/tests/jobs.rs, the part that is the
-// outbox (enqueue). The claim, complete, fail, release, list and retry functions and their tests are
-// P5.
+// The job queue and the outbox (M6.1) against a real PostgreSQL: jobs that hooks enqueue are written in
+// the operation's transaction, and the queue functions claim, complete, fail, release and retry rows with
+// the guards and leases of ADR 0013. Ported from crates/forgebase-db/tests/jobs.rs.
 
 const jobsQuote = `
 name = "quote"
@@ -190,5 +191,204 @@ func TestAnOversizePayloadIsRefusedByTheHookContextAndByTheQueue(t *testing.T) {
 	}
 	if len(queued(d)) != 0 {
 		t.Error("a job was written")
+	}
+}
+
+var knownAudit = []db.KnownJob{{Name: "app.audit", Lease: 60 * time.Second}}
+
+func enqueueOne(t *testing.T, d *dbtest.DB, reg *core.Registry) string {
+	t.Helper()
+	id, err := db.Enqueue(bg, d.Pool, reg, "app.audit", map[string]any{"n": 1}, "ann")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.String()
+}
+
+func mustClaim(t *testing.T, d *dbtest.DB, worker string) *db.ClaimedJob {
+	t.Helper()
+	claimed, err := db.ClaimJob(bg, d.Pool, knownAudit, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return claimed
+}
+
+func claimed(t *testing.T, d *dbtest.DB, worker string) bool {
+	t.Helper()
+	return mustClaim(t, d, worker) != nil
+}
+
+func boolResult(t *testing.T) func(bool, error) bool {
+	return func(ok bool, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+}
+
+// Rust: jobs.rs::claim_takes_due_known_jobs_oldest_first_and_counts_the_attempt
+func TestClaimTakesDueKnownJobsOldestFirstAndCountsTheAttempt(t *testing.T) {
+	d, reg := jobsSetup(t)
+	first := enqueueOne(t, d, reg)
+	second := enqueueOne(t, d, reg)
+	// A future job and a job of a name the worker does not know are not claimed.
+	d.Exec("INSERT INTO fb_job (id, name, payload, status, enqueued_by, run_at) VALUES " +
+		"(gen_random_uuid(), 'app.audit', '{}', 'queued', 'x', now() + interval '1 hour'), " +
+		"(gen_random_uuid(), 'other.job', '{}', 'queued', 'x', now() - interval '1 hour')")
+
+	a := mustClaim(t, d, "w1")
+	if a == nil || a.ID.String() != first || a.Attempt != 1 {
+		t.Fatalf("first claim: %+v", a)
+	}
+	if string(a.Payload) != `{"n": 1}` {
+		t.Errorf("payload %s", a.Payload)
+	}
+	if b := mustClaim(t, d, "w1"); b == nil || b.ID.String() != second {
+		t.Fatalf("second claim: %+v", b)
+	}
+	if claimed(t, d, "w1") {
+		t.Error("a third job was claimed")
+	}
+	want(t, d.Rows(fmt.Sprintf("SELECT status, attempts::text, locked_by, (locked_until > now() + interval '50 seconds')::text FROM fb_job WHERE id = '%s'", first)),
+		[][]string{{"running", "1", "w1", "true"}}, "row")
+	want(t, d.Rows("SELECT count(*)::text FROM fb_job WHERE status = 'queued'"), [][]string{{"2"}}, "queued")
+}
+
+// Rust: jobs.rs::an_expired_lease_is_claimed_again_and_a_live_one_is_not
+func TestAnExpiredLeaseIsClaimedAgainAndALiveOneIsNot(t *testing.T) {
+	d, reg := jobsSetup(t)
+	id := enqueueOne(t, d, reg)
+	crashed := mustClaim(t, d, "w1")
+	if claimed(t, d, "w2") {
+		t.Fatal("a live lease was claimed")
+	}
+	d.Exec("UPDATE fb_job SET locked_until = now() - interval '1 second'")
+	again := mustClaim(t, d, "w2")
+	if again == nil || again.ID != crashed.ID || again.Attempt != 2 {
+		t.Fatalf("again: %+v", again)
+	}
+	want(t, d.Rows(fmt.Sprintf("SELECT locked_by FROM fb_job WHERE id = '%s'", id)), [][]string{{"w2"}}, "locked_by")
+	ok := boolResult(t)
+	// The first worker woke up: it holds nothing any more.
+	if ok(db.CompleteJob(bg, d.Pool, crashed.ID, "w1", 1)) {
+		t.Error("w1 completed")
+	}
+	if ok(db.CompleteJob(bg, d.Pool, crashed.ID, "w2", 1)) {
+		t.Error("w2 completed on the old attempt")
+	}
+	if !ok(db.CompleteJob(bg, d.Pool, crashed.ID, "w2", 2)) {
+		t.Error("w2 did not complete")
+	}
+}
+
+// Rust: jobs.rs::fail_retries_with_a_delay_or_kills_and_release_gives_the_attempt_back
+func TestFailRetriesWithADelayOrKillsAndReleaseGivesTheAttemptBack(t *testing.T) {
+	d, reg := jobsSetup(t)
+	id := enqueueOne(t, d, reg)
+	first := mustClaim(t, d, "w1")
+	ok := boolResult(t)
+
+	long := strings.Repeat("e", 5000)
+	if !ok(db.FailJob(bg, d.Pool, first.ID, "w1", 1, long, db.Failure{RetryAfter: 30 * time.Second})) {
+		t.Fatal("fail")
+	}
+	want(t, d.Rows(fmt.Sprintf("SELECT status, attempts::text, length(last_error)::text, (locked_by IS NULL)::text, "+
+		"(run_at > now() + interval '25 seconds' AND run_at < now() + interval '35 seconds')::text FROM fb_job WHERE id = '%s'", id)),
+		[][]string{{"queued", "1", "2000", "true", "true"}}, "retried")
+	// A guard that does not hold changes nothing.
+	if ok(db.FailJob(bg, d.Pool, first.ID, "w1", 1, "x", db.Failure{Dead: true})) {
+		t.Error("an unguarded fail changed the row")
+	}
+
+	d.Exec("UPDATE fb_job SET run_at = now()")
+	second := mustClaim(t, d, "w1")
+	if second.Attempt != 2 {
+		t.Fatalf("attempt %d", second.Attempt)
+	}
+	if !ok(db.ReleaseJob(bg, d.Pool, second.ID, "w1", 2)) {
+		t.Fatal("release")
+	}
+	want(t, d.Rows(fmt.Sprintf("SELECT status, attempts::text FROM fb_job WHERE id = '%s'", id)), [][]string{{"queued", "1"}}, "released")
+	third := mustClaim(t, d, "w1")
+	if third.Attempt != 2 {
+		t.Fatalf("attempt %d", third.Attempt)
+	}
+	if !ok(db.FailJob(bg, d.Pool, third.ID, "w1", 2, "boom", db.Failure{Dead: true})) {
+		t.Fatal("dead")
+	}
+	want(t, d.Rows(fmt.Sprintf("SELECT status, last_error, (finished_at IS NOT NULL)::text FROM fb_job WHERE id = '%s'", id)),
+		[][]string{{"dead", "boom", "true"}}, "dead")
+}
+
+// Rust: jobs.rs::list_show_and_retry_serve_the_command_line
+func TestListShowAndRetryServeTheCommandLine(t *testing.T) {
+	d, reg := jobsSetup(t)
+	a := enqueueOne(t, d, reg)
+	b := enqueueOne(t, d, reg)
+	first := mustClaim(t, d, "w1")
+	if ok, err := db.FailJob(bg, d.Pool, first.ID, "w1", 1, "boom", db.Failure{Dead: true}); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+
+	ids := func(jobs []db.Job) []string {
+		out := []string{}
+		for _, j := range jobs {
+			out = append(out, j.ID.String())
+		}
+		return out
+	}
+	all, err := db.ListJobs(bg, d.Pool, db.JobFilter{}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want(t, ids(all), []string{b, a}, "newest first")
+	dead, err := db.ListJobs(bg, d.Pool, db.JobFilter{Status: "dead"}, 50)
+	if err != nil || len(dead) != 1 || dead[0].ID != first.ID {
+		t.Fatal(dead, err)
+	}
+	none, err := db.ListJobs(bg, d.Pool, db.JobFilter{Name: "x.y"}, 50)
+	if err != nil || len(none) != 0 {
+		t.Fatal(none, err)
+	}
+	if one, err := db.ListJobs(bg, d.Pool, db.JobFilter{}, 1); err != nil || len(one) != 1 {
+		t.Fatal(one, err)
+	}
+
+	shown, err := db.GetJob(bg, d.Pool, a)
+	if err != nil || shown == nil {
+		t.Fatal(shown, err)
+	}
+	want(t, []string{shown.Status, shown.EnqueuedBy}, []string{"dead", "ann"}, "shown")
+	if _, err := db.GetJob(bg, d.Pool, "not-a-uuid"); err == nil {
+		t.Error("a bad id was accepted")
+	} else {
+		wantKind(t, err, db.ErrJob)
+	}
+
+	queuedID := a
+	if first.ID.String() == a {
+		queuedID = b
+	}
+	result, status, err := db.RetryDeadJob(bg, d.Pool, queuedID)
+	if err != nil || result != db.RetryNotDead || status != "queued" {
+		t.Fatal(result, status, err)
+	}
+	result, _, err = db.RetryDeadJob(bg, d.Pool, "00000000-0000-7000-8000-000000000000")
+	if err != nil || result != db.RetryNotFound {
+		t.Fatal(result, err)
+	}
+	result, _, err = db.RetryDeadJob(bg, d.Pool, first.ID.String())
+	if err != nil || result != db.RetryQueued {
+		t.Fatal(result, err)
+	}
+	back, err := db.GetJob(bg, d.Pool, first.ID.String())
+	if err != nil || back == nil {
+		t.Fatal(back, err)
+	}
+	if back.Status != "queued" || back.Attempts != 0 || back.LastError != nil || back.FinishedAt != nil {
+		t.Errorf("%+v", back)
 	}
 }

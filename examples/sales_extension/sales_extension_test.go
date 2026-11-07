@@ -2,6 +2,7 @@ package sales_extension_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,11 +19,13 @@ import (
 // not skip, when FORGEBASE_TEST_DATABASE_URL is not set.
 //
 // Ported in P4 (the app model): the hooks, the apps together (hook order, the cross-app Link, the owner of
-// each DocType, permissions). Deferred, with the phase whose feature the Rust test uses:
+// each DocType, permissions). Ported in P5 (jobs): the job tests, adapted where the Rust test submits an order
+// with the workflow transitions (that is P6): the jobs the submit would write are queued with SQL, so the
+// handlers are tested as they run in a worker. Deferred, with the phase whose feature the Rust test uses:
 //
-//   - P5 (jobs): a_submitted_order_gets_a_follow_up_visit_and_a_log, a_job_delivered_twice_plans_one_visit,
-//     an_order_without_a_date_gets_no_visit, a_refused_submit_leaves_no_job_of_either_app;
-//   - P6 (workflow transitions): the submit at the end of the_extension_hook_runs_after_the_sales_hook;
+//   - P6 (workflow transitions): the submit at the end of the_extension_hook_runs_after_the_sales_hook, the
+//     outbox over HTTP of a_submitted_order_gets_a_follow_up_visit_and_a_log and
+//     a_refused_submit_leaves_no_job_of_either_app;
 //   - P7 (overlays): the_overlay_field_is_a_field_of_customer,
 //     the_overlay_field_exists_only_where_the_extension_app_is_installed.
 
@@ -277,5 +280,111 @@ func TestAUserWithoutASalesRoleCannotCreateAVisit(t *testing.T) {
 	denied := e.outsider.Post("/api/v1/resource/customer_visit", map[string]any{"customer": "ada@example.com", "visited_on": "2026-10-29"})
 	if denied.Status != 403 || denied.ErrorCode() != "permission_denied" {
 		t.Errorf("%d %s", denied.Status, denied.Text)
+	}
+}
+
+// ---- Jobs, both apps composed (P5) ------------------------------------------------------------
+
+const ordersPath = "/api/v1/resource/sales_order"
+
+// draft is a draft of 2 x 5.00 (the smallest total MinimumOrder accepts) with an optional order_date; it returns
+// its name.
+func draft(t *testing.T, e *env, orderDate string) string {
+	t.Helper()
+	body := map[string]any{"customer": "ada@example.com", "items": pen(2, "5.00")}
+	if orderDate != "" {
+		body["order_date"] = orderDate
+	}
+	created := e.user.Post(ordersPath, body)
+	if created.Status != 201 {
+		t.Fatalf("%d %s", created.Status, created.Text)
+	}
+	return at(created.Data(), "name").(string)
+}
+
+// queue queues a job as the test: the submit that would write it is a workflow transition (P6).
+func queue(e *env, job, name string) {
+	e.db.Exec(fmt.Sprintf("INSERT INTO fb_job (id, name, payload, status, enqueued_by) "+
+		"VALUES (gen_random_uuid(), '%s', '{\"order\": \"%s\"}', 'queued', 'test')", job, name))
+}
+
+func counts(run fbtest.JobRun) [3]int { return [3]int{run.Done, run.Retried, run.Dead} }
+
+// Rust: extension.rs::a_submitted_order_gets_a_follow_up_visit_and_a_log (the job half)
+func TestAFollowUpVisitIsPlannedAndTheJobsOfBothAppsRun(t *testing.T) {
+	e := newEnv(t)
+	name := draft(t, e, "2026-10-20")
+	// One job of each app, as the submit writes them.
+	queue(e, "sales.log_order_event", name)
+	e.db.Exec("UPDATE fb_job SET payload = jsonb_build_object('order', payload->>'order', 'event', 'submitted')")
+	queue(e, "sales_extension.plan_follow_up_visit", name)
+
+	run := fbtest.RunJobs(binary(), e.db)
+	if counts(run) != [3]int{2, 0, 0} {
+		t.Fatalf("%+v", run)
+	}
+
+	// The visit is a week after the order date and says which order it follows up.
+	visits := e.db.Rows("SELECT visited_on::text, notes, source_order, owner FROM doc_customer_visit")
+	want := [][]string{{"2026-10-27", "Follow-up of " + name, name, "job:sales_extension.plan_follow_up_visit"}}
+	if !reflect.DeepEqual(visits, want) {
+		t.Errorf("%v, want %v", visits, want)
+	}
+	listed := e.user.Get("/api/v1/resource/customer_visit")
+	if listed.Status != 200 || at(listed.DataList()[0], "customer") != "ada@example.com" {
+		t.Errorf("%d %s", listed.Status, listed.Text)
+	}
+
+	// The job of sales ran as well: both apps' jobs are in the composed binary.
+	logs := e.db.Rows("SELECT name, owner FROM doc_sales_order_log")
+	if want := [][]string{{name + "-submitted", "job:sales.log_order_event"}}; !reflect.DeepEqual(logs, want) {
+		t.Errorf("%v, want %v", logs, want)
+	}
+}
+
+// Rust: extension.rs::a_job_delivered_twice_plans_one_visit
+func TestAJobDeliveredTwicePlansOneVisit(t *testing.T) {
+	e := newEnv(t)
+	name := draft(t, e, "2026-10-20")
+	queue(e, "sales_extension.plan_follow_up_visit", name)
+	e.db.Exec("INSERT INTO fb_job (id, name, payload, status, enqueued_by) " +
+		"SELECT gen_random_uuid(), name, payload, 'queued', 'test' FROM fb_job WHERE name = 'sales_extension.plan_follow_up_visit'")
+
+	run := fbtest.RunJobs(binary(), e.db)
+	if counts(run) != [3]int{2, 0, 0} {
+		t.Fatalf("%+v", run)
+	}
+	if got := e.db.Rows("SELECT count(*)::text FROM doc_customer_visit"); !reflect.DeepEqual(got, [][]string{{"1"}}) {
+		t.Errorf("%v", got)
+	}
+}
+
+// Rust: extension.rs::an_order_without_a_date_gets_no_visit
+func TestAnOrderWithoutADateGetsNoVisit(t *testing.T) {
+	e := newEnv(t)
+	name := draft(t, e, "")
+	queue(e, "sales_extension.plan_follow_up_visit", name)
+	run := fbtest.RunJobs(binary(), e.db)
+	if run.Done != 1 || run.Dead != 0 {
+		t.Fatalf("%+v", run)
+	}
+	if got := e.db.Rows("SELECT count(*)::text FROM doc_customer_visit"); !reflect.DeepEqual(got, [][]string{{"0"}}) {
+		t.Errorf("%v", got)
+	}
+}
+
+func TestTheFollowUpJobRefusesABadPayloadAndAMissingOrder(t *testing.T) {
+	e := newEnv(t)
+	e.db.Exec(`INSERT INTO fb_job (id, name, payload, status, enqueued_by) VALUES
+		(gen_random_uuid(), 'sales_extension.plan_follow_up_visit', '{}', 'queued', 'test'),
+		(gen_random_uuid(), 'sales_extension.plan_follow_up_visit', '{"order": "SO-0"}', 'queued', 'test')`)
+	run := fbtest.RunJobs(binary(), e.db)
+	if counts(run) != [3]int{0, 0, 2} {
+		t.Fatalf("%+v", run)
+	}
+	errors := e.db.Rows(`SELECT last_error FROM fb_job ORDER BY last_error COLLATE "C"`)
+	want := [][]string{{`the payload must be {"order": <name>}`}, {"the sales order SO-0 does not exist"}}
+	if !reflect.DeepEqual(errors, want) {
+		t.Errorf("%v", errors)
 	}
 }

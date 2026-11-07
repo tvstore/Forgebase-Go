@@ -32,6 +32,9 @@
 // fails when the variable is not set, it never skips. The helpers fail the test (t.Fatalf) instead of
 // returning errors, except where the test wants to look at the error ([DB.Migrate]).
 //
-// Not in this version (later phases): running jobs and schedules (P5), checking report SQL (P6),
-// custom fields and metadata reload, and webhook settings (P7).
+// [RunJobs] runs the background jobs that are due, with the worker's own code, and [RunSchedulesAt]
+// enqueues the scheduled jobs that are due at a given time.
+//
+// Not in this version (later phases): checking report SQL (P6), custom fields and metadata reload, and
+// webhook settings (P7).
 package testing

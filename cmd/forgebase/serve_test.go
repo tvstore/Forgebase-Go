@@ -540,3 +540,125 @@ func TestServeWithSiteServesOnlyThatSite(t *testing.T) {
 		t.Errorf("%+v", r)
 	}
 }
+
+// Rust: cli.rs::the_worker_of_a_binary_without_app_jobs_runs_the_built_in_jobs_and_stops_on_sigterm
+func TestTheWorkerOfABinaryWithoutAppJobsRunsTheBuiltInJobsAndStopsOnSIGTERM(t *testing.T) {
+	d := dbtest.New(t)
+	env := []string{"FORGEBASE_DATABASE_URL=" + d.URL()}
+	// The stock binary has no apps, but the framework's own clean-up jobs: the worker starts.
+	if r := runBinary(t, env, "", "migrate", "--doctypes", doctypes); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	want := "forgebase.purge_jobs daily 03:00, forgebase.purge_login_failures every 60m, forgebase.purge_sessions every 60m"
+	if got := d.Rows("SELECT string_agg(name || ' ' || spec, ', ' ORDER BY name) FROM fb_schedule")[0][0]; got != want {
+		t.Fatalf("schedules %q", got)
+	}
+	cmd := exec.Command(binary, "worker", "--doctypes", doctypes)
+	cmd.Env = append([]string{}, env...)
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	// Wait for the real precondition: the worker says it started.
+	lines := bufio.NewReader(stderr)
+	var log strings.Builder
+	for {
+		line, err := lines.ReadString('\n')
+		log.WriteString(line)
+		if err != nil {
+			t.Fatalf("the worker ended before it started: %s", log.String())
+		}
+		if strings.Contains(line, "started ") {
+			break
+		}
+	}
+	// Rust says 4 job types: forgebase.deliver_webhook arrives with the webhooks (P7).
+	if !strings.Contains(log.String(), "3 job type(s)") {
+		t.Errorf("%s", log.String())
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	rest, _ := io.ReadAll(lines)
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("exit: %v\n%s%s", err, log.String(), rest)
+	}
+	if !strings.Contains(string(rest), "stopped") {
+		t.Errorf("%s", rest)
+	}
+	// A job name is checked against the binary's jobs: here there are none of apps.
+	r := runBinary(t, env, "", "job", "enqueue", "crm.welcome")
+	if r.code != 1 || !strings.HasPrefix(r.stderr, "error: ") {
+		t.Errorf("%+v", r)
+	}
+	// Usage errors are exit code 2.
+	for _, n := range []string{"0", "65"} {
+		if r := runBinary(t, env, "", "worker", "--doctypes", doctypes, "--concurrency", n); r.code != 2 {
+			t.Errorf("--concurrency %s: %+v", n, r)
+		}
+	}
+}
+
+// Rust: sites.rs::a_worker_claims_only_from_the_database_of_its_site
+func TestAWorkerClaimsOnlyFromTheDatabaseOfItsSite(t *testing.T) {
+	p := newPair(t)
+	p.setUp(t)
+	var ids []string
+	for _, site := range []string{"a", "b"} {
+		r := p.run(t, "", "job", "enqueue", "forgebase.purge_sessions", "--site", site)
+		id, ok := strings.CutPrefix(strings.TrimSpace(r.stdout), "enqueued job ")
+		if r.code != 0 || !ok {
+			t.Fatalf("enqueue on %s: %+v", site, r)
+		}
+		ids = append(ids, id)
+	}
+	status := func(d *dbtest.DB, id string) string {
+		rows := d.Rows(fmt.Sprintf("SELECT status FROM fb_job WHERE id = '%s'", id))
+		if len(rows) == 0 {
+			return ""
+		}
+		return rows[0][0]
+	}
+	if status(p.a, ids[0]) != "queued" || status(p.b, ids[1]) != "queued" {
+		t.Fatal("the jobs are not queued")
+	}
+
+	cmd := exec.Command(binary, "--config", p.conf, "worker", "--site", "a", "--doctypes", doctypes)
+	cmd.Env = append([]string{}, p.env()...)
+	log := &syncBuffer{}
+	cmd.Stderr = log
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	defer func() { _ = cmd.Process.Kill() }()
+	// Poll the real condition: A's job is done.
+	deadline := time.Now().Add(30 * time.Second)
+	for status(p.a, ids[0]) != "done" {
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker did not run the job of site a: %s", log.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-exited; err != nil {
+		t.Fatalf("worker exit: %v\n%s", err, log.String())
+	}
+	// B's job was never claimed: it is still queued, with no attempt.
+	if got := status(p.b, ids[1]); got != "queued" {
+		t.Errorf("b's job is %q", got)
+	}
+	if got := p.b.Rows(fmt.Sprintf("SELECT attempts::text FROM fb_job WHERE id = '%s'", ids[1])); got[0][0] != "0" {
+		t.Errorf("attempts %v", got)
+	}
+	if strings.Contains(log.String(), ids[1]) {
+		t.Errorf("%s", log.String())
+	}
+}

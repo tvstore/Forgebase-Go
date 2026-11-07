@@ -41,8 +41,6 @@ type Options struct {
 // notYet maps the commands that are not ported yet to the phase that brings them. The commands are
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
-	"worker":          "P5",
-	"job":             "P5",
 	"site":            "P5",
 	"doc transition":  "P6",
 	"data":            "P7",
@@ -172,6 +170,10 @@ func (r *runner) run(ctx context.Context) error {
 		return r.user(ctx, site)
 	case "token":
 		return r.token(ctx, site)
+	case "job":
+		return r.job(ctx, site)
+	case "worker":
+		return r.worker(ctx, site)
 	}
 	return fmt.Errorf("unknown command %q", r.m.path[0])
 }
@@ -498,4 +500,43 @@ func unescapeLineSeparators(text string) string {
 		b.WriteByte(text[i])
 	}
 	return b.String()
+}
+
+// worker runs the jobs of the apps installed on site until Ctrl-C or SIGTERM (see worker.go). One worker
+// process serves one site, and the scheduler runs in it, so only the schedules of the site's apps tick.
+//
+// The pool has concurrency + 2 connections: each running job holds one for its transaction, and a claim or
+// the record of a failure needs one briefly while the handlers hold theirs. It is sized by the concurrency, not
+// by the pool_size of the site.
+func (r *runner) worker(ctx context.Context, site *site) error {
+	composed, err := r.siteComposed(site, r.m.str("doctypes"))
+	if err != nil {
+		return err
+	}
+	concurrency := int(r.m.u64("concurrency"))
+	sc, err := site.open(ctx, r.o.Getenv, composed.registry, concurrency+2)
+	if err != nil {
+		return err
+	}
+	signals, stopSignals := stopSignals()
+	defer stopSignals()
+	w := newWorker(sc.pool, sc.registry, composed, defaultWorkerConfig(), r.o.Stderr)
+	ok := w.runWorker(ctx, concurrency, workerID(), signals)
+	// pgxpool's Close waits for every acquired connection. After a second signal, or when a handler that
+	// ignores its context was abandoned, a connection is still held by a goroutine that cannot be stopped, so
+	// the pool is closed with a short bound: the process is exiting and PostgreSQL ends the sessions with it.
+	closed := make(chan struct{})
+	go func() { sc.close(); close(closed) }()
+	if w.leftBehind() {
+		select {
+		case <-closed:
+		case <-time.After(300 * time.Millisecond):
+		}
+	} else {
+		<-closed
+	}
+	if ok {
+		return nil
+	}
+	return errf("a worker slot panicked (see the log above)")
 }

@@ -486,17 +486,21 @@ func TestNewAppRefusesEveryNameOfTheRefusedList(t *testing.T) {
 func TestNoFileOfAGeneratedAppIsIgnoredByItsGitignore(t *testing.T) {
 	s := newScratch(t)
 	checkout := s.checkout()
-	for _, name := range []string{"doctypes", "migrations", "cmd", "bin", "demo"} {
-		if r := s.newAppCmd(s.root, name, "--forgebase-path", checkout); r.code != 0 && name != "cmd" {
+	// The test needs git: it fails, it never skips, when git is missing.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatalf("git is not installed or not on PATH, and this test needs it: %v", err)
+	}
+	for _, name := range []string{"doctypes", "migrations", "bin", "demo"} {
+		if r := s.newAppCmd(s.root, name, "--forgebase-path", checkout); r.code != 0 {
 			t.Fatalf("%s: %+v", name, r)
 		}
 	}
 	for _, name := range []string{"doctypes", "migrations", "bin", "demo"} {
 		dir := filepath.Join(s.root, name)
-		if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		if out, err := exec.Command("git", "-c", "core.excludesFile=", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
 			t.Fatalf("git init: %v %s", err, out)
 		}
-		out, err := exec.Command("git", "-C", dir, "add", "-A", "--dry-run").CombinedOutput()
+		out, err := exec.Command("git", "-c", "core.excludesFile=", "-C", dir, "add", "-A", "--dry-run").CombinedOutput()
 		if err != nil {
 			t.Fatalf("git add: %v %s", err, out)
 		}
