@@ -39,9 +39,6 @@ type Options struct {
 // notYet maps the commands that are not ported yet to the phase that brings them. The commands are
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
-	"doc list":        "P3",
-	"user":            "P3",
-	"token":           "P3",
 	"serve":           "P3",
 	"new-app":         "P4",
 	"worker":          "P5",
@@ -56,7 +53,7 @@ var notYet = map[string]string{
 
 // phaseOf is the phase that brings the command with this path, or "" when it exists.
 func phaseOf(path []string) string {
-	// The longest match wins: user permission is P7, the rest of user P3.
+	// The longest match wins: user permission is P7, the rest of user exists.
 	for n := len(path); n > 0; n-- {
 		if phase, ok := notYet[strings.Join(path[:n], " ")]; ok {
 			return phase
@@ -155,6 +152,10 @@ func (r *runner) run(ctx context.Context) error {
 		return err
 	case "doc":
 		return r.doc(ctx, site)
+	case "user":
+		return r.user(ctx, site)
+	case "token":
+		return r.token(ctx, site)
 	}
 	return fmt.Errorf("unknown command %q", r.m.path[0])
 }
@@ -204,6 +205,12 @@ type docOperation struct {
 	actor    string
 	text     string
 	hasInput bool
+	// The options of list: --filter, --sort (in order), --limit and --offset.
+	filter    string
+	hasFilter bool
+	sort      []string
+	limit     *uint32
+	offset    *uint64
 }
 
 func (r *runner) doc(ctx context.Context, site *site) error {
@@ -213,6 +220,18 @@ func (r *runner) doc(ctx context.Context, site *site) error {
 		doctype: r.m.str("doctype"),
 		name:    r.m.str("name"),
 		actor:   r.m.str("actor"),
+	}
+	if verb == "list" {
+		op.filter, op.hasFilter = r.m.opt("filter")
+		op.sort = r.m.list("sort")
+		if _, ok := r.m.opt("limit"); ok {
+			limit := uint32(r.m.u64("limit"))
+			op.limit = &limit
+		}
+		if _, ok := r.m.opt("offset"); ok {
+			offset := r.m.u64("offset")
+			op.offset = &offset
+		}
 	}
 	// insert and get take no version.
 	if _, ok := r.m.opt("expected_version"); ok {
@@ -239,6 +258,12 @@ func (r *runner) doc(ctx context.Context, site *site) error {
 			return err
 		}
 		op.text, op.hasInput = text, true
+	}
+	if op.hasFilter {
+		// The same: the filters are checked against the registry later.
+		if err := httpapi.CheckFiltersSyntax(op.filter); err != nil {
+			return err
+		}
 	}
 	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
 	if err != nil {
@@ -293,6 +318,21 @@ func (r *runner) execute(ctx context.Context, sc *siteContext, op *docOperation)
 			return err
 		}
 		stored, err = db.Insert(ctx, sc.pool, registry, op.doctype, core.Document{Values: input.Values, Tables: input.Tables}, caller)
+	case "list":
+		query := db.ListQuery{Limit: op.limit, Offset: op.offset}
+		if op.hasFilter {
+			if query.Filters, err = httpapi.ParseFilters(doctype, op.filter); err != nil {
+				return err
+			}
+		}
+		if query.Sort, err = httpapi.ParseSort(op.sort); err != nil {
+			return err
+		}
+		documents, err := db.List(ctx, sc.pool, registry, op.doctype, core.SystemCaller("cli"), query)
+		if err != nil {
+			return err
+		}
+		return r.printDocuments(documents)
 	case "get":
 		stored, err = db.Get(ctx, sc.pool, registry, op.doctype, op.name, core.SystemCaller("cli"))
 		if err == nil && stored == nil {
@@ -322,15 +362,37 @@ func (r *runner) execute(ctx context.Context, sc *siteContext, op *docOperation)
 	return r.printDocument(stored)
 }
 
+// printDocuments writes a list of stored documents as a pretty JSON array.
+func (r *runner) printDocuments(documents []*db.StoredDocument) error {
+	objects := make([]any, len(documents))
+	for i, doc := range documents {
+		object, err := db.DocumentToJSON(doc)
+		if err != nil {
+			return outputError(err)
+		}
+		objects[i] = object
+	}
+	text, err := prettyJSON(objects)
+	if err != nil {
+		return errf("cannot serialize the document as JSON: %s", err)
+	}
+	return r.write(text + "\n")
+}
+
+// outputError is the error of a stored value that cannot be written as JSON.
+func outputError(err error) error {
+	var oe *db.OutputError
+	if errors.As(err, &oe) {
+		return errf("%s", oe)
+	}
+	return err
+}
+
 // printDocument writes a stored document as pretty JSON.
 func (r *runner) printDocument(stored *db.StoredDocument) error {
 	object, err := db.DocumentToJSON(stored)
 	if err != nil {
-		var oe *db.OutputError
-		if errors.As(err, &oe) {
-			return errf("%s", oe)
-		}
-		return err
+		return outputError(err)
 	}
 	text, err := prettyJSON(object)
 	if err != nil {

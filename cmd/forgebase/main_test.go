@@ -180,6 +180,32 @@ func TestTheBinaryMigratesAndTakesDocumentsThroughStandardInput(t *testing.T) {
 	}
 }
 
+// Rust: cli.rs::user_commands_manage_users_and_roles and token_create_prints_the_secret_once, through
+// the real process: the password comes from a real pipe, and the list reads what the commands wrote.
+func TestTheBinaryReadsPasswordsFromAPipeAndPrintsTheTokenOnce(t *testing.T) {
+	d := dbtest.New(t)
+	env := []string{"FORGEBASE_DATABASE_URL=" + d.URL()}
+	if r := runBinary(t, env, "", "migrate", "--doctypes", doctypes); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	r := runBinary(t, env, "a long password\nignored\n", "user", "create", "alice", "--role", "Sales")
+	if r.code != 0 || r.stdout != "created user alice\n" || r.stderr != "" {
+		t.Fatalf("%+v", r)
+	}
+	r = runBinary(t, env, "", "token", "create", "alice")
+	key, secret, ok := strings.Cut(strings.TrimSuffix(r.stdout, "\n"), ":")
+	if r.code != 0 || !ok || len(key) != 32 || len(secret) != 64 || r.stderr != "" {
+		t.Fatalf("%+v", r)
+	}
+	if r := runBinary(t, env, "", "token", "revoke", key); r.code != 0 || r.stdout != "revoked API token "+key+"\n" {
+		t.Fatalf("%+v", r)
+	}
+	r = runBinary(t, env, "", "doc", "list", "customer", "--doctypes", doctypes)
+	if r.code != 0 || r.stdout != "[]\n" {
+		t.Fatalf("%+v", r)
+	}
+}
+
 // Rust: cli.rs::invalid_doctype_files_exit_1_naming_the_file, through the real process.
 func TestInvalidDoctypeFilesExit1NamingTheFile(t *testing.T) {
 	dir := t.TempDir()
@@ -195,8 +221,8 @@ func TestInvalidDoctypeFilesExit1NamingTheFile(t *testing.T) {
 
 // A command that is not ported yet fails with exit code 1 and says when it arrives.
 func TestACommandThatIsNotPortedYetSaysWhenItArrives(t *testing.T) {
-	r := runBinary(t, nil, "", "token", "revoke", "key")
-	if r.code != 1 || r.stderr != "error: token revoke is not available yet in the Go port (arrives in phase P3)\n" || r.stdout != "" {
+	r := runBinary(t, nil, "", "job", "list")
+	if r.code != 1 || r.stderr != "error: job list is not available yet in the Go port (arrives in phase P5)\n" || r.stdout != "" {
 		t.Fatalf("%+v", r)
 	}
 }

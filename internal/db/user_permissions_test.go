@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -22,17 +23,11 @@ import (
 //
 // Deferred Rust tests, with their phase (the tests that mix them with get and the like are ported
 // without them; the visible names, the Rust env.names, are those get finds, one document at a time):
-//   - link_titles_leave_out_hidden_targets: P3 (link titles)
 //   - an_import_applies_the_rules_to_every_row: P7 (import)
 //   - a_hidden_document_is_not_found_by_a_transition_and_a_visible_one_moves: P6 (transition)
-//   - the_permissions_are_loaded_with_every_authenticated_request: P3 (auth)
-//   - adding_checks_the_user_the_doctype_the_value_and_the_document: P3 (user_permissions module)
-//   - the_list_is_sorted_and_filtered: P3 (user_permissions module)
-//   - a_user_has_at_most_a_thousand_documents_per_doctype: P3 (user_permissions module)
 //   - two_sites_keep_their_own_permissions: P5 (sites)
-//   - a_database_without_the_table_still_serves_its_users: P3 (auth)
-// The list, summary and export parts of every_read_shows_only_what_the_restriction_allows and the
-// filter in a_hidden_link_field_still_restricts_and_its_value_is_not_revealed: P3 and P7.
+// The summary and export parts of every_read_shows_only_what_the_restriction_allows: P6 (summary) and
+// P7 (export). The list parts, link titles and the auth and management tests are here (P3).
 
 const upCustomerGroup = `
 name = "customer_group"
@@ -259,19 +254,13 @@ func label(s *db.StoredDocument) string {
 	return s.Name
 }
 
-// names are the labels of the documents a caller can read, sorted. (The Rust env.names lists; here
-// every document of the DocType is read by get, so the read scope is the one of get.)
+// names are the labels of the documents a caller lists (500 at most), sorted: the random names of the
+// orders would make the order of a list vary.
 func (e *upEnv) names(doctype string, who core.Caller) []string {
 	e.t.Helper()
 	out := []string{}
-	for _, r := range e.d.Rows("SELECT name FROM " + db.QuoteIdent(core.TablePrefix+doctype)) {
-		got, err := db.Get(bg, e.d.Pool, e.reg, doctype, r[0], who)
-		if err != nil {
-			e.t.Fatal(err)
-		}
-		if got != nil {
-			out = append(out, label(got))
-		}
+	for _, found := range listDocs(e.t, e.d, e.reg, doctype, who, db.ListQuery{Limit: u32(500)}) {
+		out = append(out, label(found))
 	}
 	slices.Sort(out)
 	return out
@@ -280,11 +269,11 @@ func (e *upEnv) names(doctype string, who core.Caller) []string {
 // orderName is the name of the sales order with this title (its names are random).
 func (e *upEnv) orderName(title string) string {
 	e.t.Helper()
-	rows := e.d.Rows("SELECT name FROM doc_sales_order WHERE title = '" + title + "'")
-	if len(rows) != 1 {
-		e.t.Fatalf("one order titled %s, got %d", title, len(rows))
+	found := listDocs(e.t, e.d, e.reg, "sales_order", sys("sys"), db.ListQuery{Filters: []db.Filter{f("title", db.Eq(text(title)))}})
+	if len(found) != 1 {
+		e.t.Fatalf("one order titled %s, got %d", title, len(found))
 	}
-	return rows[0][0]
+	return found[0].Name
 }
 
 // get is the document; a sales order is given by its title.
@@ -333,8 +322,8 @@ func strs(items ...string) []string { return items }
 
 // Rust: user_permissions.rs::every_read_shows_only_what_the_restriction_allows
 //
-// The get part and the names; the filter, sort and paging of a list, the summary and the export are
-// P3 and P7.
+// The get part, the names, and the filter, sort and paging of a list; the summary (P6) and the
+// export (P7) are not ported yet.
 func TestEveryReadShowsOnlyWhatTheRestrictionAllows(t *testing.T) {
 	env := newUpEnv(t)
 	env.seed()
@@ -365,6 +354,15 @@ func TestEveryReadShowsOnlyWhatTheRestrictionAllows(t *testing.T) {
 		if (env.get(c.doctype, c.name, a) != nil) != c.visible {
 			t.Errorf("%s %s", c.doctype, c.name)
 		}
+	}
+	// Filters, sorts and pages cannot reach a hidden row either.
+	rows := listDocs(t, env.d, env.reg, "customer", a, db.ListQuery{Filters: []db.Filter{f("customer_group", db.Eq(text("Wholesale")))}})
+	if len(rows) != 0 {
+		t.Error("a filter on the hidden group finds something")
+	}
+	rows = listDocs(t, env.d, env.reg, "customer", a, db.ListQuery{Sort: []db.Sort{db.Desc("title")}, Limit: u32(1), Offset: u64(1)})
+	if len(rows) != 1 || rows[0].Name != "c_none" {
+		t.Errorf("paging counts only visible rows: %v", rows)
 	}
 }
 
@@ -808,13 +806,15 @@ func TestTheRestrictionAndIfOwnerBothApply(t *testing.T) {
 }
 
 // Rust: user_permissions.rs::a_caller_without_the_read_right_is_denied_before_any_scope
-//
-// The call to list is ported with P3.
 func TestACallerWithoutTheReadRightIsDeniedBeforeAnyScope(t *testing.T) {
 	env := newUpEnv(t)
 	env.seed()
 	nobody := user("nobody", "Stranger").WithRestrictions(restrictionsOf("customer_group", "Retail"))
 	_, err := db.Get(bg, env.d.Pool, env.reg, "customer", "c_retail", nobody)
+	if !isDeniedRight(err, core.RightRead) {
+		t.Error(err)
+	}
+	_, err = db.List(bg, env.d.Pool, env.reg, "customer", nobody, db.ListQuery{})
 	if !isDeniedRight(err, core.RightRead) {
 		t.Error(err)
 	}
@@ -825,8 +825,6 @@ func TestACallerWithoutTheReadRightIsDeniedBeforeAnyScope(t *testing.T) {
 }
 
 // Rust: user_permissions.rs::a_hidden_link_field_still_restricts_and_its_value_is_not_revealed
-//
-// The filter on the hidden field (an InvalidQuery of list) is ported with P3.
 func TestAHiddenLinkFieldStillRestrictsAndItsValueIsNotRevealed(t *testing.T) {
 	env := newUpEnv(t)
 	env.seed()
@@ -847,6 +845,9 @@ func TestAHiddenLinkFieldStillRestrictsAndItsValueIsNotRevealed(t *testing.T) {
 	if _, ok := shown.Values["partner_group"]; ok {
 		t.Error("the hidden value is revealed")
 	}
+	// It is unknown to a filter, as any hidden field.
+	_, err := db.List(bg, env.d.Pool, env.reg, "sales_order", a, db.ListQuery{Filters: []db.Filter{f("partner_group", db.Eq(text("Retail")))}})
+	wantKind(t, err, db.ErrInvalidQuery)
 	// A manager with the level reads it, and is restricted all the same.
 	manager := user("mgr", "Sales", "Manager").WithRestrictions(restrictionsOf("customer_group", "Retail"))
 	shown = env.get("sales_order", "lvl_allowed", manager)
@@ -855,5 +856,255 @@ func TestAHiddenLinkFieldStillRestrictsAndItsValueIsNotRevealed(t *testing.T) {
 	}
 	if env.get("sales_order", "lvl_hidden", manager) != nil {
 		t.Error("lvl_hidden is visible to the manager")
+	}
+}
+
+// ---- titles --------------------------------------------------------------------------------------
+
+// Rust: user_permissions.rs::link_titles_leave_out_hidden_targets
+func TestLinkTitlesLeaveOutHiddenTargets(t *testing.T) {
+	env := newUpEnv(t)
+	env.seed()
+	order := upOrderDoc("t", "Retail")
+	order.Values["customer"] = text("c_retail")
+	visible := env.put("sales_order", order)
+	order = upOrderDoc("h", "Wholesale")
+	order.Values["customer"] = text("c_wholesale")
+	hidden := env.put("sales_order", order)
+	docs := []*db.StoredDocument{visible, hidden}
+	titles, err := db.LinkTitles(bg, env.d.Pool, env.reg, ann(), "sales_order", docs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want(t, titles["customer_group"], map[string]string{"Retail": "Retail"}, "groups of ann")
+	want(t, titles["customer"], map[string]string{"c_retail": "c_retail"}, "customers of ann")
+	all, err := db.LinkTitles(bg, env.d.Pool, env.reg, pat(), "sales_order", docs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all["customer_group"]) != 2 || len(all["customer"]) != 2 {
+		t.Error(all)
+	}
+}
+
+// ---- loading and managing ------------------------------------------------------------------------
+
+func userWith(t *testing.T, env *upEnv, name string, roles ...string) {
+	t.Helper()
+	if _, err := db.CreateUser(bg, env.d.Pool, name, "correct horse battery", roles); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// callerOf is the caller of a new session of the user (Rust: restrictions_of): what a request gets
+// from ValidateSession.
+func callerOf(t *testing.T, env *upEnv, name string) core.Caller {
+	t.Helper()
+	session, err := db.Login(bg, env.d.Pool, name, "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := db.ValidateSession(bg, env.d.Pool, session.Token)
+	if err != nil || u == nil {
+		t.Fatalf("%v %v", u, err)
+	}
+	return u.Caller()
+}
+
+func mustAddPermission(t *testing.T, env *upEnv, user, doctype, value string, wantAdded bool) {
+	t.Helper()
+	added, err := db.AddUserPermission(bg, env.d.Pool, env.reg, user, doctype, value)
+	if err != nil || added != wantAdded {
+		t.Fatalf("add %s %s %s: %v %v", user, doctype, value, added, err)
+	}
+}
+
+func mustRemovePermission(t *testing.T, env *upEnv, user, doctype, value string, wantRemoved bool) {
+	t.Helper()
+	removed, err := db.RemoveUserPermission(bg, env.d.Pool, user, doctype, value)
+	if err != nil || removed != wantRemoved {
+		t.Fatalf("remove %s %s %s: %v %v", user, doctype, value, removed, err)
+	}
+}
+
+// Rust: user_permissions.rs::the_permissions_are_loaded_with_every_authenticated_request
+//
+// Also checked here: an API token loads them like a session.
+func TestThePermissionsAreLoadedWithEveryAuthenticatedRequest(t *testing.T) {
+	env := newUpEnv(t)
+	env.seed()
+	userWith(t, env, "ann", "Sales")
+	first := callerOf(t, env, "ann")
+	if first.Username != "ann" || !slices.Equal(first.Roles, []string{"Sales"}) || !first.Restrictions.IsEmpty() {
+		t.Errorf("no permissions yet: %+v", first)
+	}
+	mustAddPermission(t, env, "ann", "customer_group", "Retail", true)
+	mustAddPermission(t, env, "ann", "customer_group", "Wholesale", true)
+	mustAddPermission(t, env, "ann", "customer", "c_none", true)
+	caller := callerOf(t, env, "ann")
+	want(t, caller, user("ann", "Sales").WithRestrictions(restrictionsOf(
+		"customer_group", "Retail", "customer_group", "Wholesale", "customer", "c_none")), "three permissions")
+	// It applies at once: the next call as that caller sees the rows.
+	want(t, env.names("customer", caller), strs("c_none"), "customers")
+	// An API token loads them too.
+	api, err := db.CreateAPIToken(bg, env.d.Pool, "ann")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaToken, err := db.ValidateAPIToken(bg, env.d.Pool, api.Key, api.Secret)
+	if err != nil || viaToken == nil {
+		t.Fatal(err)
+	}
+	want(t, viaToken.Caller(), caller, "api token")
+	mustRemovePermission(t, env, "ann", "customer", "c_none", true)
+	mustRemovePermission(t, env, "ann", "customer", "c_none", false)
+	caller = callerOf(t, env, "ann")
+	if n := len(env.names("customer", caller)); n != 5 {
+		t.Error(n)
+	}
+}
+
+// Rust: user_permissions.rs::adding_checks_the_user_the_doctype_the_value_and_the_document
+func TestAddingChecksTheUserTheDoctypeTheValueAndTheDocument(t *testing.T) {
+	env := newUpEnv(t)
+	env.seed()
+	userWith(t, env, "ann", "Sales")
+	invalid := func(doctype, value string) string {
+		t.Helper()
+		_, err := db.AddUserPermission(bg, env.d.Pool, env.reg, "ann", doctype, value)
+		return authKind(t, err, db.AuthInvalidUserPermission).Detail
+	}
+	_, err := db.AddUserPermission(bg, env.d.Pool, env.reg, "nobody", "customer_group", "Retail")
+	authKind(t, err, db.AuthUserNotFound)
+	_, err = db.AddUserPermission(bg, env.d.Pool, env.reg, "bad name", "customer_group", "Retail")
+	authKind(t, err, db.AuthInvalidUsername)
+	for _, c := range []struct{ doctype, value, needle string }{
+		{"ghost", "x", "unknown DocType"},
+		{"order_line", "x", "child DocType"},
+		{"customer_group", "", "not empty"},
+		{"customer_group", "a\x00b", "NUL"},
+		{"customer_group", "Nowhere", "no `customer_group` document named `Nowhere`"},
+	} {
+		if m := invalid(c.doctype, c.value); !strings.Contains(m, c.needle) {
+			t.Errorf("%s %q: %s", c.doctype, c.value, m)
+		}
+	}
+	// The exact text of the error, with its prefix.
+	_, err = db.AddUserPermission(bg, env.d.Pool, env.reg, "ann", "ghost", "x")
+	if err.Error() != "invalid user permission: unknown DocType `ghost`" {
+		t.Error(err)
+	}
+	// Nothing was written, and adding a row twice is not an error.
+	listed, err := db.ListUserPermissions(bg, env.d.Pool, nil, nil)
+	if err != nil || len(listed) != 0 {
+		t.Fatal(listed, err)
+	}
+	mustAddPermission(t, env, "ann", "customer_group", "Retail", true)
+	mustAddPermission(t, env, "ann", "customer_group", "Retail", false)
+	if listed, _ := db.ListUserPermissions(bg, env.d.Pool, nil, nil); len(listed) != 1 {
+		t.Error(listed)
+	}
+	// Removing a row of an unknown user is an error; of a document that is gone it works.
+	_, err = db.RemoveUserPermission(bg, env.d.Pool, "nobody", "customer_group", "Retail")
+	authKind(t, err, db.AuthUserNotFound)
+	// A row of a document that is gone can still be removed.
+	env.group("Temp")
+	mustAddPermission(t, env, "ann", "customer_group", "Temp", true)
+	temp := mustGet(t, env.d, env.reg, "customer_group", "Temp", sys("sys"))
+	if err := db.Delete(bg, env.d.Pool, env.reg, "customer_group", "Temp", temp.Version, sys("sys")); err != nil {
+		t.Fatal(err)
+	}
+	mustRemovePermission(t, env, "ann", "customer_group", "Temp", true)
+}
+
+// Rust: user_permissions.rs::the_list_is_sorted_and_filtered
+func TestTheListIsSortedAndFiltered(t *testing.T) {
+	env := newUpEnv(t)
+	env.seed()
+	userWith(t, env, "zoe", "Sales")
+	userWith(t, env, "ann", "Sales")
+	for _, c := range [][3]string{
+		{"zoe", "customer_group", "Retail"},
+		{"ann", "customer", "c_none"},
+		{"ann", "customer_group", "Wholesale"},
+		{"ann", "customer_group", "Retail"},
+	} {
+		mustAddPermission(t, env, c[0], c[1], c[2], true)
+	}
+	rows := func(user, doctype *string) []string {
+		t.Helper()
+		listed, err := db.ListUserPermissions(bg, env.d.Pool, user, doctype)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, p := range listed {
+			if time.Since(p.CreatedAt) > time.Hour || p.CreatedAt.Location() != time.UTC {
+				t.Errorf("created_at %v", p.CreatedAt)
+			}
+			out = append(out, p.User+" "+p.DocType+" "+p.Value)
+		}
+		return out
+	}
+	str := func(s string) *string { return &s }
+	want(t, rows(nil, nil), []string{"ann customer c_none", "ann customer_group Retail", "ann customer_group Wholesale", "zoe customer_group Retail"}, "all")
+	want(t, rows(str("ann"), str("customer_group")), []string{"ann customer_group Retail", "ann customer_group Wholesale"}, "ann groups")
+	want(t, rows(nil, str("customer")), []string{"ann customer c_none"}, "customers")
+	_, err := db.ListUserPermissions(bg, env.d.Pool, str("nobody"), nil)
+	authKind(t, err, db.AuthUserNotFound)
+	// A row for a DocType the site does not have is listed (so it can be removed) and ignored.
+	env.d.Exec("INSERT INTO fb_user_permission (user_id, doctype, value) SELECT id, 'old_doctype', 'x' FROM fb_user WHERE username = 'ann'")
+	if n := len(rows(str("ann"), nil)); n != 4 {
+		t.Error(n)
+	}
+	mustRemovePermission(t, env, "ann", "old_doctype", "x", true)
+}
+
+// Rust: user_permissions.rs::a_user_has_at_most_a_thousand_documents_per_doctype
+func TestAUserHasAtMostAThousandDocumentsPerDoctype(t *testing.T) {
+	env := newUpEnv(t)
+	env.seed()
+	userWith(t, env, "ann", "Sales")
+	// MaxUserPermissions - 1 rows by SQL (rows for names that need not exist), then the limit is reached
+	// by an add and the next one is refused. Another DocType has its own limit.
+	env.d.Exec(fmt.Sprintf("INSERT INTO fb_user_permission (user_id, doctype, value) "+
+		"SELECT u.id, 'customer_group', 'n' || g FROM fb_user u, generate_series(1, %d) g WHERE u.username = 'ann'",
+		core.MaxUserPermissions-1))
+	mustAddPermission(t, env, "ann", "customer_group", "Retail", true)
+	_, err := db.AddUserPermission(bg, env.d.Pool, env.reg, "ann", "customer_group", "Wholesale")
+	message := authKind(t, err, db.AuthInvalidUserPermission).Detail
+	if !strings.Contains(message, "1000") || !strings.Contains(message, "customer_group") {
+		t.Error(message)
+	}
+	if message != "user `ann` is restricted to 1000 `customer_group` documents already, the most allowed" {
+		t.Error(message)
+	}
+	// Adding the same row again is still fine, and so is another DocType.
+	mustAddPermission(t, env, "ann", "customer_group", "Retail", false)
+	mustAddPermission(t, env, "ann", "customer", "c_none", true)
+	// The user still works with 1000 names bound.
+	caller := callerOf(t, env, "ann")
+	want(t, env.names("customer_group", caller), strs("Retail"), "groups")
+}
+
+// Rust: user_permissions.rs::a_database_without_the_table_still_serves_its_users
+func TestADatabaseWithoutTheTableStillServesItsUsers(t *testing.T) {
+	// A binary that is newer than the last migrate: no fb_user_permission yet, so nobody has any
+	// permission and every request works as before.
+	d := dbtest.Migrated(t)
+	d.Exec("DROP TABLE fb_user_permission")
+	if _, err := db.CreateUser(bg, d.Pool, "ann", "correct horse battery", []string{"Sales"}); err != nil {
+		t.Fatal(err)
+	}
+	session, err := db.Login(bg, d.Pool, "ann", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !session.User.Restrictions.IsEmpty() {
+		t.Error("the login has restrictions")
+	}
+	u, err := db.ValidateSession(bg, d.Pool, session.Token)
+	if err != nil || u == nil || !u.Restrictions.IsEmpty() {
+		t.Fatalf("%v %v", u, err)
 	}
 }

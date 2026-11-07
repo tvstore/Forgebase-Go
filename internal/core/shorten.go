@@ -83,3 +83,7 @@ func durationDebug(d time.Duration) string {
 	}
 	return fmt.Sprintf("%dns", nanos)
 }
+
+// DebugQuote is s as Rust's `{:?}` writes a str: in double quotes with the escapes of debugQuote. For
+// the messages of other packages that Rust builds with `{field:?}`.
+func DebugQuote(s string) string { return debugQuote(s) }

@@ -95,6 +95,10 @@ const (
 	ErrJob
 	// ErrHook: a lifecycle hook rejected the operation (DocType, Hook, Message).
 	ErrHook
+	// ErrInvalidQuery: a list query cannot be run: an unknown field, an operator that does not fit
+	// the field, a value of the wrong kind, or a limit or offset out of range (Message). Nothing from
+	// the query was sent to the database.
+	ErrInvalidQuery
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -196,6 +200,8 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("permission denied: no `%s` right on DocType `%s`", e.Right, e.DocType)
 	case ErrUniqueViolation, ErrNaming:
 		return e.Message
+	case ErrInvalidQuery:
+		return "invalid list query: " + e.Message
 	case ErrInvalidActor:
 		return "actor must be a non-empty string without NUL characters"
 	case ErrDecode:
@@ -237,6 +243,7 @@ func IsMissingDatabase(err error) bool {
 const (
 	sqlStateLockNotAvailable   = "55P03"
 	sqlStateInvalidCatalogName = "3D000"
+	sqlStateUniqueViolation    = "23505"
 )
 
 // wrap turns an error of the driver into an *Error: a lock timeout (55P03) becomes ErrLockTimeout,

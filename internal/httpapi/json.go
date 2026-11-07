@@ -9,9 +9,9 @@ import (
 	"github.com/tvstore/forgebase-go/internal/decimal"
 )
 
-// JSON input -> core.Value mapping, shared by the HTTP API and the command-line tool (the input half
-// of the Rust module forgebase-http json.rs; the output half is db.DocumentToJSON, the filters
-// arrive with the list endpoint in P3).
+// JSON input -> core.Value mapping, shared by the HTTP API and the command-line tool (the Rust module
+// forgebase-http json.rs; the output half is db.DocumentToJSON, and the filter and sort parsing of the list
+// is in filters.go).
 //
 //	Field type              JSON
 //	Data, Text, Select      string
@@ -41,6 +41,8 @@ const (
 	JSONNotAnObject
 	// JSONField: a value does not fit its field (Field, Problem).
 	JSONField
+	// JSONQuery: a filter or sort value cannot be used (Problem is the whole message).
+	JSONQuery
 )
 
 // JSONError is why JSON input could not be mapped.
@@ -57,6 +59,8 @@ func (e *JSONError) Error() string {
 		return "invalid JSON: " + e.Err.Error()
 	case JSONNotAnObject:
 		return "the data must be a JSON object"
+	case JSONQuery:
+		return e.Problem
 	}
 	return fmt.Sprintf("field `%s`: %s", core.Shorten(e.Field), e.Problem)
 }

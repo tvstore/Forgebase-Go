@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tvstore/forgebase-go/internal/db"
 	"github.com/tvstore/forgebase-go/internal/db/dbtest"
 )
 
@@ -17,9 +19,7 @@ import (
 // crates/forgebase/tests/cli.rs and sites.rs; the exec-based ones (exit codes of the real process,
 // standard input of a pipe) are in cmd/forgebase.
 //
-// Deferred, with the phase that brings the command: cli.rs::list_filters_sorts_and_pages_as_json
-// (doc list, P3), user_commands_manage_users_and_roles, token_create_prints_the_secret_once_and_
-// revoke_works (P3), serve_* (P3), the_worker_of_a_binary_without_app_jobs_... (P5),
+// Deferred, with the phase that brings the command: serve_* (P3.2, the HTTP API), the_worker_of_a_binary_without_app_jobs_... (P5),
 // doc_transition_takes_a_workflow_transition_as_the_system_context and
 // migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone (P6), the webhook_*,
 // data_*, customize_* and user_permission_* tests (P7).
@@ -655,8 +655,8 @@ func TestSubmitCancelAndAmendEndToEnd(t *testing.T) {
 	}
 }
 
-// Rust: cli.rs::malformed_json_and_filters_fail_before_the_database_is_used (the doc insert and
-// update cases; the filters of doc list and data export arrive in P3 and P7)
+// Rust: cli.rs::malformed_json_and_filters_fail_before_the_database_is_used (the doc insert, update
+// and list cases; the data export case arrives in P7)
 func TestMalformedJSONFailsBeforeTheDatabaseIsUsed(t *testing.T) {
 	// The URL points at nothing: a connection error would show if the database were opened.
 	vars := map[string]string{"FORGEBASE_DATABASE_URL": "postgres://nobody:nothing@127.0.0.1:1/none"}
@@ -665,13 +665,17 @@ func TestMalformedJSONFailsBeforeTheDatabaseIsUsed(t *testing.T) {
 		{"doc", "update", "customer", "a", "--version", "1", "--data", "[1]", "--doctypes", doctypes},
 		{"doc", "insert", "customer", "--data", `{"a":1} x`, "--doctypes", doctypes},
 		{"doc", "insert", "customer", "--data", "", "--doctypes", doctypes},
+		{"doc", "list", "customer", "--filter", "{bad", "--doctypes", doctypes},
+		{"doc", "list", "customer", "--filter", `{"field":"a"}`, "--doctypes", doctypes},
+		{"doc", "list", "customer", "--filter", `[{"field":"a"}]`, "--doctypes", doctypes},
 	} {
 		r := runCLI(vars, "", args...)
 		if r.code != 1 {
 			t.Errorf("%v: %+v", args, r)
 			continue
 		}
-		if !strings.HasPrefix(r.stderr, "error: invalid JSON") && !strings.HasPrefix(r.stderr, "error: the data must be a JSON object") {
+		if !strings.HasPrefix(r.stderr, "error: invalid JSON") && !strings.HasPrefix(r.stderr, "error: the data must be a JSON object") &&
+			!strings.HasPrefix(r.stderr, "error: invalid filter") {
 			t.Errorf("%v: %s", args, r.stderr)
 		}
 		if strings.Contains(r.stderr, "site `") {
@@ -687,6 +691,262 @@ func TestMalformedJSONFailsBeforeTheDatabaseIsUsed(t *testing.T) {
 	empty := scratch(t, nil)
 	r = runCLI(vars, "", "doc", "get", "nope", "x", "--doctypes", empty)
 	expectContains(t, r.stderr, "known DocTypes: none")
+}
+
+// jsonArray decodes the standard output of a command that prints a JSON array.
+func (r result) jsonArray(t *testing.T) []any {
+	t.Helper()
+	var v []any
+	if err := json.Unmarshal([]byte(r.stdout), &v); err != nil {
+		t.Fatalf("%v: %q", err, r.stdout)
+	}
+	return v
+}
+
+// Rust: cli.rs::list_filters_sorts_and_pages_as_json
+func TestListFiltersSortsAndPagesAsJSON(t *testing.T) {
+	e := newEnv(t)
+	e.migrate()
+	for _, c := range []struct {
+		email  string
+		points int
+		tier   string
+	}{{"a@x.y", 30, "gold"}, {"b@x.y", 10, "silver"}, {"c@x.y", 20, "gold"}} {
+		data := fmt.Sprintf(`{"email":"%s","full_name":"N","loyalty_points":%d,"tier":"%s"}`, c.email, c.points, c.tier)
+		r := e.doc("insert", "customer", "--data", data)
+		expectCode(t, r, 0, "insert "+c.email)
+	}
+	list := func(extra ...string) result { return e.doc(append([]string{"list", "customer"}, extra...)...) }
+	names := func(r result) []string {
+		t.Helper()
+		expectCode(t, r, 0, "list")
+		out := []string{}
+		for _, d := range r.jsonArray(t) {
+			out = append(out, d.(map[string]any)["name"].(string))
+		}
+		return out
+	}
+	same := func(got []string, want ...string) {
+		t.Helper()
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	}
+	// Default: everything (three is below the page size), ordered by name.
+	same(names(list()), "a@x.y", "b@x.y", "c@x.y")
+	// A document in the list has the same shape as doc get (standard columns and values).
+	first := list("--limit", "1").jsonArray(t)[0].(map[string]any)
+	if first["owner"] != "cli" || first["loyalty_points"] != float64(30) || first["version"] != float64(1) {
+		t.Errorf("%v", first)
+	}
+	// Sorting, :desc, several keys.
+	same(names(list("--sort", "loyalty_points:desc")), "a@x.y", "c@x.y", "b@x.y")
+	same(names(list("--sort", "tier:desc", "--sort", "loyalty_points")), "b@x.y", "c@x.y", "a@x.y")
+	// Filters, all operators.
+	filter := func(text string) []string { return names(list("--filter", text)) }
+	same(filter(`[{"field":"tier","op":"=","value":"gold"},{"field":"loyalty_points","op":">","value":20}]`), "a@x.y")
+	same(filter(`[{"field":"tier","op":"!=","value":"gold"}]`), "b@x.y")
+	same(filter(`[{"field":"loyalty_points","op":"in","value":[10,30]}]`), "a@x.y", "b@x.y")
+	same(filter(`[{"field":"loyalty_points","op":"<=","value":10}]`), "b@x.y")
+	if n := len(filter(`[{"field":"name","op":"like","value":"%@x.y"}]`)); n != 3 {
+		t.Error(n)
+	}
+	if n := len(filter(`[{"field":"notes","op":"is null"}]`)); n != 3 {
+		t.Error(n)
+	}
+	same(filter(`[{"field":"notes","op":"is not null"}]`))
+	same(filter(`[{"field":"customer_group","op":"=","value":"nope"}]`))
+	if n := len(filter("[]")); n != 3 {
+		t.Error(n)
+	}
+	// Paging.
+	same(names(list("--limit", "2")), "a@x.y", "b@x.y")
+	same(names(list("--limit", "2", "--offset", "2")), "c@x.y")
+	same(names(list("--offset", "3")))
+	// Every kind of mistake is an exit-1 error that names the problem.
+	for _, c := range []struct {
+		args   []string
+		needle string
+	}{
+		{[]string{"--limit", "501"}, "maximum"},
+		{[]string{"--limit", "0"}, "at least 1"},
+		{[]string{"--sort", "nope"}, "unknown field"},
+		{[]string{"--sort", "name:sideways"}, "FIELD:desc"},
+		{[]string{"--filter", "not json"}, "invalid JSON"},
+		{[]string{"--filter", "{}"}, "JSON array"},
+		{[]string{"--filter", `[{"field":"nope","op":"=","value":1}]`}, "unknown field"},
+		{[]string{"--filter", `[{"field":"tier","op":"~","value":1}]`}, "unknown operator"},
+		{[]string{"--filter", `[{"field":"tier","op":"=","value":1}]`}, "tier"},
+		{[]string{"--filter", `[{"field":"tier","op":"="}]`}, "needs a `value`"},
+		{[]string{"--filter", `[{"field":"tier","op":"is null","value":1}]`}, "takes no `value`"},
+		{[]string{"--filter", `[{"field":"loyalty_points","op":"like","value":"1%"}]`}, "text fields only"},
+		{[]string{"--filter", `[{"field":"tier","op":"=","value":"gold","extra":1}]`}, "unknown key"},
+	} {
+		r := list(c.args...)
+		if r.code != 1 || r.stdout != "" || !strings.Contains(r.stderr, c.needle) {
+			t.Errorf("%v: %+v", c.args, r)
+		}
+	}
+	// The messages are Rust's, word for word.
+	expectContains(t, list("--limit", "501").stderr, "error: invalid list query: limit 501 is above the maximum of 500")
+	expectContains(t, list("--sort", "nope").stderr, `error: invalid list query: unknown field "nope" for DocType `+"`customer`")
+	expectContains(t, list("--filter", `[{"field":"tier","op":"~","value":1}]`).stderr,
+		"error: invalid filter: filter 1: unknown operator `~` (use =, !=, <, <=, >, >=, in, like, is null, is not null)")
+	// An unknown DocType is reported before the database is touched.
+	r := e.doc("list", "nope")
+	expectCode(t, r, 1, "unknown DocType")
+	expectContains(t, r.stderr, "unknown DocType")
+}
+
+const secretPassword = "s3cret pass phrase"
+
+// migratedEnv is an environment whose database is migrated.
+func migratedEnv(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	e.migrate()
+	return e
+}
+
+// Rust: cli.rs::user_commands_manage_users_and_roles
+func TestUserCommandsManageUsersAndRoles(t *testing.T) {
+	e := migratedEnv(t)
+
+	// The password comes from the first line of standard input only.
+	r := e.runStdin(secretPassword+"\nsecond line is ignored\n", "user", "create", "alice", "--role", "Sales", "--role", "Admin")
+	expectCode(t, r, 0, "create")
+	if r.stdout != "created user alice\n" || strings.Contains(r.stdout+r.stderr, secretPassword) {
+		t.Errorf("%+v", r)
+	}
+	if got := e.scalar("SELECT string_agg(role, ',' ORDER BY role) FROM fb_user_role"); got != "Admin,Sales" {
+		t.Error(got)
+	}
+	hash := e.scalar("SELECT password_hash FROM fb_user")
+	if !strings.HasPrefix(hash, "$argon2id$") || strings.Contains(hash, secretPassword) {
+		t.Error(hash)
+	}
+
+	// A duplicate, a bad password and a missing password are errors that never show the password.
+	r = e.runStdin("another password\n", "user", "create", "alice")
+	expectCode(t, r, 1, "duplicate")
+	expectContains(t, r.stderr, "already exists")
+	r = e.runStdin("short\n", "user", "create", "bob")
+	expectCode(t, r, 1, "short")
+	expectContains(t, r.stderr, "invalid password")
+	if strings.Contains(r.stderr, "short") {
+		t.Errorf("the password is shown: %s", r.stderr)
+	}
+	r = e.runStdin("", "user", "create", "bob")
+	expectCode(t, r, 1, "missing")
+	expectContains(t, r.stderr, "invalid password")
+	// The password is never an argument: a second positional argument is a usage error.
+	expectCode(t, e.run("user", "create", "bob", "hunter2hunter2"), 2, "a password as an argument")
+
+	for _, c := range []struct {
+		args []string
+		out  string
+	}{
+		{[]string{"user", "add-role", "alice", "Accounts"}, "added role Accounts to user alice\n"},
+		{[]string{"user", "add-role", "alice", "Accounts"}, "user alice has role Accounts already\n"},
+		{[]string{"user", "remove-role", "alice", "Admin"}, "removed role Admin from user alice\n"},
+		{[]string{"user", "remove-role", "alice", "Admin"}, "user alice does not have role Admin\n"},
+	} {
+		if r := e.run(c.args...); r.code != 0 || r.stdout != c.out {
+			t.Errorf("%v: %+v", c.args, r)
+		}
+	}
+	if got := e.scalar("SELECT string_agg(role, ',' ORDER BY role) FROM fb_user_role"); got != "Accounts,Sales" {
+		t.Error(got)
+	}
+	r = e.run("user", "add-role", "nobody", "Admin")
+	expectCode(t, r, 1, "unknown user")
+	expectContains(t, r.stderr, "user `nobody` not found")
+
+	r = e.run("user", "disable", "alice")
+	expectCode(t, r, 0, "disable")
+	if r.stdout != "disabled user alice; its sessions were ended\n" || e.scalar("SELECT enabled::text FROM fb_user") != "false" {
+		t.Errorf("%+v", r)
+	}
+	r = e.run("user", "enable", "alice")
+	expectCode(t, r, 0, "enable")
+	if r.stdout != "enabled user alice\n" || e.scalar("SELECT enabled::text FROM fb_user") != "true" {
+		t.Errorf("%+v", r)
+	}
+
+	// Set the password (CRLF line ending stripped) and end the sessions.
+	e.d.Exec("INSERT INTO fb_session (token_hash, csrf_hash, user_id, expires_at) " +
+		"SELECT '\\x00', '\\x01', id, now() + interval '1 day' FROM fb_user")
+	before := e.scalar("SELECT password_hash FROM fb_user")
+	r = e.runStdin("a new password phrase\r\n", "user", "set-password", "alice")
+	expectCode(t, r, 0, "set-password")
+	if strings.Contains(r.stdout, "a new password phrase") || r.stdout != "changed the password of user alice; its sessions were ended\n" {
+		t.Errorf("%+v", r)
+	}
+	if e.scalar("SELECT password_hash FROM fb_user") == before || e.scalar("SELECT count(*)::text FROM fb_session") != "0" {
+		t.Error("the password or the sessions did not change")
+	}
+	// The new password is the one in the database: it logs in (the CRLF was stripped).
+	if _, err := db.Login(context.Background(), e.d.Pool, "alice", "a new password phrase"); err != nil {
+		t.Errorf("the new password does not log in: %v", err)
+	}
+}
+
+// Rust: cli.rs::token_create_prints_the_secret_once_and_revoke_works
+func TestTokenCreatePrintsTheSecretOnceAndRevokeWorks(t *testing.T) {
+	e := migratedEnv(t)
+	expectCode(t, e.runStdin("an ordinary password\n", "user", "create", "alice"), 0, "create user")
+
+	r := e.run("token", "create", "alice")
+	expectCode(t, r, 0, "token create")
+	if r.stderr != "" || !strings.HasSuffix(r.stdout, "\n") || strings.Count(r.stdout, "\n") != 1 {
+		t.Errorf("%+v", r)
+	}
+	key, secret, ok := strings.Cut(strings.TrimSuffix(r.stdout, "\n"), ":")
+	if !ok || len(key) != 32 || len(secret) != 64 {
+		t.Fatalf("%q", r.stdout)
+	}
+	// The secret is not stored; the digest is.
+	if e.scalar("SELECT key FROM fb_api_token") != key || strings.Contains(e.scalar("SELECT t::text FROM fb_api_token t"), secret) {
+		t.Error("what is stored")
+	}
+	if e.scalar("SELECT (secret_hash = sha256(convert_to('"+secret+"', 'UTF8')))::text FROM fb_api_token") != "true" {
+		t.Error("the digest")
+	}
+
+	r = e.run("token", "revoke", key)
+	expectCode(t, r, 0, "revoke")
+	if r.stdout != "revoked API token "+key+"\n" || strings.Contains(r.stdout, secret) {
+		t.Errorf("%+v", r)
+	}
+	if e.scalar("SELECT (revoked_at IS NOT NULL)::text FROM fb_api_token") != "true" {
+		t.Error("not revoked")
+	}
+
+	// A well-formed but unknown key.
+	r = e.run("token", "revoke", "00000000000000000000000000000000")
+	expectCode(t, r, 1, "unknown key")
+	expectContains(t, r.stderr, "not found")
+	// A malformed key, also a pasted key:secret, is rejected without being echoed.
+	for _, bad := range []string{"nope", key + ":" + secret} {
+		r := e.run("token", "revoke", bad)
+		expectCode(t, r, 1, "malformed key")
+		expectContains(t, r.stderr, "invalid API token key")
+		if strings.Contains(r.stderr, bad) || strings.Contains(r.stderr, secret) || r.stdout != "" {
+			t.Errorf("%q: %+v", bad, r)
+		}
+	}
+	r = e.run("token", "create", "nobody")
+	if r.code != 1 || r.stdout != "" {
+		t.Errorf("%+v", r)
+	}
+	// A disabled user gets no token.
+	expectCode(t, e.run("user", "disable", "alice"), 0, "disable")
+	r = e.run("token", "create", "alice")
+	expectCode(t, r, 1, "disabled")
+	expectContains(t, r.stderr, "is disabled")
+	if r.stdout != "" {
+		t.Error(r.stdout)
+	}
 }
 
 // Standard input that is not UTF-8 is refused before the database is used.
@@ -727,8 +987,10 @@ func (p *pair) vars() map[string]string {
 	return map[string]string{aURL: p.a.URL(), bURL: p.b.URL()}
 }
 
-func (p *pair) run(args ...string) result {
-	return runCLI(p.vars(), "", append([]string{"--config", filepath.Join(p.dir, "forgebase.toml")}, args...)...)
+func (p *pair) run(args ...string) result { return p.runStdin("", args...) }
+
+func (p *pair) runStdin(stdin string, args ...string) result {
+	return runCLI(p.vars(), stdin, append([]string{"--config", filepath.Join(p.dir, "forgebase.toml")}, args...)...)
 }
 
 func scalar(t *testing.T, d *dbtest.DB, sql string) string {
@@ -736,13 +998,15 @@ func scalar(t *testing.T, d *dbtest.DB, sql string) string {
 	return d.Rows(sql)[0][0]
 }
 
-// Rust: sites.rs::site_is_required_on_every_database_command_but_serve_with_two_sites (migrate and doc;
-// the others arrive with their commands)
+// Rust: sites.rs::site_is_required_on_every_database_command_but_serve_with_two_sites (migrate, doc,
+// user and token; job and worker arrive with P5)
 func TestSiteIsRequiredOnEveryDatabaseCommandWithTwoSites(t *testing.T) {
 	p := newPair(t)
 	for _, args := range [][]string{
 		{"migrate", "--doctypes", doctypes},
 		{"doc", "get", "customer", "x", "--doctypes", doctypes},
+		{"user", "disable", "root"},
+		{"token", "revoke", "key"},
 	} {
 		r := p.run(args...)
 		if r.code != 2 || r.stdout != "" {
@@ -858,8 +1122,8 @@ func TestAnUnsetURLVariableIsAnErrorNamingTheSiteAndNeverAValue(t *testing.T) {
 	expectContains(t, r.stderr, "site `b`")
 }
 
-// Rust: sites.rs::commands_touch_only_the_database_of_their_site (migrate and doc; users, tokens and jobs
-// arrive with their commands)
+// Rust: sites.rs::commands_touch_only_the_database_of_their_site (migrate, doc, user and token; jobs
+// arrive with P5)
 func TestCommandsTouchOnlyTheDatabaseOfTheirSite(t *testing.T) {
 	p := newPair(t)
 	expectCode(t, p.run("migrate", "--site", "a", "--doctypes", doctypes), 0, "migrate a")
@@ -888,4 +1152,8 @@ func TestCommandsTouchOnlyTheDatabaseOfTheirSite(t *testing.T) {
 	}
 	expectCode(t, get("a"), 0, "get on a")
 	expectCode(t, get("b"), 1, "get on b")
+	// Users and tokens too: ann exists on A only.
+	expectCode(t, p.runStdin("a password 123\n", "user", "create", "ann", "--site", "a"), 0, "user on a")
+	expectCode(t, p.run("token", "create", "ann", "--site", "a"), 0, "token on a")
+	expectCode(t, p.run("token", "create", "ann", "--site", "b"), 1, "no user ann on site b")
 }

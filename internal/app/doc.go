@@ -8,6 +8,8 @@
 // (run.go) and the error type (error.go). Run is the entry point of cmd/forgebase. The commands that
 // are not ported yet are parsed completely and fail with the phase that brings them (run.go, notYet).
 //
+// Added in P3.1: `doc list` (run.go), and the `user` and `token` commands (cli_auth.go).
+//
 // Import direction: app may import internal/httpapi, internal/db and internal/core. It must not
 // import the root package forgebase; the root package imports app and re-exports the public API.
 package app

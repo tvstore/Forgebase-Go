@@ -13,7 +13,7 @@ import (
 )
 
 // Ported from crates/forgebase-http/src/json.rs (the tests of the input mapping; the output mapping is
-// tested in internal/db, where it lives, and the filters arrive in P3).
+// tested in internal/db, where it lives, and the filters and sorts are tested in filters_test.go).
 
 const mixed = `
 name = "t"

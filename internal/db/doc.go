@@ -16,6 +16,10 @@
 // one session-level lock, with the report type that the app migrations, schedules and fixtures of
 // later phases fill in.
 //
+// Implemented in P3.1: the authentication storage (auth.go: users, roles, Argon2id passwords, sessions
+// with CSRF tokens, API tokens, the login lockout, the purge functions), the management of user
+// permissions (user_permissions.go), the list query (list.go) and link titles (link_titles.go).
+//
 // Import direction: db may import internal/core. It must not import internal/httpapi,
 // internal/app or the root package forgebase.
 package db

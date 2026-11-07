@@ -583,9 +583,6 @@ func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
 		name  string
 	}{
 		{[]string{"serve", "--doctypes", "d"}, "P3", "serve"},
-		{[]string{"doc", "list", "customer", "--doctypes", "d"}, "P3", "doc list"},
-		{[]string{"user", "create", "ann"}, "P3", "user create"},
-		{[]string{"token", "revoke", "k"}, "P3", "token revoke"},
 		{[]string{"new-app", "crm", "--forgebase-path", "/x"}, "P4", "new-app"},
 		{[]string{"worker", "--doctypes", "d"}, "P5", "worker"},
 		{[]string{"job", "list"}, "P5", "job list"},
@@ -697,7 +694,35 @@ func TestInvalidUTF8Arguments(t *testing.T) {
 	}
 	// The name in an error is shown lossily.
 	exit := mustExit(t, "migrate", "--bo"+bad)
-	if !strings.HasPrefix(exit.text, "error: unexpected argument '--bo\uFFFD\uFFFDb' found") && !strings.HasPrefix(exit.text, "error: unexpected argument '--boa\uFFFDb' found") {
+	if !strings.HasPrefix(exit.text, "error: unexpected argument '--boa\uFFFDb' found") {
+		t.Errorf("%q", exit.text)
+	}
+}
+
+// lossy is String::from_utf8_lossy: one U+FFFD per maximal invalid subpart.
+func TestLossyReplacesMaximalInvalidSubparts(t *testing.T) {
+	for in, want := range map[string]string{
+		"ok":               "ok",
+		"a\xffb":           "a\uFFFDb",
+		"\xe2\x82":         "\uFFFD",
+		"\xe2\x82x":        "\uFFFDx",
+		"\xe2\x82\xac":     "\u20ac",
+		"\xf0\x9f\x98":     "\uFFFD",
+		"\xf0\x9fx":        "\uFFFDx",
+		"\xc0\xaf":         "\uFFFD\uFFFD",
+		"\xed\xa0\x80":     "\uFFFD\uFFFD\uFFFD",
+		"\xe0\x80\x80":     "\uFFFD\uFFFD\uFFFD",
+		"\xf4\x90\x80\x80": "\uFFFD\uFFFD\uFFFD\uFFFD",
+		"\x80\x80":         "\uFFFD\uFFFD",
+		"\xe2\xe2\x82\xac": "\uFFFD\u20ac",
+	} {
+		if got := lossy(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+	// The value of --flag=value is shown lossily too.
+	exit := mustExit(t, "migrate", "--dry-run=a\xe2\x82")
+	if !strings.Contains(exit.text, "unexpected value 'a\uFFFD' for '--dry-run' found") {
 		t.Errorf("%q", exit.text)
 	}
 }
