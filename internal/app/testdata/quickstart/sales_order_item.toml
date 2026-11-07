@@ -1,0 +1,21 @@
+# Fixture of the CLI tests (crates/forgebase/tests/cli.rs), owned by that test. It mirrors the quick-start example DocType of the same name.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "sales_order_item"
+label = "Sales Order Item"
+is_child = true
+
+[[fields]]
+name = "description"
+type = "data"
+required = true
+
+[[fields]]
+name = "qty"
+type = "int"
+required = true
+
+[[fields]]
+name = "rate"
+type = "decimal"
+precision = 12
+scale = 2

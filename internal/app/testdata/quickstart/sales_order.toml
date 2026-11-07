@@ -1,0 +1,45 @@
+# Fixture of the CLI tests (crates/forgebase/tests/cli.rs), owned by that test. It mirrors the quick-start example DocType of the same name.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "sales_order"
+label = "Sales Order"
+submittable = true
+naming = { series = "SO-.YYYY.-.#####" }
+
+[[fields]]
+name = "customer"
+type = "link"
+target = "customer"
+required = true
+
+[[fields]]
+name = "order_date"
+type = "date"
+
+[[fields]]
+name = "items"
+label = "Items"
+type = "table"
+target = "sales_order_item"
+required = true
+
+[[fields]]
+name = "remarks"
+type = "text"
+allow_on_submit = true
+
+[[permissions]]
+role = "Sales User"
+read = true
+write = true
+create = true
+submit = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true
+write = true
+create = true
+delete = true
+submit = true
+cancel = true
+amend = true

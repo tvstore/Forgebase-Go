@@ -1,6 +1,6 @@
 # The command-line tool
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` and `doc insert|get|update|delete|submit|cancel|amend`. Every other command parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
 
 Walkthrough of the `forgebase` commands (or the binary of your app) for users and tokens, background jobs, webhooks and sites. The document commands (`doc`) are in [Getting started](getting-started.md#quick-start). Run `forgebase --help` for every option.
 
@@ -254,3 +254,10 @@ forgebase --config forgebase.toml migrate --site acme2 --doctypes examples/sales
 ```
 
 A backup holds everything in the database, **password hashes, sessions and API token digests included**: protect the file. A restore refuses a database that is not empty (and `site create` without `--empty` migrates, so its database is not empty); it never migrates by itself. Details, scheduling and retention: [operations guide](operations.md#backups).
+
+## Parity with the Rust command line
+
+The Go binary has no command-line framework (standard library only, [ADR 0026](../adr/0026-go-implementation.md)). Its parser is a port of the rules of clap 4.6.7, which the Rust binary uses with the features `std`, `derive`, `help`, `usage` and `error-context` (so: no text wrapping, no colour, no "did you mean" tips), taken from the clap source: the command tree, the flags, their defaults, ranges and help texts, the `global` options `--config` and `--site` before or after the subcommand, exit code 2 and the `error: ...`, `Usage: ...` and `For more information, try '--help'.` texts of a usage error (including which arguments the usage line lists, the argument groups too), `-h` and `--help` (short and long form, option order, the `[default: ...]` lines), `help SUBCOMMAND`, and the help of a command without its subcommand on standard error with code 2. What is different:
+
+- The text of a TOML parse error in a config or DocType file is the Go library's ([ADR 0027](../adr/0027-decimal-and-toml.md)), and when a file has errors of different kinds the one reported first may differ from serde's visiting order; the same files are refused.
+- The syntax errors of `--data` have serde_json's wording and position; a float with more than 15 significant digits in the message about a non-integer may differ in its last digit.

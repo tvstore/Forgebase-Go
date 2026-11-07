@@ -1,0 +1,24 @@
+# Fixture of the CLI tests (crates/forgebase/tests/cli.rs), owned by that test. It mirrors the quick-start example DocType of the same name.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "customer_group"
+label = "Customer Group"
+naming = { field = "title" }
+
+[[fields]]
+name = "title"
+label = "Title"
+type = "data"
+max_length = 140
+required = true
+unique = true
+
+[[permissions]]
+role = "Sales User"
+read = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true
+write = true
+create = true
+delete = true

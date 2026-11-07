@@ -44,7 +44,7 @@ The port has eight phases, then a parity report that compares the Go implementat
 |---|---|---|
 | P0 | Foundations: the Go module and package skeleton, CI (with `ci-result` failing on drafts), licence check, documentation, [ADR 0026](docs/adr/0026-go-implementation.md) | **In progress** |
 | P1 | Metadata and storage (M1): P1.1, the metadata, validation and permission core (`internal/core`, `internal/decimal`), and P1.2, the database foundations (`internal/db`: the pool, the framework migrations and the schema sync), are implemented | **In progress** |
-| P2 | Relationships and lifecycle (M2): P2.1, the document pipeline (`internal/db`: insert, get, update, delete, submit, cancel and amend with links, child tables, hooks, series, the docstatus rules and the outbox), is implemented; P2.2 (the CLI) is next | **In progress** |
+| P2 | Relationships and lifecycle (M2): P2.1, the document pipeline (`internal/db`: insert, get, update, delete, submit, cancel and amend with links, child tables, hooks, series, the docstatus rules and the outbox), is implemented; P2.2, the command-line skeleton (`forgebase --help`, `migrate` and the `doc` commands insert, get, update, delete, submit, cancel and amend on the stock binary), is implemented | **In progress** |
 | P3 | Auth, permissions and the REST API (M3), the minimal desk (M4) and UX, serving the unchanged desk | Planned |
 | P4 | App model and developer experience (M5), the example apps, `forgebase/testing` | Planned |
 | P5 | Jobs and scheduler (M6), sites (M7), PostgreSQL TLS (M9.0, moved from P7), container and deploy (D1, D2) | Planned |
@@ -56,10 +56,15 @@ The milestones of the Rust implementation (M0 to M10) and their exit criteria ar
 
 ## Quick start
 
-Coming in **P3 and P4** (the `forgebase` command, then the example apps and the desk served by the Go server). Today the module builds and prints its version:
+Coming in **P3 and P4** (the rest of the `forgebase` command, then the example apps and the desk served by the Go server). Today the stock binary has `migrate` and the `doc` commands insert, get, update, delete, submit, cancel and amend (every other command parses its arguments and says in which phase it arrives):
 
 ```sh
-GOTOOLCHAIN=go1.27.3 go run ./cmd/forgebase --version     # forgebase 0.0.0
+export GOTOOLCHAIN=go1.27.3 FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/database
+go run ./cmd/forgebase --version                          # forgebase 0.0.0
+go run ./cmd/forgebase --help
+go run ./cmd/forgebase migrate --doctypes internal/app/testdata/quickstart
+go run ./cmd/forgebase doc insert customer --doctypes internal/app/testdata/quickstart \
+  --data '{"email":"ann@example.com","full_name":"Ann"}'
 ```
 
 Until then, the quick start of the Rust implementation in the [getting started guide](docs/guide/getting-started.md) shows what the Go port will do.

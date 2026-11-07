@@ -16,9 +16,8 @@ import (
 // Schema sync against a real PostgreSQL (see dbtest). Ported from
 // crates/forgebase-db/tests/schema_sync.rs.
 //
-// Deferred: schema_sync::migrate_runs_migrations_then_sync. It tests migrate(), the composition of
-// the framework migrations, the sync, app migrations, schedules, the workflow backfill and fixtures;
-// it moves to P2, with the migrate command of the CLI skeleton.
+// schema_sync::migrate_runs_migrations_then_sync (the composition of the framework migrations and the
+// sync, db.Migrate) was deferred from P1.2 and is ported in P2.2, with the migrate command.
 
 func registry(t *testing.T, texts ...string) *core.Registry { return dbtest.Registry(t, texts...) }
 
@@ -516,6 +515,46 @@ func TestSyncBeforeFrameworkMigrationsFailsClearly(t *testing.T) {
 	e := syncError(t, d, registry(t, dbtest.Customer))
 	if e.Kind != db.ErrFrameworkNotMigrated || !strings.Contains(e.Error(), "migrations") {
 		t.Errorf("%v", e)
+	}
+}
+
+// Rust: schema_sync.rs::migrate_runs_migrations_then_sync
+func TestMigrateRunsMigrationsThenSync(t *testing.T) {
+	d := dbtest.New(t)
+	r := registry(t, dbtest.Customer)
+	dry := db.DefaultSyncOptions()
+	dry.DryRun = true
+	report, err := db.Migrate(bg, d.Pool, r, dry)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(report.Migrations) == 0 || report.Sync != nil {
+		t.Fatalf("a dry run on an empty database lists the migrations and has no sync plan: %+v", report)
+	}
+	if got := d.Columns("doc_customer"); len(got) != 0 {
+		t.Fatalf("a dry run changed the database: %v", got)
+	}
+
+	report, err = db.Migrate(bg, d.Pool, r, db.DefaultSyncOptions())
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(report.Migrations) != len(db.Migrations) {
+		t.Fatalf("applied %d framework migrations, want %d", len(report.Migrations), len(db.Migrations))
+	}
+	if report.Sync == nil || len(report.Sync.Steps) != 3 {
+		t.Fatalf("sync steps: %+v", report.Sync)
+	}
+	report, err = db.Migrate(bg, d.Pool, r, db.DefaultSyncOptions())
+	if err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	if len(report.Migrations) != 0 || report.Sync == nil || len(report.Sync.Steps) != 0 {
+		t.Fatalf("a rerun changes nothing: %+v", report)
+	}
+	// The session-level lock was released with the connection: another run is not blocked.
+	if rows := d.Rows("SELECT count(*)::text FROM pg_locks WHERE locktype = 'advisory' AND granted"); rows[0][0] != "0" {
+		t.Fatalf("advisory locks left behind: %v", rows)
 	}
 }
 
