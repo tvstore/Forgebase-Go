@@ -221,8 +221,8 @@ func TestInvalidDoctypeFilesExit1NamingTheFile(t *testing.T) {
 
 // A command that is not ported yet fails with exit code 1 and says when it arrives.
 func TestACommandThatIsNotPortedYetSaysWhenItArrives(t *testing.T) {
-	r := runBinary(t, nil, "", "site", "list")
-	if r.code != 1 || r.stderr != "error: site list is not available yet in the Go port (arrives in phase P5)\n" || r.stdout != "" {
+	r := runBinary(t, nil, "", "webhook", "list")
+	if r.code != 1 || r.stderr != "error: webhook list is not available yet in the Go port (arrives in phase P7)\n" || r.stdout != "" {
 		t.Fatalf("%+v", r)
 	}
 }

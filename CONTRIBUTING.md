@@ -82,11 +82,11 @@ export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/demo
 FORGEBASE_DEV_INSECURE_COOKIES=1 ./demo serve &   # then log in at /api/v1/login; GET /api/v1/meta/demo_note says "app":"demo"
 ```
 
-The jobs `docker` and `sites` of the Rust CI come back with the phases that port what they check; the local commands for them are added to this file then.
+The job `sites` (P5.2) runs `examples/sites/ci.sh`: two sites on one server, a backup restored into a new database. Run it locally the same way (see [examples/sites](examples/sites/README.md)): build the composed binary, set the three database URLs, and run the script. The job `docker` of the Rust CI comes back with the phase that ports the container work; its local commands are added to this file then.
 
 ## PostgreSQL for tests
 
-From P1 the integration tests need a PostgreSQL 16 server and a superuser (or `CREATEDB`) URL in `FORGEBASE_TEST_DATABASE_URL`. They **fail with a clear message when it is not set; they never skip.** Each test creates its own `fb_test_*` database (helper package `internal/db/dbtest`) and drops it at the end. Later phases also need the PostgreSQL client tools of the server's major version, 16 (`pg_dump`, `pg_restore`; Debian and Ubuntu: `postgresql-client-16`, in `/usr/lib/postgresql/16/bin`).
+From P1 the integration tests need a PostgreSQL 16 server and a superuser (or `CREATEDB`) URL in `FORGEBASE_TEST_DATABASE_URL`. They **fail with a clear message when it is not set; they never skip.** Each test creates its own `fb_test_*` database (helper package `internal/db/dbtest`) and drops it at the end. The `site backup` and `site restore` tests also need the PostgreSQL client tools of the server's major version, 16 (`pg_dump`, `pg_restore`; Debian and Ubuntu: `postgresql-client-16`, in `/usr/lib/postgresql/16/bin`; set `FORGEBASE_PG_BIN` to that directory when another version is first on `PATH`); they fail with the tool's name when it is missing.
 
 ```sh
 docker run -d --name forgebase-pg -p 5432:5432 -e POSTGRES_USER=forgebase -e POSTGRES_PASSWORD=forgebase postgres:16

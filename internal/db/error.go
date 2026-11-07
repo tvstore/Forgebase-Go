@@ -111,13 +111,19 @@ const (
 	// ErrAppMigrationFailed: an app migration failed and was rolled back (App, Version, Name,
 	// Message).
 	ErrAppMigrationFailed
+	// ErrCreateDatabase: CreateDatabase cannot use the URL it was given (Message). Never contains the
+	// URL.
+	ErrCreateDatabase
+	// ErrBackup: PgEnvironment or InspectDatabase cannot use the URL or the server's answer
+	// (Message). Never contains the URL or a value of it.
+	ErrBackup
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
 // set. It is always returned as *Error; use errors.As to get it.
 type Error struct {
 	Kind ErrorKind
-	// Message is the reason, for ErrPostgres, ErrTLS, ErrCreatePool and ErrPool.
+	// Message is the reason, for ErrPostgres, ErrTLS, ErrCreatePool, ErrPool, ErrCreateDatabase and ErrBackup.
 	Message string
 	// Version and Name identify the migration of ErrChecksumMismatch and ErrUnknownMigration, and
 	// of the app migration errors.
@@ -166,7 +172,7 @@ type Error struct {
 // Error is the Rust Display text.
 func (e *Error) Error() string {
 	switch e.Kind {
-	case ErrPostgres, ErrTLS:
+	case ErrPostgres, ErrTLS, ErrCreateDatabase, ErrBackup:
 		return e.Message
 	case ErrLockTimeout:
 		return "timed out waiting for a database lock (another transaction holds a conflicting lock); the statement that timed out was rolled back (earlier committed steps, such as framework migrations in `migrate`, stay applied), retry later"
@@ -289,6 +295,9 @@ func wrap(err error) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == sqlStateLockNotAvailable {
 		return &Error{Kind: ErrLockTimeout, Err: err}
+	}
+	if tlsErr, ok := tlsConnectError(err); ok {
+		return tlsErr
 	}
 	return &Error{Kind: ErrPostgres, Message: describe(err), Err: err}
 }

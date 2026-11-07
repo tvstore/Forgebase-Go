@@ -10,7 +10,7 @@ import (
 
 func refusedTLS(t *testing.T, url string) string {
 	t.Helper()
-	_, err := checkTLSSettings(url)
+	_, _, err := checkTLSSettings(url)
 	var e *Error
 	if !errors.As(err, &e) || e.Kind != ErrTLS {
 		t.Fatalf("%q: expected an ErrTLS refusal, got %v", url, err)
@@ -27,8 +27,8 @@ func TestNoSslmodeAndDisableMeanNoTLS(t *testing.T) {
 		{"POSTGRES://u:p@h/db?sslmode=disable", "POSTGRES://u:p@h/db"},
 		{"postgres://u:p@h/db?sslmode=%64isable", "postgres://u:p@h/db"},
 	} {
-		got, err := checkTLSSettings(c.in)
-		if err != nil || got != c.want {
+		got, ssl, err := checkTLSSettings(c.in)
+		if err != nil || got != c.want || ssl.verify {
 			t.Errorf("%q: got %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
@@ -36,7 +36,7 @@ func TestNoSslmodeAndDisableMeanNoTLS(t *testing.T) {
 
 // Rust: tls.rs::other_query_parameters_are_kept_in_order
 func TestOtherQueryParametersAreKeptInOrder(t *testing.T) {
-	got, err := checkTLSSettings("postgres://u:p@h/db?application_name=x&sslmode=disable&connect_timeout=5&sslnegotiation=direct")
+	got, _, err := checkTLSSettings("postgres://u:p@h/db?application_name=x&sslmode=disable&connect_timeout=5&sslnegotiation=direct")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,16 +45,43 @@ func TestOtherQueryParametersAreKeptInOrder(t *testing.T) {
 	}
 }
 
-// Rust: tls.rs::require_and_the_verify_modes_mean_full_verification (here: refused until P5)
-func TestTLSModesAreRefusedUntilP5(t *testing.T) {
+// Rust: tls.rs::require_and_the_verify_modes_mean_full_verification
+func TestRequireAndTheVerifyModesMeanFullVerification(t *testing.T) {
 	for _, mode := range []string{"require", "verify-ca", "verify-full"} {
-		msg := refusedTLS(t, "postgres://u:p@h/db?sslmode="+mode)
-		if !strings.Contains(msg, "P5") {
-			t.Errorf("%s: %q does not say that TLS arrives with P5", mode, msg)
+		rest, ssl, err := checkTLSSettings("postgres://u@h/db?sslmode=" + mode)
+		if err != nil || rest != "postgres://u@h/db" || ssl != (tlsSetting{verify: true}) {
+			t.Errorf("%s: %q %+v %v", mode, rest, ssl, err)
 		}
 	}
-	if msg := refusedTLS(t, "postgres://u:p@h/db?sslmode=require&sslrootcert=/ca.pem"); !strings.Contains(msg, "P5") {
+}
+
+// Rust: tls.rs::sslrootcert_is_a_path_or_system
+func TestSslrootcertIsAPathOrSystem(t *testing.T) {
+	_, ssl, err := checkTLSSettings("postgres://u@h/db?sslmode=require&sslrootcert=/etc/ca%20x.pem")
+	if err != nil || ssl != (tlsSetting{verify: true, rootFile: "/etc/ca x.pem"}) {
+		t.Errorf("%+v %v", ssl, err)
+	}
+	_, ssl, err = checkTLSSettings("postgres://u@h/db?sslmode=require&sslrootcert=system")
+	if err != nil || ssl != (tlsSetting{verify: true}) {
+		t.Errorf("%+v %v", ssl, err)
+	}
+	if msg := refusedTLS(t, "postgres://u@h/db?sslrootcert=/x.pem"); !strings.Contains(msg, "TLS is off") {
 		t.Errorf("%q", msg)
+	}
+	if msg := refusedTLS(t, "postgres://u@h/db?sslmode=require&sslrootcert="); !strings.Contains(msg, "empty") {
+		t.Errorf("%q", msg)
+	}
+}
+
+// Rust: tls.rs::other_query_parameters_are_kept_in_order (the TLS part)
+func TestTLSParametersAreTakenOutAndTheRestKept(t *testing.T) {
+	rest, ssl, err := checkTLSSettings("postgres://u@h/db?connect_timeout=5&sslmode=require&sslrootcert=system&application_name=x")
+	if err != nil || rest != "postgres://u@h/db?connect_timeout=5&application_name=x" || !ssl.verify {
+		t.Errorf("%q %+v %v", rest, ssl, err)
+	}
+	rest, _, err = checkTLSSettings("postgres://u@h/db?sslnegotiation=direct&sslmode=require")
+	if err != nil || rest != "postgres://u@h/db?sslnegotiation=direct" {
+		t.Errorf("%q %v", rest, err)
 	}
 }
 
@@ -88,9 +115,12 @@ func TestClientCertificatesAndOtherSSLOptionsAreRefused(t *testing.T) {
 // Rust: tls.rs::repeated_parameters_and_other_url_forms_are_refused
 func TestRepeatedParametersAndOtherURLFormsAreRefused(t *testing.T) {
 	refusedTLS(t, "postgres://u:p@h/db?sslmode=disable&sslmode=disable")
+	if msg := refusedTLS(t, "postgres://u@h/db?sslmode=require&sslmode=disable"); !strings.Contains(msg, "more than once") {
+		t.Errorf("%q", msg)
+	}
 	refusedTLS(t, "host=h user=u dbname=d")
 	// Not a PostgreSQL URL at all: an invalid URL, not a TLS refusal (Rust: CreatePool).
-	_, err := checkTLSSettings("mysql://u:p@h/db")
+	_, _, err := checkTLSSettings("mysql://u:p@h/db")
 	var e *Error
 	if !errors.As(err, &e) || e.Kind != ErrCreatePool {
 		t.Errorf("got %v", err)
@@ -110,17 +140,75 @@ func TestSpecialCharactersInTheCredentialsMustBePercentEncoded(t *testing.T) {
 		}
 	}
 	// Encoded, they are fine.
-	if _, err := checkTLSSettings("postgres://u:pa%2Fss%3F%23@h/db?sslmode=disable"); err != nil {
+	if _, _, err := checkTLSSettings("postgres://u:pa%2Fss%3F%23@h/db?sslmode=disable"); err != nil {
 		t.Error(err)
 	}
 	// An '@' in a query value would make another parser read different credentials.
 	refusedTLS(t, "postgres://h/db?x=a@b&sslmode=require")
+	// Rust: with TLS asked for, the encoded forms keep their TLS choice and stay in the password.
+	for _, c := range []struct{ url, rest string }{
+		{"postgres://u:a%3Fb@h/db?sslmode=require", "postgres://u:a%3Fb@h/db"},
+		{"postgres://u:a%23b@h/db?sslmode=require", "postgres://u:a%23b@h/db"},
+		{"postgres://u:a%2Fb@h/db?sslmode=require", "postgres://u:a%2Fb@h/db"},
+		{"postgresql://u:x%3Fsslmode=disable@h/db?sslmode=require", "postgresql://u:x%3Fsslmode=disable@h/db"},
+		{"postgres://u:a%3Fb@h/db?connect_timeout=5&sslmode=require", "postgres://u:a%3Fb@h/db?connect_timeout=5"},
+	} {
+		rest, ssl, err := checkTLSSettings(c.url)
+		if err != nil || rest != c.rest || !ssl.verify {
+			t.Errorf("%q: %q %+v %v", c.url, rest, ssl, err)
+		}
+	}
+	for _, url := range []string{
+		"postgres://u:a?b@h/db?sslmode=require",
+		"postgres://u:x?sslmode=disable@h/db?sslmode=require",
+		"postgres://u:a?b@h/db",
+	} {
+		if msg := refusedTLS(t, url); !strings.Contains(msg, "before its first `@`") || strings.Contains(msg, "a?b") {
+			t.Errorf("%q: %q", url, msg)
+		}
+		if _, err := parsePoolConfig(url); err == nil {
+			t.Errorf("%q was accepted", url)
+		}
+	}
+}
+
+// Rust: tls.rs::an_at_sign_after_the_host_is_refused
+func TestAnAtSignAfterTheHostIsRefused(t *testing.T) {
+	for _, url := range []string{
+		"postgres://db.example.com/app?sslmode=verify-full&application_name=svc@db.example.com",
+		"postgres://db.example.com?sslmode=verify-full&application_name=svc@db.example.com",
+		"postgres://h/db?sslmode=require&x=a@b",
+	} {
+		if msg := refusedTLS(t, url); !strings.Contains(msg, "`@` in a query value as `%40`") {
+			t.Errorf("%q: %q", url, msg)
+		}
+		if _, err := parsePoolConfig(url); err == nil {
+			t.Errorf("%q was accepted", url)
+		}
+	}
+	for _, url := range []string{
+		"postgres://db.example.com/app?sslmode=verify-full&application_name=svc%40db",
+		"postgres://db.example.com?sslmode=verify-full&application_name=svc%40db",
+	} {
+		if _, ssl, err := checkTLSSettings(url); err != nil || !ssl.verify {
+			t.Errorf("%q: %v", url, err)
+		}
+	}
 }
 
 // Rust: tls.rs::encoded_keys_are_decoded_before_they_are_matched
 func TestEncodedKeysAreDecodedBeforeTheyAreMatched(t *testing.T) {
-	refusedTLS(t, "postgres://u:p@h/db?%73slmode=require")
-	if got, err := checkTLSSettings("postgres://u:p@h/db?%73slmode=disable"); err != nil || got != "postgres://u:p@h/db" {
+	if _, ssl, err := checkTLSSettings("postgres://u@h/db?%73slmode=require"); err != nil || !ssl.verify {
+		t.Errorf("%+v %v", ssl, err)
+	}
+	if _, ssl, err := checkTLSSettings("postgres://u@h/db?sslmode=require&%73slrootcert=%2Fca.pem"); err != nil || ssl.rootFile != "/ca.pem" {
+		t.Errorf("%+v %v", ssl, err)
+	}
+	refusedTLS(t, "postgres://u@h/db?%73slcert=x")
+	refusedTLS(t, "postgres://u@h/db?sslmode=require&%73slkey=x")
+	refusedTLS(t, "postgres://u@h/db?sslmode=disable&%73slmode=require")
+	refusedTLS(t, "postgres://u:a%3Fb@h/db?%73slcert=x")
+	if got, _, err := checkTLSSettings("postgres://u:p@h/db?%73slmode=disable"); err != nil || got != "postgres://u:p@h/db" {
 		t.Errorf("%q %v", got, err)
 	}
 }
@@ -141,7 +229,6 @@ func TestPercentEncodingNeedsTwoHexDigits(t *testing.T) {
 // Rust: tls.rs::errors_do_not_contain_the_url_or_the_password
 func TestErrorsDoNotContainTheURLOrThePassword(t *testing.T) {
 	for _, url := range []string{
-		"postgres://u:s3cret@h/db?sslmode=require",
 		"postgres://u:s3cret@h/db?sslmode=prefer",
 		"postgres://u:s3cret@h/db?sslcert=x",
 		"postgres://u:s3cret/@h/db",
@@ -153,13 +240,29 @@ func TestErrorsDoNotContainTheURLOrThePassword(t *testing.T) {
 	}
 }
 
+// Rust: tls.rs::errors_do_not_contain_the_url_or_the_password (the errors of a URL that asks for TLS)
+func TestTLSErrorsOfAnAcceptedURLDoNotContainThePassword(t *testing.T) {
+	_, err := parsePoolConfig("postgres://u:s3cret@h/db?sslmode=require&sslrootcert=/nonexistent/ca.pem")
+	if err == nil || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("%v", err)
+	}
+}
+
 // Not in Rust: the cross-check against the standard library's view of the URL.
 func TestSameTLSView(t *testing.T) {
-	if !sameTLSView("postgres://u:p@h/db?sslmode=disable") || !sameTLSView("postgres://u:p@h/db") {
+	if !sameTLSView("postgres://u:p@h/db?sslmode=disable", tlsSetting{}) || !sameTLSView("postgres://u:p@h/db", tlsSetting{}) {
 		t.Error("a plain URL is refused")
 	}
-	if sameTLSView("postgres://u:p@h/db?SSLMODE=require") || sameTLSView("postgres://u:p@h/db?sslcert=x") {
+	if sameTLSView("postgres://u:p@h/db?SSLMODE=require", tlsSetting{}) || sameTLSView("postgres://u:p@h/db?sslcert=x", tlsSetting{}) {
 		t.Error("a TLS option went unseen")
+	}
+	// With TLS asked for, only the exact spelling of the two accepted keys is seen as the scan's own.
+	on := tlsSetting{verify: true}
+	if !sameTLSView("postgres://u:p@h/db?sslmode=verify-full&sslrootcert=%2Fca.pem", on) {
+		t.Error("an accepted TLS URL is refused")
+	}
+	if sameTLSView("postgres://u:p@h/db?sslmode=require&SSLMODE=disable", on) || sameTLSView("postgres://u:p@h/db?sslmode=disable", on) {
+		t.Error("a TLS choice that differs went unseen")
 	}
 }
 

@@ -31,9 +31,9 @@ func TestPoolSize(t *testing.T) {
 	}
 }
 
-// Not in Rust (its TLS arrives with P5, ADR 0018): a URL without sslmode, or with sslmode=disable,
-// connects without TLS, although pgx would try TLS first (sslmode=prefer) and a development server
-// usually offers it.
+// Not in Rust (there the connector is never touched without TLS): a URL without sslmode, or with
+// sslmode=disable, connects without TLS, although pgx would try TLS first (sslmode=prefer) and a
+// development server usually offers it.
 func TestNoSslmodeConnectsWithoutTLS(t *testing.T) {
 	d := dbtest.New(t)
 	for _, url := range []string{d.URL(), d.URL() + "?sslmode=disable"} {
@@ -53,10 +53,10 @@ func TestNoSslmodeConnectsWithoutTLS(t *testing.T) {
 	}
 }
 
-// Not in Rust: any other sslmode is refused until P5, without trying to connect and without the URL
-// or the password in the message.
+// Not in Rust: sslmode=prefer, allow and unknown values are refused without trying to connect and
+// without the URL or the password in the message (the connection test of require is in tls_test.go).
 func TestOtherSslmodesAreRefusedWithoutConnecting(t *testing.T) {
-	for _, mode := range []string{"require", "verify-full", "prefer"} {
+	for _, mode := range []string{"prefer", "allow", "bogus"} {
 		_, err := db.Connect(bg, "postgres://nobody:s3cret@127.0.0.1:1/none?sslmode="+mode)
 		e := asDbError(t, err)
 		if e.Kind != db.ErrTLS {

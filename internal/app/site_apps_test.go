@@ -18,12 +18,12 @@ import (
 
 // Apps per site (M7.2, ADR 0014): a binary with two apps, base and extra (which depends on base), run with a
 // config file of sites that install different apps, against real PostgreSQL databases. Ported from the
-// scenarios migrate_per_site and cli_per_site of crates/forgebase/tests/site_apps.rs, and from the
-// config validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules
-// of the apps are part of them since P5 (the worker of a site is in site_workers_test.go of the root
-// package, which runs the apps as a real process). Deferred, with the phase that brings what they use: site
-// list and site create (P5), the HTTP view of a site's apps (cmd/forgebase tests, with the sales example in
-// P4 and the methods in P7), and the removed-app scenario with fixtures (P7).
+// scenarios migrate_per_site and cli_per_site of crates/forgebase/tests/site_apps.rs, and from the config
+// validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules of the apps
+// are part of them since P5.1 (the worker of a site is in site_workers_test.go of the root package, which runs
+// the apps as a real process). The site list, site create and follow_ups scenarios are in site_cmd_test.go
+// (P5.2). Deferred, with the phase that brings what they use: the HTTP view of a site's apps (cmd/forgebase
+// tests, with the sales example in P4 and the methods in P7), and the removed-app scenario with fixtures (P7).
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +
@@ -231,7 +231,7 @@ func TestCommandsKnowOnlyTheAppsOfTheSite(t *testing.T) {
 }
 
 // Rust: site_apps.rs::config_and_site_list (the validation of the apps list, which needs the apps of the
-// binary; the other lines of that scenario are the site list, P5)
+// binary; the other lines of that scenario, the site list, are in site_cmd_test.go)
 func TestTheAppsOfASiteAreCheckedAgainstTheAppsOfTheBinary(t *testing.T) {
 	p := newAppPair(t, `apps = ["extra"]`)
 	r := p.run("migrate", "--site", "a")
