@@ -65,7 +65,7 @@ func TestCreateDatabaseCreatesOnceAndReportsAnExistingOne(t *testing.T) {
 	url := dbtest.URLForDatabase(t, name)
 	t.Cleanup(func() { d.Exec("DROP DATABASE IF EXISTS " + db.QuoteIdent(name) + " WITH (FORCE)") })
 	for i, want := range []bool{true, false} {
-		created, err := db.CreateDatabase(bg, url, "")
+		created, err := db.CreateDatabase(bg, url, nil)
 		if err != nil || created != want {
 			t.Fatalf("call %d: %v %v", i, created, err)
 		}
@@ -75,7 +75,9 @@ func TestCreateDatabaseCreatesOnceAndReportsAnExistingOne(t *testing.T) {
 		t.Fatalf("%+v %v", info, err)
 	}
 	// The maintenance database is named by the caller: a missing one is the server's error.
-	if _, err := db.CreateDatabase(bg, url, "fb_no_such_maintenance_db"); err == nil || !db.IsMissingDatabase(err) {
+	if _, err := db.CreateDatabase(bg, url, strPtr("fb_no_such_maintenance_db")); err == nil || !db.IsMissingDatabase(err) {
 		t.Errorf("%v", err)
 	}
 }
+
+func strPtr(s string) *string { return &s }

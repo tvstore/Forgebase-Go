@@ -107,3 +107,19 @@ func TestTheJobJSONHasEveryFieldWithSortedKeys(t *testing.T) {
 		t.Errorf("got:\n%s\nwant:\n%s", text, want)
 	}
 }
+
+func TestOnlyEnqueueStripsThePrefixOfARefusedJob(t *testing.T) {
+	refused := &db.Error{Kind: db.ErrJob, Message: "unknown job `x`"}
+	if got := enqueueError(refused).Error(); got != "unknown job `x`" {
+		t.Errorf("%q", got)
+	}
+	other := &db.Error{Kind: db.ErrNotFound, DocType: "a", Name: "b"}
+	if enqueueError(other) != error(other) {
+		t.Error("another error was changed")
+	}
+	// The other commands print the database error as it is.
+	notID := &db.Error{Kind: db.ErrJob, Message: "`x` is not a job id (a UUID)"}
+	if got := describeError(notID); got != "job: `x` is not a job id (a UUID)" {
+		t.Errorf("%q", got)
+	}
+}

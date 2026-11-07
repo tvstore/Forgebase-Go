@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -98,8 +99,8 @@ func TestNewAppWritesTheModuleWithEveryPlaceholderReplaced(t *testing.T) {
 		t.Errorf("%q", r.stdout)
 	}
 	expectContains(t, r.stdout, "cd ./my_app", "go test ./...")
-	want := []string{".gitignore", "AGENTS.md", "README.md", "cmd/my_app/main.go", "cmd/my_app/main_test.go",
-		"doctypes/my_app_note.toml", "go.mod", "go.sum", "migrations/README.md", "my_app.go", "my_app_test.go"}
+	want := []string{".gitignore", "AGENTS.md", "README.md", "app.go", "app_test.go", "cmd/my_app/main.go", "cmd/my_app/main_test.go",
+		"doctypes/my_app_note.toml", "go.mod", "go.sum", "migrations/README.md"}
 	if got := filesOf(t, created); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("files %v, want %v", got, want)
 	}
@@ -123,9 +124,9 @@ func TestNewAppWritesTheModuleWithEveryPlaceholderReplaced(t *testing.T) {
 	if strings.Contains(goMod, "ignore") {
 		t.Errorf("the ignore directive of the checkout must not be copied:\n%s", goMod)
 	}
-	lib := read(t, filepath.Join(created, "my_app.go"))
+	lib := read(t, filepath.Join(created, "app.go"))
 	expectContains(t, lib, `forgebase.NewApp("my_app")`, "package my_app", `Hooks("my_app_note", NoteRules{})`, "//go:embed doctypes/*.toml")
-	expectContains(t, read(t, filepath.Join(created, "cmd/my_app/main.go")), `"my_app"`, "my_app.App()")
+	expectContains(t, read(t, filepath.Join(created, "cmd/my_app/main.go")), `apppkg "my_app"`, "apppkg.App()")
 	// The go.sum of the checkout is copied as it is.
 	if got := read(t, filepath.Join(created, "go.sum")); got != fakeGoSum {
 		t.Errorf("go.sum %q", got)
@@ -146,7 +147,7 @@ func TestNewAppSampleDocTypeIsValidAndOpenToTheSampleRole(t *testing.T) {
 	if doctype.Name != "my_app_note" || len(doctype.Permissions) != 1 || doctype.Permissions[0].Role != "My App User" {
 		t.Errorf("%+v", doctype)
 	}
-	if !strings.Contains(read(t, filepath.Join(s.root, "my_app/my_app_test.go")), `"My App User"`) {
+	if !strings.Contains(read(t, filepath.Join(s.root, "my_app/app_test.go")), `"My App User"`) {
 		t.Error("the test uses the same role")
 	}
 }
@@ -423,5 +424,97 @@ func TestParseGoMod(t *testing.T) {
 	}
 	if only := parseGoMod("module x\n\ngo 1.26.0\n"); only.directives() != "go 1.26.0" || only.requireLines() != "" {
 		t.Errorf("%+v", only)
+	}
+}
+
+// Not in Rust: every name that is accepted must give a module that compiles. The names are the ones that the
+// templates' own identifiers could clash with if the app package were imported under its name (t,
+// binary, doctype, ...), and names that Go gives a meaning to in file names (_test, _linux, _windows_amd64).
+// The template imports the app package as apppkg, so none of them may break; apppkg itself is one.
+func TestEveryAcceptedNameGeneratesAModuleThatVets(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	names := []string{"t", "binary", "doctype", "apps", "apppkg", "rules", "ctx", "doc", "ann", "testdb", "doctypes", "app", "foo_test", "x_linux", "x_windows_amd64", "title", "forgebase_x", "migrations", "db",
+		"fbtest", "com0", "conin", "x_test", "ext", "test", "go1", "example", "vet", "modx", "sum", "bug", "env", "internal_", "a"}
+	for _, name := range names {
+		if r := runCLI(map[string]string{}, "", "new-app", name, "--forgebase-path", root, "--dir", dir); r.code != 0 {
+			t.Fatalf("%s: %+v", name, r)
+		}
+		cmd := exec.Command("go", "vet", "./...")
+		cmd.Dir = filepath.Join(dir, name)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("go vet of the module generated for %q: %v\n%s", name, err, out)
+		}
+	}
+}
+
+// Not in Rust: every name in the refused list is refused, the list itself being iterated (keywords, predeclared
+// identifiers, the standard library's roots, the names the go command treats specially, the Windows device names).
+// Each of the special ones was verified once by generating a module and running go build: std, all, tool and
+// work are not importable, toolchain is not a module path, mod is "disallowed", builtin and arena are
+// ambiguous with $GOROOT/src, the device names are not path elements, and ./... skips testdata. internal and
+// vendor are refused as a precaution only.
+func TestNewAppRefusesEveryNameOfTheRefusedList(t *testing.T) {
+	s := newScratch(t)
+	checkout := s.checkout()
+	for _, must := range []string{"std", "all", "tool", "work", "toolchain", "mod", "builtin", "arena", "testdata", "con", "com1", "lpt9", "main", "unsafe"} {
+		if !notAPackageName[must] {
+			t.Errorf("%q is not in the refused list", must)
+		}
+	}
+	s.t.Chdir(s.root)
+	for name := range notAPackageName {
+		r := runCLI(map[string]string{}, "", "new-app", name, "--forgebase-path", checkout)
+		want := "cannot be used as a package name here"
+		if goKeywords[name] {
+			want = "is a Go keyword"
+		}
+		if r.code != 1 || !strings.Contains(r.stderr, want) {
+			t.Errorf("name %q: %+v", name, r)
+		}
+		if _, err := os.Stat(filepath.Join(s.root, name)); !os.IsNotExist(err) {
+			t.Errorf("name %q: created", name)
+		}
+	}
+}
+
+// Not in Rust: no file of a generated app is ignored by its own .gitignore, whatever the name (a line
+// /NAME would have ignored the directories doctypes/ and migrations/ of an app with that name).
+func TestNoFileOfAGeneratedAppIsIgnoredByItsGitignore(t *testing.T) {
+	s := newScratch(t)
+	checkout := s.checkout()
+	// The test needs git: it fails, it never skips, when git is missing.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatalf("git is not installed or not on PATH, and this test needs it: %v", err)
+	}
+	for _, name := range []string{"doctypes", "migrations", "bin", "demo"} {
+		if r := s.newAppCmd(s.root, name, "--forgebase-path", checkout); r.code != 0 {
+			t.Fatalf("%s: %+v", name, r)
+		}
+	}
+	for _, name := range []string{"doctypes", "migrations", "bin", "demo"} {
+		dir := filepath.Join(s.root, name)
+		if out, err := exec.Command("git", "-c", "core.excludesFile=", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v %s", err, out)
+		}
+		out, err := exec.Command("git", "-c", "core.excludesFile=", "-C", dir, "add", "-A", "--dry-run").CombinedOutput()
+		if err != nil {
+			t.Fatalf("git add: %v %s", err, out)
+		}
+		added := map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			added[strings.Trim(strings.TrimPrefix(line, "add "), "'")] = true
+		}
+		for _, file := range filesOf(t, dir) {
+			if strings.HasPrefix(file, ".git/") {
+				continue
+			}
+			if !added[file] {
+				t.Errorf("app %q: %s is ignored by its .gitignore", name, file)
+			}
+		}
 	}
 }

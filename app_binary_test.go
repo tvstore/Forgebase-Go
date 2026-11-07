@@ -97,6 +97,11 @@ func TestMain(m *testing.M) {
 		os.Exit(forgebase.New().App(binaryCRM()).App(binarySales()).Run())
 	case "sites": // two apps for the sites of site_workers_test.go
 		os.Exit(forgebase.New().App(siteBase()).App(siteExtra()).Run())
+	case "stubborn": // a job whose handler ignores its context, for stubborn_test.go
+		os.Exit(forgebase.New().App(forgebase.NewApp("lab").Job("stubborn", func(context.Context, *forgebase.JobContext) error {
+			time.Sleep(time.Minute)
+			return nil
+		})).Run())
 	case "broken": // sales before crm: a startup error
 		os.Exit(forgebase.New().App(binarySales()).App(binaryCRM()).Run())
 	}
@@ -270,8 +275,8 @@ func TestTheJobCommandsAndTheWorkerOfABinaryWithApps(t *testing.T) {
 	if code := good.run("", "job", "show", "00000000-0000-7000-8000-000000000000").code; code != 1 {
 		t.Errorf("exit code %d", code)
 	}
-	if code := good.run("", "job", "show", "nonsense").code; code != 1 {
-		t.Errorf("exit code %d", code)
+	if o := good.run("", "job", "show", "nonsense"); o.code != 1 || o.stderr != "error: job: `nonsense` is not a job id (a UUID)\n" {
+		t.Errorf("%+v", o)
 	}
 
 	// Only a dead job is retried.

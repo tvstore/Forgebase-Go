@@ -201,3 +201,44 @@ func TestThePgSSLEnvironmentMatchesTheVerification(t *testing.T) {
 		}
 	}
 }
+
+// Rust: tls.rs (load_roots with pem_file_iter): which files are refused. Text outside the sections and
+// sections of other kinds are skipped; a malformed section makes the whole file an error; a file without any
+// certificate, or with only unparsable ones, has no usable certificate.
+func TestLoadRootsMirrorsThePEMReaderOfRust(t *testing.T) {
+	ca := newTestCA(t, "root")
+	good := string(ca.pem)
+	key := "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+	write := func(text string) string {
+		path := filepath.Join(t.TempDir(), "f.pem")
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	ok := func(name, text string) {
+		t.Helper()
+		if _, err := loadRoots(tlsSetting{verify: true, rootFile: write(text)}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	bad := func(name, text, want string) {
+		t.Helper()
+		_, err := loadRoots(tlsSetting{verify: true, rootFile: write(text)})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	ok("a certificate", good)
+	ok("text around it and a key beside it", "notes\n"+key+good+"more notes\n")
+	ok("CRLF line ends", strings.ReplaceAll(good, "\n", "\r\n"))
+	bad("unterminated section", good+"-----BEGIN CERTIFICATE-----\nAAAA\n", "cannot read the `sslrootcert` file")
+	bad("an end marker of another kind", "-----BEGIN CERTIFICATE-----\nAAAA\n-----END PRIVATE KEY-----\n", "cannot read the `sslrootcert` file")
+	bad("bad base64 in a certificate", good+"-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n", "cannot read the `sslrootcert` file")
+	bad("bad base64 in a key too", good+"-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----\n", "cannot read the `sslrootcert` file")
+	bad("an empty file", "", "no usable PEM certificate")
+	bad("only a key", key, "no usable PEM certificate")
+	bad("a certificate that does not parse", "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", "no usable PEM certificate")
+	// An unparsable certificate beside a good one is ignored.
+	ok("an unparsable one beside a good one", "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"+good)
+}
