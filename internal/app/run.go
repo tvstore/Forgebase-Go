@@ -42,7 +42,6 @@ type Options struct {
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
 	"data":            "P7",
-	"webhook":         "P7",
 	"customize":       "P7",
 	"user permission": "P7",
 }
@@ -174,6 +173,8 @@ func (r *runner) run(ctx context.Context) error {
 		return r.token(ctx, site)
 	case "job":
 		return r.job(ctx, site)
+	case "webhook":
+		return r.webhook(ctx, site)
 	case "worker":
 		return r.worker(ctx, site)
 	}

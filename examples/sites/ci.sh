@@ -7,21 +7,21 @@
 #   1. two sites with different apps, reached by their Host, keep their users and DocTypes apart;
 #   2. an unknown host is 404;
 #   3. `site backup shop`, restored into the new empty database of `restore_check`, gives the same
-#      documents (and the same login).
-#
+#      documents (and the same login);
 #   4. (P6, M8.5) the approval workflow of `sales_order` and a shared saved view over HTTP: a Sales User
 #      sends an order for approval, an Administrator saves the view "Pending approval" for everyone, the
-#      Sales User sees it, filters with it, and cannot delete it.
+#      Sales User sees it, filters with it, and cannot delete it;
+#   5. (P7.1, M9.5) a webhook on `sales_order` for the event `submit`, delivered by the worker to the
+#      receiver of examples/sites/receiver.py (Python standard library, started and stopped by this
+#      script): the delivery is signed, the receiver verifies the signature with the recipe of
+#      docs/guide/webhooks.md and records it, exactly one `submit` delivery arrives for the order that
+#      was approved, a forged signature is refused, and `webhook test` succeeds.
 #
-# The Rust script (examples/sites/ci.sh of the reference implementation) has four more parts. They
+# The Rust script (examples/sites/ci.sh of the reference implementation) has three more parts. They
 # arrive in the Go port with the phase that ports what they use, and are added here then:
 #
 #   - (P7) the fixture of the sales app: the first `migrate` of a site kept the two customer groups of
 #     the SQL migration and inserted the third, and a second `migrate` finds all three unchanged;
-#   - (P7) a webhook on `sales_order` for the event `submit`, delivered by the worker to the receiver
-#     of examples/sites/receiver.py (Python standard library, started and stopped by the script): the
-#     delivery is signed and verified, exactly one `submit` delivery arrives, a forged signature is
-#     refused, and `webhook test` succeeds. receiver.py and this part come with the webhooks (P7);
 #   - (P7) a site custom field, added by `customize field add` with the server running: it appears in
 #     that site's metadata within 15 s without a restart, not in `shop`'s, takes a value over the API,
 #     disappears with `customize field disable` (the data is kept) and returns with `enable`;
@@ -31,15 +31,16 @@
 # Needs: the binary built (cd examples/sales_extension && go build -o ../../bin/sales_extension
 # ./cmd/sales_extension), PostgreSQL 16 with a role that has CREATEDB, the PostgreSQL client tools
 # (pg_dump, pg_restore) of the server's major version (FORGEBASE_PG_BIN names their directory when they
-# are not first on PATH), curl and jq. The three database URLs are read from the environment and never
-# printed; the three databases must not exist yet (they are created, and left in place when the script
+# are not first on PATH), curl, jq and python3 (the receiver). The three database URLs are read from the
+# environment and never printed; the three databases must not exist yet (they are created, and left in place when the script
 # ends: a local run drops them with DROP DATABASE).
 #
 #   SHOP_DATABASE_URL=postgres://user:password@localhost:5432/fb_sites_shop
 #   FIELD_DATABASE_URL=postgres://user:password@localhost:5432/fb_sites_field
 #   RESTORE_DATABASE_URL=postgres://user:password@localhost:5432/fb_sites_restore
 #
-# Optional: FORGEBASE_BIN (default bin/sales_extension), SITES_PORT (default 8000).
+# Optional: FORGEBASE_BIN (default bin/sales_extension), SITES_PORT (default 8000), RECEIVER_PORT (the
+# webhook receiver, default 8001).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -55,18 +56,25 @@ if [ ! -x "$bin" ]; then
   exit 1
 fi
 port="${SITES_PORT:-8000}"
+rport="${RECEIVER_PORT:-8001}"
 base="http://127.0.0.1:$port"
 work="$(mktemp -d)"
 server=""
+receiver=""
+worker=""
 cleanup() {
-  # The background process is stopped by its PID.
-  if [ -n "$server" ]; then kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true; fi
+  # Each background process is stopped by its PID.
+  for pid in "$server" "$receiver" "$worker"; do
+    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+  done
   rm -rf "$work"
 }
 trap cleanup EXIT
 fail() {
   echo "FAIL: $*" >&2
   if [ -f "$work/server.log" ]; then echo "--- server.log" >&2; cat "$work/server.log" >&2; fi
+  # The worker's log is the first thing to read when a delivery step fails.
+  if [ -f "$work/worker.log" ]; then echo "--- worker.log" >&2; cat "$work/worker.log" >&2; fi
   exit 1
 }
 
@@ -208,6 +216,63 @@ code="$(curl -s -o "$work/reply.json" -w '%{http_code}' -G -H "Host: shop.localh
 [ "$(call "$bob_token" DELETE "/api/v1/views/sales_order/$view_id?version=1")" = 403 ] || fail "bob deleted a shared view"
 [ "$(call "$admin_token" DELETE "/api/v1/views/sales_order/$view_id?version=1")" = 204 ] || fail "ann could not delete the shared view"
 echo "ok: a Sales User sent an order for approval, the Administrator's shared view is visible to bob and not his to delete"
+
+echo "== a webhook on the submit of a sales order, delivered to a test receiver (M9.5)"
+# The receiver (examples/sites/receiver.py) verifies the signature of every delivery with the
+# recipe of docs/guide/webhooks.md and records the verified ones. The secret is generated here, handed
+# to the receiver by its environment and to `webhook add` by standard input; it is never printed.
+secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+records="$work/deliveries.jsonl"
+: > "$records"
+WEBHOOK_SECRET="$secret" python3 -I examples/sites/receiver.py "$rport" "$records" &
+receiver=$!
+for _ in $(seq 1 30); do
+  if curl -s -o /dev/null "http://127.0.0.1:$rport/"; then break; fi
+  sleep 1
+done
+curl -s -o /dev/null "http://127.0.0.1:$rport/" || fail "the receiver did not answer"
+# A request with a bad signature is refused and not recorded (the receiver really verifies).
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'X-Forgebase-Timestamp: 1' -H 'X-Forgebase-Signature: sha256=00' -d '{}' "http://127.0.0.1:$rport/hook")"
+[ "$code" = 400 ] || fail "the receiver accepted a forged delivery ($code)"
+# `--allow-private` and `--insecure-http` are development flags: the receiver is on 127.0.0.1 and
+# speaks plain HTTP, which the SSRF guard and the https-only rule refuse by default. Do not use
+# them in production.
+# The secret is matched from a file descriptor, never as an argument (an argument shows in `ps`).
+printf '%s\n' "$secret" | "$bin" webhook add sales_order_submit --site shop --doctype sales_order \
+  --events submit --url "http://127.0.0.1:$rport/hook" --allow-private --insecure-http --secret-stdin \
+  > "$work/webhook-add.out"
+if grep -qF -f <(printf '%s\n' "$secret") "$work/webhook-add.out"; then fail "webhook add printed the secret"; fi
+if "$bin" webhook list --site shop | grep -qF -f <(printf '%s\n' "$secret"); then fail "webhook list printed the secret"; fi
+# One signed test delivery, now, without the queue: exit 0 on a 2xx answer.
+"$bin" webhook test sales_order_submit --site shop || fail "webhook test failed"
+# Approve the order that is pending (see above): the transition submits it, which fires
+# `transition` and `submit`; the webhook listens to `submit` only.
+[ "$(call "$bob_token" POST "/api/v1/resource/sales_order/$order/transition" \
+  '{"action":"Approve","version":2}')" = 200 ] || fail "bob could not approve the order"
+[ "$(jq -r .data.workflow_state "$work/reply.json")" = Approved ] || fail "the order is not approved"
+# The delivery is a job: the worker sends it. Wait at most 30 s for it.
+"$bin" worker --site shop > "$work/worker.log" 2>&1 &
+worker=$!
+for _ in $(seq 1 30); do
+  if [ "$(jq -s '[.[] | select(.event == "submit")] | length' "$records")" -ge 1 ]; then break; fi
+  sleep 1
+done
+kill "$worker" 2>/dev/null || true
+wait "$worker" || true
+worker=""
+if grep -qF -f <(printf '%s\n' "$secret") "$work/worker.log"; then fail "the worker printed the secret"; fi
+[ "$(jq -s --arg order "$order" \
+  '[.[] | select(.event == "submit" and .doctype == "sales_order" and .name == $order)] | length' "$records")" = 1 ] \
+  || { cat "$records" "$work/worker.log" >&2; fail "the receiver did not record exactly one verified submit delivery of the order"; }
+[ "$(jq -s '[.[] | select(.event == "test")] | length' "$records")" = 1 ] || fail "the test delivery was not recorded once"
+[ "$(jq -s '[.[] | select(.event != "submit" and .event != "test")] | length' "$records")" = 0 ] \
+  || fail "the receiver got an event the webhook does not listen to"
+[ "$(jq -s '[.[].delivery] | unique | length' "$records")" = 2 ] || fail "the delivery ids are not distinct"
+echo "ok: the worker delivered exactly one verified submit of $order, signed with the secret, and webhook test answered 2xx"
+kill "$receiver" 2>/dev/null || true
+wait "$receiver" || true
+receiver=""
 
 echo "== stop the server"
 kill "$server" 2>/dev/null || true

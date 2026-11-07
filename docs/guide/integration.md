@@ -1,17 +1,18 @@
 # Integrating with other systems
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: sections 1 (app methods) and 2 (webhooks) are ported (P7.1) and run against the Go `sales` binary. Sections 3 (import and export) and 4 (fixtures) arrive with their phases (P7); their commands and snippets still show the Rust command line until then.
 
 For the person who connects Forgebase to other systems: a warehouse tool that reads order totals, an accounting system that wants every approved order, a spreadsheet full of customers. This page is a walkthrough on the [`sales` example app](../../examples/sales/README.md) with four tools: an **app method** (another system asks a question), a **webhook** (Forgebase tells another system something happened), **import and export** (files in and out) and **fixtures** (records the app ships). It links the reference pages instead of repeating them.
 
-Every command and snippet below was run against the `sales` binary (`cargo run -p sales -- ...`) on a scratch PostgreSQL database at the time of writing (each section on its own; the sample outputs are illustrative, as the setup creates no orders). Set it up like this; the examples assume a Sales Manager `max` and a Sales User `ann`:
+Every command and snippet of sections 1 and 2 was run against the Go `sales` binary (`go run ./cmd/sales ...`, in `examples/sales`) on a scratch PostgreSQL database (each section on its own; the sample outputs are illustrative, as the setup creates no orders). Set it up like this; the examples assume a Sales Manager `max` and a Sales User `ann`:
 
 ```sh
+cd examples/sales
 export FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/sales
-cargo run -p sales -- migrate
-printf '%s\n' 'a long password' | cargo run -p sales -- user create max --role "Sales Manager"
-printf '%s\n' 'a long password' | cargo run -p sales -- user create ann --role "Sales User"
-FORGEBASE_DEV_INSECURE_COOKIES=1 cargo run -p sales -- serve      # http://127.0.0.1:8000
+go run ./cmd/sales migrate
+printf '%s\n' 'a long password' | go run ./cmd/sales user create max --role "Sales Manager"
+printf '%s\n' 'a long password' | go run ./cmd/sales user create ann --role "Sales User"
+FORGEBASE_DEV_INSECURE_COOKIES=1 go run ./cmd/sales serve      # http://127.0.0.1:8000
 ```
 
 and log in as in the [HTTP API guide](http-api.md), as `max`: `CSRF` holds the token of the login and `jar.txt` the session cookie (the import in section 3 needs the Sales Manager).
@@ -20,28 +21,24 @@ and log in as in the [HTTP API guide](http-api.md), as `max`: `CSRF` holds the t
 
 A method is your own endpoint, `POST /api/v1/method/<app>.<method>`, for an operation that is not the create, read or change of one document ([first app, section 8](first-app.md#8-app-methods); [ADR 0019](../adr/0019-app-method-endpoints.md)). The `sales` app has one, `sales.order_summary`: how many sales orders there are, their total and how many are in each workflow state, optionally for one customer and a period.
 
-Registered in [`examples/sales/src/lib.rs`](../../examples/sales/src/lib.rs):
+Registered in [`examples/sales/sales.go`](../../examples/sales/sales.go):
 
-```rust
-App::new("sales")
-    .method(
-        "order_summary",
-        Method::new(OrderSummary).roles(&["Sales User", "Sales Manager"]),
-    )
+```go
+forgebase.NewApp("sales").
+	Method("order_summary", forgebase.NewMethod(orderSummary).Roles("Sales User", "Sales Manager"))
 ```
 
 and the handler, shortened (the real one validates its input and pages through the list):
 
-```rust
-impl MethodHandler for OrderSummary {
-    fn call<'a>(&'a self, ctx: &'a mut MethodContext<'_>) -> MethodFuture<'a> {
-        Box::pin(async move {
-            let filters = summary_filters(ctx.body())?;   // a bad input is MethodError::bad_request(..)
-            let mut documents = ctx.documents();           // acts as the caller
-            // ... for every workflow state: list the orders the caller can read, count them, add up `total`
-            Ok(json!({"orders": orders, "total": total.to_string(), "by_state": by_state}))
-        })
-    }
+```go
+func orderSummary(ctx context.Context, m *forgebase.MethodContext) (any, error) {
+	filters, err := summaryFilters(m.Body()) // a bad input is forgebase.MethodBadRequest(..)
+	if err != nil {
+		return nil, err
+	}
+	documents := m.Documents() // acts as the caller
+	// ... for every workflow state: list the orders the caller can read, count them, add up `total`
+	return map[string]any{"orders": orders, "total": total.String(), "by_state": byState}, nil
 }
 ```
 
@@ -53,7 +50,7 @@ curl -s -b jar.txt -H "X-Forgebase-CSRF: $CSRF" -H 'Content-Type: application/js
 # {"data":{"by_state":{"Approved":1,"Cancelled":0,"Draft":1,"Pending Approval":0},"orders":2,"total":"139.00"}}
 
 # system to system: a token, no cookie and no CSRF header
-TOKEN=$(cargo run -p sales -- token create ann)        # printed once; store it in the other system
+TOKEN=$(go run ./cmd/sales token create ann)        # printed once; store it in the other system
 curl -s -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' \
   -d '{"customer": "ann@example.com"}' http://localhost:8000/api/v1/method/sales.order_summary
 ```
@@ -64,10 +61,10 @@ The access rules, all enforced by the framework and the same for every method:
 
 - **No session** is `401`. A **cookie call without the CSRF header** is `403 csrf_failed`; a token call needs none.
 - **A user without a role of the method** (here, neither Sales User nor Sales Manager; the Administrator always may) gets `404`, the same answer as a method that does not exist, so names are not revealed. There are no guest methods.
-- **It runs as the caller.** `ctx.documents()` applies the permission rules of `sales_order` to every read. `sales_order` has **no `if_owner` rule** (both roles read every order), so the summary of a Sales User and of a Sales Manager are the same; if you add an `if_owner` read rule, the same code counts only the caller's own orders.
+- **It runs as the caller.** `m.Documents()` applies the permission rules of `sales_order` to every read. `sales_order` has **no `if_owner` rule** (both roles read every order), so the summary of a Sales User and of a Sales Manager are the same; if you add an `if_owner` read rule, the same code counts only the caller's own orders.
 - **A bad input** (`{"from": "yesterday"}`, an unknown key, `from` after `to`) is `400 method_error` with a message written for the person who sent it. Whatever the method did is rolled back on every error.
 - **`total` counts every order the caller can read, whatever its state, Cancelled included**; `by_state` gives the split. The counts come from one query per state and are not one snapshot: an order that changes state while the method runs may be counted twice or not at all. For an exact report, use a [query report](workflow-and-reports.md) instead.
-- **No limit of 500.** `Documents::list` returns one page of at most 500 and has no offset, so the handler pages by `name` (the sort ends with it, and it is unique) and counts every page.
+- **No limit of 500.** `Documents.List` returns one page of at most 500 and has no offset, so the handler pages by `name` (the sort ends with it, and it is unique) and counts every page.
 
 The route, the statuses and the limits are in the [HTTP API guide](http-api.md#app-methods).
 
@@ -76,19 +73,19 @@ The route, the statuses and the limits are in the [HTTP API guide](http-api.md#a
 A webhook makes the site `POST` a signed JSON snapshot of a document to a URL **after** the operation committed ([ADR 0020](../adr/0020-outgoing-webhooks.md); the full reference, with the headers, the retries and the troubleshooting table, is the [webhooks guide](webhooks.md)). An operator adds it with the command line, per site. Say the accounting system wants every approved order:
 
 ```sh
-cargo run -p sales -- webhook add sales_order_submit \
+go run ./cmd/sales webhook add sales_order_submit \
   --doctype sales_order --events submit \
   --url https://hooks.example.com/forgebase/orders
 # added webhook sales_order_submit
 # secret: 3f9c...   (64 hex characters; printed once)
 # store the secret now: it cannot be shown again
 
-cargo run -p sales -- webhook list
+go run ./cmd/sales webhook list
 # NAME                DOCTYPE      EVENTS  URL                            ENABLED  ALLOW_PRIVATE  INSECURE_HTTP
 # sales_order_submit  sales_order  submit  https://hooks.example.com:443  yes      no             no
 ```
 
-Give the secret to the receiver. An order of the `sales` app is submitted by the transition `Approve` (or `Approve as Manager`): that fires the event `transition`, and `submit` as well, because the transition submits the document. This webhook listens to `submit` only, so the receiver gets one delivery per approved order. A site that has webhooks needs a running `cargo run -p sales -- worker`, which sends them.
+Give the secret to the receiver. An order of the `sales` app is submitted by the transition `Approve` (or `Approve as Manager`): that fires the event `transition`, and `submit` as well, because the transition submits the document. This webhook listens to `submit` only, so the receiver gets one delivery per approved order. A site that has webhooks needs a running `go run ./cmd/sales worker`, which sends them.
 
 **What the receiver gets** is a `POST` with `X-Forgebase-Event: submit`, a `X-Forgebase-Delivery` id (the same on every retry), a `X-Forgebase-Timestamp` and a `X-Forgebase-Signature: sha256=<hex>`, and a JSON body: `event`, `doctype`, `name`, `data` (the document as `GET /api/v1/resource/sales_order/<name>` shows it, items included), `occurred_at` and `delivery`. The full table is in [What is sent](webhooks.md#what-is-sent).
 
@@ -99,11 +96,11 @@ Give the secret to the receiver. An order of the `sales` app is submitted by the
 ```sh
 secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # never printed
 WEBHOOK_SECRET="$secret" python3 -I examples/sites/receiver.py 9000 deliveries.jsonl &
-printf '%s\n' "$secret" | cargo run -p sales -- webhook add local_submit \
+printf '%s\n' "$secret" | go run ./cmd/sales webhook add local_submit \
   --doctype sales_order --events submit --url http://127.0.0.1:9000/hook \
   --allow-private --insecure-http --secret-stdin
-cargo run -p sales -- webhook test local_submit            # HTTP 200, exit 0
-cargo run -p sales -- worker                                # sends the real deliveries
+go run ./cmd/sales webhook test local_submit            # HTTP 200, exit 0
+go run ./cmd/sales worker                                # sends the real deliveries
 ```
 
 Never use `--allow-private` or `--insecure-http` in production: the first lets the worker reach your internal network, the second sends the payload unencrypted.
@@ -149,9 +146,9 @@ The import is **all or nothing**: one transaction, and if any row has an error n
 The same from the command line (an alternative to the curl calls: on a site where the curl import already ran, use a new file or `--upsert`), as the trusted system context (no permission rules; `--actor` names who is recorded as owner), and the same in the desk, where the list's **Export** menu and the **Import** page (Validate, then Import) do it without curl:
 
 ```sh
-cargo run -p sales -- data export customer --format csv --fields name,full_name,tier --out customers-cli.csv
-cargo run -p sales -- data import customer new-customers.csv --format csv --dry-run
-cargo run -p sales -- data import customer new-customers.csv --format csv --actor max
+go run ./cmd/sales data export customer --format csv --fields name,full_name,tier --out customers-cli.csv
+go run ./cmd/sales data import customer new-customers.csv --format csv --dry-run
+go run ./cmd/sales data import customer new-customers.csv --format csv --actor max
 ```
 
 The details (the JSON format, `mode=upsert`, the CSV cell rules, the protection of exported text against spreadsheet formulas, the 100 000 and 10 000 row limits) are in the [HTTP API guide](http-api.md#import-and-export-m93), the [CLI guide](cli.md#data-commands-export-and-import-m93) and the [desk guide](desk.md).

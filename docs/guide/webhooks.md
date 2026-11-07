@@ -1,6 +1,6 @@
 # Webhooks
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: the webhooks are ported (P7.1): the commands, the delivery job `forgebase.deliver_webhook` run by `forgebase worker`, the signature, the retries and the SSRF guard behave as described here. Commands are shown for the Go `sales` example (`go run ./cmd/sales ...` in `examples/sales`). The messages of a TLS failure are those of Go's `crypto/tls` and `crypto/x509`.
 
 For the person who connects another system to Forgebase: a warehouse tool that wants every new sales order, an accounting system that wants every submitted invoice. A **webhook** makes a site `POST` a signed JSON snapshot of a document to a URL after the document operation has committed. The design and its reasons are in [ADR 0020](../adr/0020-outgoing-webhooks.md); the risks are in the [security model](../blueprint/security-model.md#outgoing-webhooks-m92-adr-0020). The commands are in the [CLI guide](cli.md#webhook-commands-m92).
 
@@ -120,10 +120,10 @@ A complete receiver is about twenty more lines with `http.server`; the recipe ab
 For development a receiver on your own machine needs both explicit flags: `--insecure-http` (plain `http://`) and `--allow-private` (a loopback address is blocked otherwise, which is the SSRF guard):
 
 ```sh
-cargo run -p sales -- webhook add dev --doctype sales_order --events insert \
+go run ./cmd/sales webhook add dev --doctype sales_order --events insert \
   --url http://127.0.0.1:9000/hook --insecure-http --allow-private
-cargo run -p sales -- webhook test dev            # one signed test delivery, exit 0 on a 2xx answer
-cargo run -p sales -- worker                      # sends the real ones
+go run ./cmd/sales webhook test dev            # one signed test delivery, exit 0 on a 2xx answer
+go run ./cmd/sales worker                      # sends the real ones
 ```
 
 Do not use these flags in production: see below. A receiver with a self-made certificate needs that CA in the operating system's trust store of the host that runs the worker (or `SSL_CERT_FILE` pointing to a bundle that holds it); Forgebase does not skip certificate checks.
@@ -151,5 +151,5 @@ Secrets and URLs: the secret is printed once by `add` and `rotate-secret` and ne
 | `answered HTTP 500` (retried) | Your receiver failed. Fix it and the retry (or `job retry` for a dead one) succeeds, with the same delivery id. |
 | `answered HTTP 302 ... redirects are not followed` | Give the final URL. |
 | `did not answer within 10 s` | Answer first and work later. |
-| `TLS error (invalid peer certificate: UnknownIssuer)` | The receiver's certificate is not trusted by the host's CA store (or the chain is incomplete). |
+| `TLS error (tls: failed to verify certificate: x509: certificate signed by unknown authority)` | The receiver's certificate is not trusted by the host's CA store (or the chain is incomplete). |
 | a delivery is `done` but nothing was sent | The webhook was removed or disabled before the worker ran the job; this is logged as `is removed or disabled`. |

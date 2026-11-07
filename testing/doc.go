@@ -38,5 +38,11 @@
 // [CheckReports] prepares the SQL of the reports of an app against the database and says what does not fit
 // what the report declares.
 //
-// Not in this version (later phases): custom fields and metadata reload, and webhook settings (P7).
+// [WebhookTestSettings] sets the CA that outgoing webhooks trust and their time limit, for a test that sends
+// webhooks over TLS or times a receiver out.
+//
+// [Client] also calls app methods: [Client.Post] to /api/v1/method/{app}.{method}, [Client.WithToken] and
+// [Client.WithoutCSRF] for the gate, [Client.PostRaw] for a body that is not JSON.
+//
+// Not in this version (later phases): custom fields and metadata reload (P7).
 package testing

@@ -22,7 +22,7 @@ import (
 // The serve_* tests and the worker tests (the_worker_of_a_binary_without_app_jobs_..., a_worker_claims_only_...)
 // run the real binary (cmd/forgebase, serve_test.go). Ported in P6: doc_transition_takes_a_workflow_transition_as_the_system_context
 // and migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone. Deferred, with the phase that
-// brings the command: the webhook_*, data_*, customize_* and user_permission_* tests (P7).
+// brings the command: the data_*, customize_* and user_permission_* tests (P7). The webhook_* tests are in webhook_cmd_test.go (P7.1).
 
 // doctypes is the DOCTYPES fixture of the Rust CLI tests (tests/fixtures/quickstart), byte-identical.
 const doctypes = "testdata/quickstart"

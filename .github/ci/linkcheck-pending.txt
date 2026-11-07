@@ -18,6 +18,4 @@ examples/sales/fixtures/
 examples/sales_extension/src/
 examples/sales_extension/overlays/
 
-# examples/sites/receiver.py, the webhook test receiver, comes with the webhooks (P7); the rest of examples/sites is P5.2.
-examples/sites/receiver.py
 

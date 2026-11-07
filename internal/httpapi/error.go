@@ -44,8 +44,10 @@ import (
 //	lock_timeout                          503  a database lock stayed busy; Retry-After
 //	internal                              500  generic message; the real error goes to standard error
 //
-// Codes of later phases (export_too_large, import_failed, method_error, report_timeout, ...) arrive
-// with their routes.
+//	method_error                          400 or 422  an app method refused the call; the message is the app's, written
+//	                                              for users (M9.1)
+//
+// Codes of later phases (export_too_large, import_failed, ...) arrive with their routes.
 //
 // Every error body is bounded where it is built: the message and the details share a budget of
 // maxErrorBodyBytes (64 KiB of JSON-escaped bytes), each string is cut to maxMessageChars characters
@@ -239,6 +241,10 @@ func fromError(err error) *apiError {
 	var ae *apiError
 	if errors.As(err, &ae) {
 		return ae
+	}
+	var mf *MethodFailure
+	if errors.As(err, &mf) {
+		return fromMethodFailure(mf)
 	}
 	var dbe *db.Error
 	if errors.As(err, &dbe) {

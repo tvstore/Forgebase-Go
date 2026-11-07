@@ -44,6 +44,11 @@ type scheduleDef struct {
 	schedule Schedule
 }
 
+type namedMethod struct {
+	name   string
+	method *Method
+}
+
 type namedReport struct {
 	name   string
 	report *Report
@@ -83,7 +88,8 @@ type hookSet struct {
 //   - declare SQL data migrations;
 //   - register background jobs (Job), which hooks, other jobs and the command line can enqueue, and run them on
 //     a Schedule;
-//   - define query reports (Report): SQL compiled into the binary, run read-only for the roles it names.
+//   - define query reports (Report): SQL compiled into the binary, run read-only for the roles it names;
+//   - define methods (Method): functions a client calls over HTTP, as the caller.
 //
 // What it may not do: change the definition of another app's DocType, run code outside the binary, or
 // reach the database from a hook.
@@ -97,6 +103,7 @@ type App struct {
 	jobs       []jobDef
 	schedules  []scheduleDef
 	reports    []namedReport
+	methods    []namedMethod
 	// appProblems are what is wrong with the app itself (shown under "invalid app setup") and
 	// fileProblems what is wrong with a DocType file (shown under "cannot load DocType files"),
 	// found while the files were read. Nothing fails until the binary starts.
@@ -214,6 +221,27 @@ func (a *App) Report(name string, report *Report) *App {
 		return a
 	}
 	a.reports = append(a.reports, namedReport{name: name, report: report})
+	return a
+}
+
+// Method registers an app method: a function a client calls with POST /api/v1/method/<app>.<name> and a JSON
+// body, as the authenticated caller and in one database transaction (ADR 0019). The name follows the rules of
+// a DocType name and is unique within the app; the method is known as <app>.<name>. The [Method] says who may
+// call it:
+//
+//	forgebase.NewApp("sales").
+//		Method("order_summary", forgebase.NewMethod(orderSummary).Roles("Sales User", "Sales Manager")).
+//		Method("ping", forgebase.NewMethod(ping).AnyUser())
+//
+// Everything wrong with a method (an invalid or duplicate name, no access given, both, an empty role list, a nil
+// method or handler) is a startup error, like the other mistakes of an app. A method of an app that a site does
+// not install does not exist on that site.
+func (a *App) Method(name string, method *Method) *App {
+	if method == nil || method.handler == nil {
+		a.appProblems = append(a.appProblems, fmt.Sprintf("app `%s`: method `%s` has no handler", a.name, name))
+		return a
+	}
+	a.methods = append(a.methods, namedMethod{name: name, method: method})
 	return a
 }
 

@@ -13,9 +13,18 @@ import (
 // and the job part of compose.rs have none, their behaviour is tested through the binaries): these pin the names,
 // the specs and the registration rules the Rust tests rely on.
 
-func TestTheBuiltInJobsAreTheThreeCleanUpsWithTheirSchedules(t *testing.T) {
+func TestTheBuiltInJobsAreTheThreeCleanUpsWithTheirSchedulesAndTheDelivery(t *testing.T) {
 	got := map[string]db.Spec{}
+	deliveries := 0
 	for _, b := range builtinJobs() {
+		if b.def.name == db.DeliverWebhookJob {
+			// The delivery has no schedule and a timeout of 30 seconds around the client's own 10 s limit.
+			deliveries++
+			if b.spec != nil || b.def.handler == nil || b.def.options != NewJobOptions().Timeout(30*time.Second) {
+				t.Errorf("%s: %+v", b.def.name, b.def)
+			}
+			continue
+		}
 		if b.spec == nil {
 			t.Errorf("%s has no schedule", b.def.name)
 			continue
@@ -32,6 +41,9 @@ func TestTheBuiltInJobsAreTheThreeCleanUpsWithTheirSchedules(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("%v", got)
+	}
+	if deliveries != 1 {
+		t.Errorf("%d deliveries", deliveries)
 	}
 }
 
@@ -58,7 +70,7 @@ func TestACompositionRegistersJobsAndSchedulesByFullName(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	want := []string{"crm.sync", "crm.welcome", "forgebase.purge_jobs", "forgebase.purge_login_failures", "forgebase.purge_sessions"}
+	want := []string{"crm.sync", "crm.welcome", "forgebase.deliver_webhook", "forgebase.purge_jobs", "forgebase.purge_login_failures", "forgebase.purge_sessions"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("%v", names)
 	}
@@ -86,7 +98,7 @@ func TestEveryAppOfABinaryHasTheBuiltInJobs(t *testing.T) {
 	if startup != nil {
 		t.Fatal(startup)
 	}
-	if len(c.jobs) != 3 || len(c.schedules) != 3 {
+	if len(c.jobs) != 4 || len(c.schedules) != 3 || !c.registry.HasJob(db.DeliverWebhookJob) {
 		t.Errorf("%d jobs, %d schedules", len(c.jobs), len(c.schedules))
 	}
 }

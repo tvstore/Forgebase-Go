@@ -82,12 +82,14 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 	// error is reported without touching a database. Each site gets a registry of its own, of the apps
 	// installed on it.
 	registries := make([]*core.Registry, len(sites))
+	dispatchers := make([]httpapi.MethodDispatch, len(sites))
 	for i, site := range sites {
 		composed, err := r.siteComposed(site, r.m.str("doctypes"))
 		if err != nil {
 			return err
 		}
 		registries[i] = composed.registry
+		dispatchers[i] = composed.MethodDispatch()
 	}
 	var opened []*siteContext
 	defer func() {
@@ -109,7 +111,7 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 		appConfig.AllowedHosts = hosts
 		appConfig.SecureCookies = !insecure
 		appConfig.DeskDir = deskDir
-		state := httpapi.NewState(sc.pool, sc.registry, appConfig)
+		state := httpapi.NewState(sc.pool, sc.registry, appConfig).WithMethods(dispatchers[i])
 		if cfg.configured {
 			if err := routing.AddSite(site.hosts, state); err != nil {
 				return errf("%s", err)

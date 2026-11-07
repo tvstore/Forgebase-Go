@@ -251,6 +251,19 @@ func RunSchedulesAt(b *forgebase.Binary, d *DB, at time.Time) int {
 	return n
 }
 
+// WebhookTestSettings sets, for the whole test process, how outgoing webhooks (M9.2, ADR 0020) reach https://
+// receivers: the PEM certificate of the test CA they trust (in place of the operating system's roots) and the
+// time limit of one delivery (in place of 10 seconds). Call it at the start of every test that sends webhooks
+// over TLS or times a receiver out: the first call wins and later ones are ignored, so tests that run in
+// parallel agree. It does not change the other rules: the address check, the signature and the redirect rule
+// stay as they are. It fails the test when caPEM holds no certificate.
+func WebhookTestSettings(t stdtesting.TB, caPEM string, timeout time.Duration) {
+	t.Helper()
+	if !app.SetWebhookTestSettings(caPEM, timeout) {
+		t.Fatalf("WebhookTestSettings: caPEM holds no usable certificate")
+	}
+}
+
 // Exec runs SQL (several statements are fine). It fails the test when the SQL fails.
 func (d *DB) Exec(sql string) {
 	d.t.Helper()
@@ -315,7 +328,7 @@ func (d *DB) Client(b *forgebase.Binary) *Client {
 	if err != nil {
 		d.t.Fatalf("the apps do not fit together: %v", err)
 	}
-	state := httpapi.NewState(d.pool, composed.Registry(), httpapi.DefaultConfig())
+	state := httpapi.NewState(d.pool, composed.Registry(), httpapi.DefaultConfig()).WithMethods(composed.MethodDispatch())
 	return &Client{t: d.t, handler: httpapi.ImplicitSites(state)}
 }
 

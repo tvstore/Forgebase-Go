@@ -407,16 +407,40 @@ An unknown job name in `ctx.Enqueue` is found at run time, not at startup (it is
 
 ## 8. App methods
 
-> Go port: the method API (`App.Method`, its handler and context) arrives in P7. The behaviour below is that of the Rust implementation and does not change; no Go code is shown because the exact Go shape is fixed with that phase ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)).
+An app can add its own endpoint, `POST /api/v1/method/<app>.<method>`, for an operation that is not a plain create, read or change of one document. A method is a function registered on the app with **one** of a list of roles or "any user" (neither, both or an empty list is a startup error: there are no guest methods). It runs **as the person who called** and in **one transaction**. The design is [ADR 0019](../adr/0019-app-method-endpoints.md), the Go shape is in [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md).
 
-An app can add its own endpoint, `POST /api/v1/method/<app>.<method>`, for an operation that is not a plain create, read or change of one document. A method is a handler registered on the app with **one** of a list of roles or "any user" (neither, both or an empty list is a startup error: there are no guest methods). It runs **as the person who called** and in **one transaction**. The design is [ADR 0019](../adr/0019-app-method-endpoints.md).
+```go
+func App() *forgebase.App {
+	return forgebase.NewApp("shop").
+		DocTypes(doctypes).
+		Method("orders_of", forgebase.NewMethod(ordersOf).Roles("Sales User", "Sales Manager")).
+		Method("ping", forgebase.NewMethod(ping).AnyUser())
+}
 
-- The context has the request's JSON object (`{}` when there is none), the user's name and roles and a documents handle, the same one a job has, but **it acts as the caller**: the permission rules of the DocTypes (`if_owner`, read rules, read-only fields, workflow roles) decide every call, so a method can do no more than its caller could.
-- Enqueueing a job writes it in the method's transaction: it exists only if the method succeeds, and it runs later as the system context.
-- Returning a value commits and answers `200 {"data": value}`. Every error rolls the whole call back: a bad-request error (400) and an unprocessable error (422) answer `method_error` with **your message, which the client sees**, so write it for users; an error of the documents handle keeps the document API's status and code (`permission_denied` 403, `conflict` 409, `validation_failed` 422, ...); anything else, and a panic, is a generic 500.
+// ordersOf counts the orders of one customer that the caller may read.
+func ordersOf(ctx context.Context, m *forgebase.MethodContext) (any, error) {
+	var in struct {
+		Customer string `json:"customer"`
+	}
+	if err := m.DecodeBody(&in); err != nil || in.Customer == "" {
+		return nil, forgebase.MethodBadRequest("Say which customer.") // 400 method_error, the client sees it
+	}
+	query := forgebase.NewListQuery().Filter("customer", forgebase.FilterEq, forgebase.Text(in.Customer))
+	orders, err := m.Documents().List(ctx, "sales_order", query) // acts as the caller
+	if err != nil {
+		return nil, err // keeps the status and code of the document API
+	}
+	return map[string]int{"orders": len(orders)}, nil // 200 {"data": {"orders": 3}}
+}
+```
+
+- The `MethodContext` has the request's JSON object (`Body()` and `DecodeBody`, `{}` when there is none), the user's name and roles (`Caller()`) and a documents handle (`Documents()`), the same type a job has, but **it acts as the caller**: the permission rules of the DocTypes (`if_owner`, read rules, read-only fields, workflow roles) decide every call, so a method can do no more than its caller could.
+- `m.Enqueue(ctx, "shop.send_statement", payload)` writes a job in the method's transaction: it exists only if the method succeeds, and it runs later as the system context.
+- Returning a value (anything `encoding/json` can marshal) and a nil error commits and answers `200 {"data": value}`. Every error rolls the whole call back: `forgebase.MethodBadRequest(msg)` (400) and `forgebase.MethodUnprocessable(msg)` (422) answer `method_error` with **your message, which the client sees**, so write it for users; the error of a `Documents` call (a `*forgebase.DocError`) keeps the document API's status and code (`permission_denied` 403, `conflict` 409, `validation_failed` 422, ...) when you return it as it is; anything else, and a panic, is a generic 500 and the cause goes to the server's log.
 - A person without a role of the method, an unknown method and a method of an app that the site does not install all get the same 404.
-- **A real one:** the Rust `sales` example has `sales.order_summary`, walked through with curl in [Integrating with other systems](integration.md#1-app-methods-another-system-asks-a-question) (the Go example gets it in P7).
-- **Test it** with `forgebase/testing`: `db.Client(binary).Login("ann").Post("/api/v1/method/sales.orders_of", map[string]any{"customer": "ada@example.com"})`, and `db.CreateToken(user)` with `client.WithToken(..)` for a token call. The route, its statuses and a curl call are in the [HTTP API guide](http-api.md#app-methods).
+- The `ctx` is not cancelled when the client goes away (the method finishes and commits or rolls back), and there is no time limit: keep a method short and put long work in a job.
+- **A real one:** the `sales` example has `sales.order_summary`, walked through with curl in [Integrating with other systems](integration.md#1-app-methods-another-system-asks-a-question).
+- **Test it** with `forgebase/testing`: `db.Client(binary).Login("ann").Post("/api/v1/method/shop.orders_of", map[string]any{"customer": "ada@example.com"})`, and `db.CreateToken(user)` with `client.WithToken(..)` for a token call. The route, its statuses and a curl call are in the [HTTP API guide](http-api.md#app-methods).
 
 ## 9. Fixtures
 
