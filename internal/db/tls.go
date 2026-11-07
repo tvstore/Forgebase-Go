@@ -94,7 +94,8 @@ func loadRoots(ssl tlsSetting) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// pemCertificates are the CERTIFICATE sections of a PEM text, as rustls-pki-types' pem_file_iter reads them
+// pemCertificates are the CERTIFICATE sections of a PEM text, read like rustls-pki-types' pem_file_iter for
+// ordinary files (unusual files differ: see the CHANGELOG parity list, P5.2)
 // (Rust: CertificateDer::pem_file_iter): text outside the sections is ignored, sections of other kinds (keys,
 // CRLs) are skipped, and a malformed section (no end line, an end line of another kind, base64 that does not
 // decode) makes the whole file an error. A file with no section at all yields none (the caller refuses it).
