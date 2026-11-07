@@ -41,17 +41,19 @@ func (r *runner) webhook(ctx context.Context, site *site) (err error) {
 		secret = &text
 	}
 	insecure := r.m.flag("insecure_http")
+	// The site is opened (the pool, with the registry loaded) before anything of add that needs no database is
+	// checked, as the Rust command does: an unreachable database is reported before a bad URL.
+	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
+	if err != nil {
+		return err
+	}
+	defer sc.close()
 	if verb == "add" {
 		// Everything of add that needs no database: the URL. The error never contains the URL.
 		if _, err := parseWebhookURL(r.m.str("url"), insecure); err != nil {
 			return errf("invalid URL: %s", err)
 		}
 	}
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
-	if err != nil {
-		return err
-	}
-	defer sc.close()
 	name := r.m.str("name")
 	// A refusal of the webhook functions prints its message as it is (the Rust CliError::Webhook).
 	defer func() { err = webhookMessage(err) }()
