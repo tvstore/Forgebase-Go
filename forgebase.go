@@ -50,6 +50,10 @@
 //     its own transaction (with the --lock-timeout-ms lock timeout); a changed or removed applied
 //     migration, or a new one numbered below an applied one, is refused. fb_app records which app and
 //     version were migrated. App code is trusted: the SQL runs with the database role of the binary.
+//   - Jobs and schedules. A job name follows the rules of a DocType name, is unique within its app and is
+//     known as `<app>.<job>`; invalid [JobOptions] are startup errors. A schedule names a job the same app
+//     registered (an app schedules only its own jobs), at most once, with valid values. The app name
+//     `forgebase` is reserved for the framework's own clean-up jobs, which every binary has.
 //   - Startup errors. All of the above is checked before anything runs; every problem is reported
 //     together ([StartupError], exit code 1).
 //
@@ -57,14 +61,34 @@
 //
 // A hook set is a type that implements [DocTypeHooks]. Embed [BaseHooks], whose methods do nothing,
 // and override the points you need. Hooks get the document ([Document], [Row], [Value]) and a
-// [HookContext]; they have no database access and may enqueue a background job with HookContext.Enqueue
-// (the job queue arrives in a later phase). See DocTypeHooks for the pipeline and the rules.
+// [HookContext]; they have no database access and may enqueue a background job with HookContext.Enqueue.
+// See DocTypeHooks for the pipeline and the rules.
+//
+// # Background jobs
+//
+// An app registers a job with [App.Job] and may run it on a [Schedule] with [App.Schedule]. A job is a
+// [JobHandler], a function that gets a [JobContext] with the payload, the [Documents] of the job (the
+// trusted system context) and Enqueue:
+//
+//	func App() *forgebase.App {
+//		return forgebase.NewApp("crm").
+//			DocTypes(doctypes).
+//			Job("welcome", welcome).
+//			Job("digest", digest).
+//			Schedule("digest", forgebase.DailyAt(6, 30))
+//	}
+//
+// A hook enqueues a job in the transaction of the document operation (the job exists if and only if the
+// change committed), another job in its own transaction, an operator with `forgebase job enqueue`.
+// `forgebase worker` runs the jobs: at least once, in one transaction together with the completion,
+// retried with a growing delay and dead after the attempts. See [JobHandler] for the rules of delivery.
 //
 // # The binary
 //
 // `forgebase [OPTIONS] COMMAND`: migrate (framework migrations, DocType schema sync and app
-// migrations), doc (insert, get, list, update, delete, submit, cancel, amend), user, token, serve (the
-// HTTP API; no migrations) and new-app (writes a new app module that builds and passes its tests; needs
+// migrations and the sync of the schedules), doc (insert, get, list, update, delete, submit, cancel,
+// amend), user, token, job (list, show, retry, enqueue), worker (runs the background jobs and the
+// scheduler), serve (the HTTP API; no migrations) and new-app (writes a new app module that builds and passes its tests; needs
 // no database, see docs/guide/first-app.md). Configuration comes from FORGEBASE_DATABASE_URL (the
 // database of the one implicit site `default`), and for serve from FORGEBASE_LISTEN,
 // FORGEBASE_ALLOWED_HOSTS, FORGEBASE_DEV_INSECURE_COOKIES and FORGEBASE_DESK_DIR. With --config
@@ -77,8 +101,8 @@
 //
 // # Tests of an app
 //
-// The package forgebase/testing gives a throwaway PostgreSQL database, an in-process HTTP client and
-// a guard that finds a DocType file missing from the embedded set.
+// The package forgebase/testing gives a throwaway PostgreSQL database, an in-process HTTP client, RunJobs
+// to run the jobs that are due and a guard that finds a DocType file missing from the embedded set.
 package forgebase
 
 import (
@@ -119,6 +143,79 @@ func New() *Binary { return app.NewBinary() }
 // all problems together. Binary.Check and the commands return it; Problems lists the messages and Error
 // prints them in two lists, "invalid app setup" and "cannot load DocType files".
 type StartupError = app.StartupError
+
+// ---- background jobs --------------------------------------------------------------------------
+
+// JobHandler is what a background job does: a function that returns nil to complete the job or an error to
+// retry it. Register it with [App.Job]. The godoc of the type has the rules of delivery.
+type JobHandler = app.JobHandler
+
+// JobContext is what a running job knows (Name, ID, Attempt, Payload, DecodePayload) and may do (Enqueue,
+// Documents). It owns the transaction the job runs in.
+type JobContext = app.JobContext
+
+// JobError is why a job failed; NewJobError is retried, NewPermanentJobError goes straight to dead.
+type JobError = app.JobError
+
+// NewJobError is a failure that is worth retrying.
+func NewJobError(message string) *JobError { return app.NewJobError(message) }
+
+// NewPermanentJobError is a failure that retrying cannot fix: the job is dead after this attempt.
+func NewPermanentJobError(message string) *JobError { return app.NewPermanentJobError(message) }
+
+// JobOptions is how a job is run and retried: the attempts, the timeout and the backoff. Start from
+// [NewJobOptions] and give it to [App.JobWith].
+type JobOptions = app.JobOptions
+
+// NewJobOptions is the defaults: 5 attempts, a 30 second delay that doubles up to 1 hour, a 5 minute timeout.
+func NewJobOptions() JobOptions { return app.NewJobOptions() }
+
+// Schedule is when a scheduled job runs, in UTC: every N minutes, every day at a time, every week on a day at
+// a time. Build one with [EveryMinutes], [DailyAt] or [WeeklyOn], and give it to [App.Schedule].
+type Schedule = app.Schedule
+
+// EveryMinutes is a schedule for every n minutes, from 1 to 1440, aligned to the Unix epoch.
+func EveryMinutes(n int) Schedule { return app.EveryMinutes(n) }
+
+// DailyAt is a schedule for every day at hour:minute UTC.
+func DailyAt(hour, minute int) Schedule { return app.DailyAt(hour, minute) }
+
+// WeeklyOn is a schedule for every week on weekday at hour:minute UTC.
+func WeeklyOn(weekday time.Weekday, hour, minute int) Schedule {
+	return app.WeeklyOn(weekday, hour, minute)
+}
+
+// Documents are the documents a job can reach, as the trusted system context: Get, List, Insert, Update, Delete,
+// Submit, Cancel and Amend. Get it from JobContext.Documents.
+type Documents = app.Documents
+
+// StoredDocument is a document as a job reads it: its name, version, docstatus and the [Document] with the
+// values and table rows.
+type StoredDocument = app.StoredDocument
+
+// DocError is why a [Documents] call failed; in a job a database or connection error is retried and every
+// refusal is permanent.
+type DocError = app.DocError
+
+// ListQuery is a query for Documents.List: filters, sort keys and a page size. Start from [NewListQuery].
+type ListQuery = app.ListQuery
+
+// NewListQuery is a query without filters, in name order.
+func NewListQuery() ListQuery { return app.NewListQuery() }
+
+// FilterOp is how a [ListQuery] filter compares a field with a value.
+type FilterOp = app.FilterOp
+
+// The filter operators of a ListQuery.
+const (
+	FilterEq   = app.FilterEq
+	FilterNe   = app.FilterNe
+	FilterLt   = app.FilterLt
+	FilterLe   = app.FilterLe
+	FilterGt   = app.FilterGt
+	FilterGe   = app.FilterGe
+	FilterLike = app.FilterLike
+)
 
 // ---- what a hook implements, receives and changes ---------------------------------------------
 
@@ -182,6 +279,22 @@ const (
 
 // Document is a document as a hook sees it: its name, its field values and the rows of its tables.
 type Document = core.Document
+
+// Changes are the changes of an update: new field values and new rows for Table fields.
+type Changes = core.Changes
+
+// DocStatus is the state of a document of a submittable DocType.
+type DocStatus = core.DocStatus
+
+// The docstatus values.
+const (
+	// DocDraft is a document being edited.
+	DocDraft = core.Draft
+	// DocSubmitted is a submitted, locked document.
+	DocSubmitted = core.Submitted
+	// DocCancelled is a document cancelled after submission.
+	DocCancelled = core.Cancelled
+)
 
 // Row is one row of a child table: field values keyed by field name.
 type Row = core.Row

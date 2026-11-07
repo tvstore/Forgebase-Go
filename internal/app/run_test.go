@@ -19,9 +19,9 @@ import (
 // crates/forgebase/tests/cli.rs and sites.rs; the exec-based ones (exit codes of the real process,
 // standard input of a pipe) are in cmd/forgebase.
 //
-// The serve_* tests run the real binary (cmd/forgebase, serve_test.go). Deferred, with the phase that brings the
-// command: the_worker_of_a_binary_without_app_jobs_... (P5),
-// doc_transition_takes_a_workflow_transition_as_the_system_context and
+// The serve_* tests and the worker tests (the_worker_of_a_binary_without_app_jobs_..., a_worker_claims_only_...)
+// run the real binary (cmd/forgebase, serve_test.go). Deferred, with the phase that brings the
+// command: doc_transition_takes_a_workflow_transition_as_the_system_context and
 // migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone (P6), the webhook_*,
 // data_*, customize_* and user_permission_* tests (P7).
 
@@ -1000,7 +1000,7 @@ func scalar(t *testing.T, d *dbtest.DB, sql string) string {
 }
 
 // Rust: sites.rs::site_is_required_on_every_database_command_but_serve_with_two_sites (migrate, doc,
-// user and token; job and worker arrive with P5)
+// user, token and job)
 func TestSiteIsRequiredOnEveryDatabaseCommandWithTwoSites(t *testing.T) {
 	p := newPair(t)
 	for _, args := range [][]string{
@@ -1008,6 +1008,7 @@ func TestSiteIsRequiredOnEveryDatabaseCommandWithTwoSites(t *testing.T) {
 		{"doc", "get", "customer", "x", "--doctypes", doctypes},
 		{"user", "disable", "root"},
 		{"token", "revoke", "key"},
+		{"job", "list"},
 	} {
 		r := p.run(args...)
 		if r.code != 2 || r.stdout != "" {
@@ -1123,8 +1124,7 @@ func TestAnUnsetURLVariableIsAnErrorNamingTheSiteAndNeverAValue(t *testing.T) {
 	expectContains(t, r.stderr, "site `b`")
 }
 
-// Rust: sites.rs::commands_touch_only_the_database_of_their_site (migrate, doc, user and token; jobs
-// arrive with P5)
+// Rust: sites.rs::commands_touch_only_the_database_of_their_site
 func TestCommandsTouchOnlyTheDatabaseOfTheirSite(t *testing.T) {
 	p := newPair(t)
 	expectCode(t, p.run("migrate", "--site", "a", "--doctypes", doctypes), 0, "migrate a")
@@ -1157,4 +1157,12 @@ func TestCommandsTouchOnlyTheDatabaseOfTheirSite(t *testing.T) {
 	expectCode(t, p.runStdin("a password 123\n", "user", "create", "ann", "--site", "a"), 0, "user on a")
 	expectCode(t, p.run("token", "create", "ann", "--site", "a"), 0, "token on a")
 	expectCode(t, p.run("token", "create", "ann", "--site", "b"), 1, "no user ann on site b")
+	// And jobs: a job enqueued on A is not in the queue of B.
+	expectCode(t, p.run("job", "enqueue", "forgebase.purge_sessions", "--site", "a"), 0, "job on a")
+	if got := scalar(t, p.a, "SELECT count(*)::text FROM fb_job"); got != "1" {
+		t.Errorf("a has %s jobs", got)
+	}
+	if got := scalar(t, p.b, "SELECT count(*)::text FROM fb_job"); got != "0" {
+		t.Errorf("b has %s jobs", got)
+	}
 }

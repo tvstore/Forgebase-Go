@@ -1,6 +1,6 @@
 # Your first Forgebase app
 
-> Go port status: the app model (this guide, sections 1 to 6) is ported ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). Sections 7 to 9 (background jobs and schedules, reports, app methods, fixtures, overlays) describe behaviour whose Go API arrives with its phase (P5, P6, P7, see the [README](../../README.md#status)): their text is that of the Rust implementation, which does not change, and they say where the Go spelling is not there yet.
+> Go port status: the app model (this guide, sections 1 to 6) and the background jobs (section 7) are ported ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). Sections 8 and 9 (reports, app methods, fixtures, overlays) describe behaviour whose Go API arrives with its phase (P6, P7, see the [README](../../README.md#status)): their text is that of the Rust implementation, which does not change, and they say where the Go spelling is not there yet.
 
 This guide takes you from nothing to an app with tests that runs, extends another app and upgrades safely. Every command here was run against the repository at the time of writing. Background and decisions: [ADR 0012](../adr/0012-app-model-and-public-api-boundary.md), [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) (the Go shape of the API) and [the architecture](../blueprint/architecture.md#the-app-model-m51-accepted-by-adr-0012).
 
@@ -322,25 +322,56 @@ Migrations are **append-only**. The checksum of every applied migration is verif
 
 ## 7. Background jobs and schedules
 
-> Go port: the job API (`App.Job`, `App.JobWith`, `App.Schedule`, the job handler and `testing.RunJobs`) arrives in P5, and so do the `worker` and `job` commands. The behaviour below is that of the Rust implementation and does not change; no Go code is shown because the exact Go shape is fixed with that phase ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) lists what is added). What exists now: a hook can already call `ctx.Enqueue(name, payload)` (`forgebase.HookContext`), and the `sales` and `sales_extension` examples do, in the hooks that the workflow transitions (P6) will reach.
+> Go port: ported in P5 ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)): `App.Job`, `App.JobWith`, `App.Schedule`, `JobHandler`, `JobContext`, `JobError`, `JobOptions`, `Documents`, `testing.RunJobs`, `testing.RunSchedulesAt` and the `worker` and `job` commands. The workflow transition of the documents handle arrives with P6.
 
 Work that should not happen inside a request, or that must happen later or on a timer, is a **job**. The full design is [ADR 0013](../adr/0013-jobs-scheduler-and-transactional-outbox.md); the running examples are `sales` and `sales_extension` (section 5).
 
-**Register a job.** A job is a handler registered on the app under a name; it is known as `<app>.<name>` (`sales.log_order_event`).
+**Register a job.** A job is a handler registered on the app under a name; it is known as `<app>.<name>` (`sales.log_order_event`). A handler is a function that gets a context and the job:
 
-The options (5 attempts, 30 s backoff doubling up to 1 h, 5 min timeout) are the defaults; a variant of the registration takes job options.
+```go
+func App() *forgebase.App {
+	return forgebase.NewApp("crm").
+		DocTypes(doctypes).
+		Job("welcome", welcome).
+		JobWith("sync", syncCustomers, forgebase.NewJobOptions().MaxAttempts(3).Timeout(time.Minute))
+}
 
-**Enqueue from a hook, with the outbox.** A hook calls `ctx.Enqueue(name, payload)` (the payload is anything `encoding/json` can marshal). The job is written in the **same transaction** as the document change, after all hooks have run, so it exists only if the operation commits: a refused submit leaves no job.
+func welcome(ctx context.Context, job *forgebase.JobContext) error {
+	var payload struct {
+		Customer string `json:"customer"`
+	}
+	if err := job.DecodePayload(&payload); err != nil {
+		return forgebase.NewPermanentJobError("the payload must be {\"customer\": <name>}")
+	}
+	customer, err := job.Documents().Get(ctx, "customer", payload.Customer)
+	if err != nil {
+		return err // retried if the database is down, permanent for a refusal
+	}
+	if customer == nil {
+		return forgebase.NewPermanentJobError("the customer is gone")
+	}
+	return nil
+}
+```
+
+The options (5 attempts, 30 s backoff doubling up to 1 h, 5 min timeout) are the defaults; `JobWith` takes job options built from `NewJobOptions()`. A handler that needs state is a closure over it. **Pass the `ctx` to every call and return when it is done**: it is cancelled when the attempt times out or the worker stops, and a handler that ignores it keeps running (it cannot commit, but it holds its connection until it returns).
+
+**Enqueue from a hook, with the outbox.** A hook calls `ctx.Enqueue(name, payload)` (the payload is anything `encoding/json` can marshal); a job calls `job.Enqueue(ctx, name, payload)` and the child exists only if the parent completes. The job is written in the **same transaction** as the document change, after all hooks have run, so it exists only if the operation commits: a refused submit leaves no job.
 
 Never put a secret in a payload: it is stored in clear text. In a test, a hook needs a collector, or `Enqueue` fails: `forgebase.NewHookContext(..).WithJobs(jobs)` with `jobs := forgebase.NewEnqueuedJobs()`, then `jobs.Take()` lists what was enqueued (the `sales` example's `TestSubmitAndCancelEnqueueTheLogJob`).
 
 **Be idempotent.** Delivery is **at least once**: a job can run twice (a worker crash, an operator's `job enqueue`). Everything the handler does to the database is atomic with the job's completion, but make the handler safe to repeat anyway, and any effect outside the database (an email) must be. Two ways from the examples: a row whose name is the idempotency key, looked up first (a `get` of `sales_order_log` named `<order>-<event>`, which keeps the normal path quiet; for two runs at the same moment the unique name refuses the second insert, a failed insert runs in a savepoint so the transaction stays usable, and the handler looks again after it and returns `Ok` if the row now exists: a unique violation is a permanent `JobError`, so check for the row rather than for the error), and a field that remembers the source (`customer_visit.source_order`, looked up with a `list` filter). The job's id (the same for every attempt) and its attempt number are there for effects that need a key or a log line.
 
-**Read and write documents.** The job's documents handle offers get, list, insert, update, delete, submit, cancel, amend and transition (a workflow action). Its errors are turned into the job errors below. It runs as the **system context** (no permission rules) with the actor `job:<app>.<job>`, which becomes the `owner` and `modified_by` of what the job writes. Validation and hooks run as usual, each write is a savepoint, and everything commits or rolls back with the job. `list` returns one page of at most 500 documents and has no offset.
+**Read and write documents.** The job's documents handle (`job.Documents()`) offers `Get`, `List`, `Insert`, `Update`, `Delete`, `Submit`, `Cancel` and `Amend` (and, from P6, `Transition`, a workflow action). `Get` returns `nil, nil` when there is no such document; `List` takes a query built with `forgebase.NewListQuery().Filter("order_date", forgebase.FilterEq, value).OrderBy("name", true).Limit(50)`. Its errors are a `*forgebase.DocError`, turned into the job errors below. It runs as the **system context** (no permission rules) with the actor `job:<app>.<job>`, which becomes the `owner` and `modified_by` of what the job writes. Validation and hooks run as usual, each write is a savepoint, and everything commits or rolls back with the job. `list` returns one page of at most 500 documents and has no offset.
 
-**Errors.** An ordinary error returned by the handler (and a database error) is retried with backoff, then the job is `dead` until `forgebase job retry`. A permanent job error skips the retries: use it for what retrying cannot fix, such as a payload that is wrong or an order that no longer exists. Errors of the documents handle already follow this rule.
+**Errors.** An ordinary error returned by the handler (`errors.New`, a failed HTTP call) is retried with backoff, then the job is `dead` until `forgebase job retry`; so is a panic. A permanent job error (`forgebase.NewPermanentJobError`) skips the retries: use it for what retrying cannot fix, such as a payload that is wrong or an order that no longer exists. Errors of the documents handle already follow this rule: a database or connection error is retried, every refusal (validation, permission, a hook that rejected, not found, a version conflict, a unique violation) is permanent.
 
-**Run on a schedule.** A schedule enqueues one of the app's own jobs on a timer: every N minutes, every day or every week, **UTC only** (no cron, no time zones). The Rust example runs `daily_summary` every day at 02:00.
+**Run on a schedule.** A schedule enqueues one of the app's own jobs on a timer: every N minutes, every day or every week, **UTC only** (no cron, no time zones). The `sales` example runs `daily_summary` every day at 02:00:
+
+```go
+Schedule("daily_summary", forgebase.DailyAt(2, 0)) // also forgebase.EveryMinutes(15), forgebase.WeeklyOn(time.Monday, 7, 0)
+```
+
 
 The job gets `{"scheduled_for": "<the tick, RFC 3339 UTC>"}`: the time that was due, not the time the worker noticed it, so use it as the idempotency key (`sales.daily_summary` summarizes the day before it and names the row by that day). A tick is enqueued once however many workers run. Ticks missed while no worker ran are **not caught up**: one job runs, then the next future time. `forgebase migrate` stores the schedules, so run it after you add, change or remove one (it deletes schedules the binary does not declare).
 
@@ -352,13 +383,22 @@ The job gets `{"scheduled_for": "<the tick, RFC 3339 UTC>"}`: the time that was 
 ./sales job list --status dead  # job show <id>, job retry <id>, job enqueue <name> --payload '{..}'
 ```
 
-**Test it.** `forgebase/testing` gets `RunJobs` and `RunSchedulesAt` in P5: `RunJobs` runs every due job with the worker's own code and counts how many ended `done`, `retried` or `dead`; jobs that hooks and other jobs enqueue run too. `RunSchedulesAt` enqueues the schedules that are due at a given time (read `next_run_at` from `fb_schedule` with `DB.Rows`), and `RunJobs` then runs them. To test delivery twice, copy a job row with `DB.Exec` (`INSERT INTO fb_job ... SELECT ... FROM fb_job`) and run again. A job that is retried is queued again after its backoff, so `RunJobs` does not run it again in the same call. The tests of the Rust `sales` and `sales_extension` show each of these.
+**Test it.** `forgebase/testing` has `RunJobs` and `RunSchedulesAt`: `RunJobs(binary, db)` runs every due job with the worker's own code and returns how many ended done, retried or dead (`run.Done`, `run.Retried`, `run.Dead`); jobs that hooks and other jobs enqueue run too. `RunSchedulesAt(binary, db, at)` enqueues the schedules that are due at a given time (read `next_run_at` from `fb_schedule` with `DB.Rows`), and `RunJobs` then runs them. To test delivery twice, copy a job row with `DB.Exec` (`INSERT INTO fb_job ... SELECT ... FROM fb_job`) and run again. A job that is retried is queued again after its backoff, so `RunJobs` does not run it again in the same call.
+
+```go
+db := fbtest.NewDB(t)
+db.Migrate(binary, false)
+db.Exec(`INSERT INTO fb_job (id, name, payload, status, enqueued_by) VALUES (gen_random_uuid(), 'crm.welcome', '{"customer": "ada"}', 'queued', 'test')`)
+run := fbtest.RunJobs(binary, db) // run.Done == 1
+```
+
+The tests of the `sales` and `sales_extension` examples show each of these (`TestAJobDeliveredTwiceLogsOnce`, `TestTheDailySummaryCountsTheSubmittedOrdersOfTheDayBeforeTheTick`).
 
 **Common errors.** A schedule for a job the app did not register is a startup error, reported with the other mistakes of the app before any command runs:
 
 ```
 error: invalid app setup:
-  - app `sales`: schedule for job `daily_sumary`, which `sales` did not register (register it with App::job first; an app schedules only its own jobs)
+  - app `sales`: schedule for job `daily_sumary`, which `sales` did not register (register it with App.Job first; an app schedules only its own jobs)
 ```
 
 An unknown job name in `ctx.Enqueue` is found at run time, not at startup (it is a string): it fails the **operation** that enqueued it when the job is written, with a message like ``unknown job `sales.log_order_evnt` (jobs are registered by the apps of the binary as `<app>.<job>`)``. A job of an app that the worker's binary does not contain stays `queued` until a binary that has it runs a worker.

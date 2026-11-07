@@ -1,14 +1,16 @@
 // Package sales is the sales example app: customers and sales orders, in the role of the ERPNext sales module.
 //
-// It shows what an app is made of (DocTypes, hooks, a data migration) using the public forgebase API only.
-// cmd/sales puts it into a binary; the module examples/sales_extension builds on it. The jobs, the schedule,
-// the report, the method and the fixture of the Rust example arrive with the phases that port the
-// framework features they use (README.md has the list).
+// It shows what an app is made of (DocTypes, hooks, a data migration, background jobs and a schedule) using the
+// public forgebase API only. cmd/sales puts it into a binary; the module examples/sales_extension builds on it.
+// The report, the method and the fixture of the Rust example arrive with the phases that port the framework
+// features they use (README.md has the list).
 package sales
 
 import (
+	"context"
 	"embed"
 	"fmt"
+	"time"
 
 	"github.com/tvstore/forgebase-go"
 )
@@ -38,11 +40,16 @@ func App() *forgebase.App {
 		Version("0.1.0").
 		DocTypes(doctypes).
 		Hooks("sales_order", OrderRules{}).
+		// Background jobs are known as <app>.<job>: sales.log_order_event is enqueued by the hooks below,
+		// sales.daily_summary by the schedule. `forgebase worker` runs them.
+		Job("log_order_event", logOrderEvent).
+		Job("daily_summary", dailySummary).
+		// Every day at 02:00 UTC. Run `migrate` after changing a schedule: it stores them.
+		Schedule("daily_summary", forgebase.DailyAt(2, 0)).
 		// Data migrations (SQL, append-only): see the comments in the file.
 		Migrations(migrations)
-	// Later phases add to this chain, in the order of the Rust example: the jobs log_order_event and
-	// daily_summary and the schedule (P5), the report sales_by_customer (P6), the method order_summary
-	// and the fixtures (P7).
+	// Later phases add to this chain, in the order of the Rust example: the report sales_by_customer (P6), the
+	// method order_summary and the fixtures (P7).
 }
 
 // OrderRules are the business rules of a sales order: computed amounts and total, and what a submit needs.
@@ -144,9 +151,9 @@ func (OrderRules) BeforeCancel(ctx forgebase.HookContext, doc *forgebase.Documen
 // version conflict) nothing is committed and no job exists. A hook cannot write the log itself: hooks have no
 // database access, and the log must not exist for an operation that failed.
 //
-// The job itself (sales.log_order_event, which writes a sales_order_log row) is registered with App.Job in P5;
-// until then nothing can reach this call over HTTP or the command line, because a sales order has a workflow
-// and its submit and cancel are transitions (P6).
+// The job itself (sales.log_order_event, which writes a sales_order_log row) is logOrderEvent below. Nothing
+// can reach this call over HTTP or the command line before P6, because a sales order has a workflow and its
+// submit and cancel are transitions.
 func enqueueLog(ctx forgebase.HookContext, doc *forgebase.Document, event string) error {
 	if doc.Name == "" {
 		return forgebase.NewHookError("the sales order has no name")
@@ -170,4 +177,152 @@ func amountOf(row forgebase.Row) (amount forgebase.Decimal, ok bool, err error) 
 		return forgebase.Decimal{}, false, tooLarge
 	}
 	return amount, true, nil
+}
+
+// logOrderEvent writes one sales_order_log row for a lifecycle event of an order (submitted or cancelled). The
+// payload is {"order": <name>, "event": <event>}.
+//
+// Delivery is at-least-once, so the handler must be safe to run twice: the log is keyed by <order>-<event>, and
+// a row that already exists means an earlier run did the work.
+func logOrderEvent(ctx context.Context, job *forgebase.JobContext) error {
+	var payload struct {
+		Order string `json:"order"`
+		Event string `json:"event"`
+	}
+	if err := job.DecodePayload(&payload); err != nil || payload.Order == "" || payload.Event == "" {
+		// A bad payload stays bad: retrying cannot fix it, so the job goes straight to dead (an operator sees
+		// the message in `forgebase job list`).
+		return forgebase.NewPermanentJobError(`the payload must be {"order": <name>, "event": <event>}`)
+	}
+	key := payload.Order + "-" + payload.Event
+	documents := job.Documents()
+
+	// Idempotency: the work was done by an earlier run of this job. This check keeps the normal path quiet; the
+	// unique key and the re-check after a failed insert (below) cover two deliveries at the same moment.
+	if found, err := documents.Get(ctx, "sales_order_log", key); err != nil || found != nil {
+		return err
+	}
+	stored, err := documents.Get(ctx, "sales_order", payload.Order)
+	if err != nil {
+		return err
+	}
+	if stored == nil {
+		// The order is gone (only a draft can be deleted: a submitted or cancelled order that has a log cannot,
+		// because of the Link).
+		return forgebase.NewPermanentJobError(fmt.Sprintf("the sales order %s does not exist", payload.Order))
+	}
+	logRow := forgebase.Document{Values: map[string]forgebase.Value{
+		"key":         forgebase.Text(key),
+		"sales_order": forgebase.Text(payload.Order),
+		"event":       forgebase.Text(payload.Event),
+	}}
+	if total, ok := stored.Document.Values["total"]; ok {
+		logRow.Values["total"] = total
+	}
+	// Runs as the system context with the actor job:sales.log_order_event: that is the log's owner and
+	// modified_by. A refusal here is a permanent job error; a database error is retried.
+	if _, err := documents.Insert(ctx, "sales_order_log", logRow); err != nil {
+		// Two deliveries at the same moment: the other one committed the same key first and the unique name
+		// refused this insert (a unique violation is permanent, like every refusal). The failed insert ran in a
+		// savepoint, so the transaction is usable: if the log exists now, the work is done.
+		if found, getErr := documents.Get(ctx, "sales_order_log", key); getErr == nil && found != nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// page is the page Documents.List returns at most.
+const page = 500
+
+// maxOrdersPerDay is the most orders one daily summary counts (one less than a page, so a full page means
+// "more"). An example's limit, see dailySummary.
+const maxOrdersPerDay = page - 1
+
+// dailySummary writes the sales_daily_summary of the day before the tick: how many orders were submitted with
+// that order_date, and their total. The schedule (DailyAt(2, 0)) gives it the payload {"scheduled_for": "<the
+// tick, RFC 3339 UTC>"}.
+//
+// Idempotent: the summary is named by its day, so a run that finds it does nothing. That also covers a tick
+// enqueued twice by an operator (`forgebase job enqueue`). Two runs at the same moment: the unique name refuses
+// the second insert, and the handler then finds the summary and succeeds.
+//
+// The summary is a snapshot: an order submitted later with a past order_date is not counted.
+//
+// Limit of this example. Documents.List returns one page of at most 500 documents and has no offset, so the
+// example counts up to maxOrdersPerDay orders and fails permanently (it never writes a wrong figure) when there
+// are more. A real app would sum in SQL (a data migration can create a view; the document API has no
+// aggregate), or enqueue one job per page (sort by name and filter on the last name seen).
+func dailySummary(ctx context.Context, job *forgebase.JobContext) error {
+	var payload struct {
+		ScheduledFor string `json:"scheduled_for"`
+	}
+	day, ok := time.Time{}, false
+	if err := job.DecodePayload(&payload); err == nil {
+		day, ok = dayBefore(payload.ScheduledFor)
+	}
+	if !ok {
+		return forgebase.NewPermanentJobError(`the payload must be {"scheduled_for": <an RFC 3339 time>}`)
+	}
+	key := day.Format(time.DateOnly)
+	documents := job.Documents()
+
+	if found, err := documents.Get(ctx, "sales_daily_summary", key); err != nil || found != nil {
+		return err
+	}
+	// docstatus is a standard column of a submittable DocType, so the database does the filtering: only
+	// submitted orders (1), not drafts (0) or cancelled ones (2).
+	query := forgebase.NewListQuery().
+		Filter("order_date", forgebase.FilterEq, forgebase.NewDate(day.Year(), day.Month(), day.Day())).
+		Filter("docstatus", forgebase.FilterEq, forgebase.Int(1)).
+		Limit(page)
+	orders, err := documents.List(ctx, "sales_order", query)
+	if err != nil {
+		return err
+	}
+	if len(orders) > maxOrdersPerDay {
+		return forgebase.NewPermanentJobError(fmt.Sprintf("more than %d orders on %s: this example does not page", maxOrdersPerDay, key))
+	}
+
+	total := forgebase.DecimalFromInt(0)
+	for _, order := range orders {
+		if amount := order.Document.Values["total"]; amount.Kind == forgebase.KindDecimal {
+			sum, fits := total.Add(amount.Dec)
+			if !fits {
+				return forgebase.NewPermanentJobError("the day's total is too large")
+			}
+			total = sum
+		}
+	}
+	total, _ = total.Rescale(2)
+
+	summary := forgebase.Document{Values: map[string]forgebase.Value{
+		"day":    forgebase.Text(key),
+		"orders": forgebase.Int(int64(len(orders))),
+		"total":  forgebase.DecimalValue(total),
+	}}
+	if _, err := documents.Insert(ctx, "sales_daily_summary", summary); err != nil {
+		// Another delivery committed this day first (the unique name refused the insert, in a savepoint): the
+		// summary exists, so the work is done.
+		if found, getErr := documents.Get(ctx, "sales_daily_summary", key); getErr == nil && found != nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// dayBefore is the calendar day before the day of an RFC 3339 time such as 2026-10-31T02:00:00Z.
+//
+// Only the date part is used, and the schedule is UTC, so the text is a UTC day already.
+func dayBefore(rfc3339 string) (time.Time, bool) {
+	if len(rfc3339) < 10 {
+		return time.Time{}, false
+	}
+	day, err := time.Parse(time.DateOnly, rfc3339[:10])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return day.AddDate(0, 0, -1), true
 }

@@ -39,6 +39,11 @@ type MigrationFile struct {
 	SQL     string
 }
 
+type scheduleDef struct {
+	job      string
+	schedule Schedule
+}
+
 type hookSet struct {
 	doctype string
 	hooks   core.DocTypeHooks
@@ -70,7 +75,9 @@ type hookSet struct {
 //   - register hooks (DocTypeHooks) for its own DocTypes and for DocTypes of the apps it depends on.
 //     Hooks run in app order, then in registration order within the app: the hooks of an app that
 //     extends another run after the hooks of the app it extends;
-//   - declare SQL data migrations.
+//   - declare SQL data migrations;
+//   - register background jobs (Job), which hooks, other jobs and the command line can enqueue, and run them on
+//     a Schedule.
 //
 // What it may not do: change the definition of another app's DocType, run code outside the binary, or
 // reach the database from a hook.
@@ -81,6 +88,8 @@ type App struct {
 	doctypes   []DocTypeFile
 	hooks      []hookSet
 	migrations []MigrationFile
+	jobs       []jobDef
+	schedules  []scheduleDef
 	// appProblems are what is wrong with the app itself (shown under "invalid app setup") and
 	// fileProblems what is wrong with a DocType file (shown under "cannot load DocType files"),
 	// found while the files were read. Nothing fails until the binary starts.
@@ -151,6 +160,40 @@ func (a *App) Hooks(doctype string, hooks core.DocTypeHooks) *App {
 		return a
 	}
 	a.hooks = append(a.hooks, hookSet{doctype: doctype, hooks: hooks})
+	return a
+}
+
+// Job registers a background job with the default options (5 attempts, a 30 second delay that doubles up to 1
+// hour, a 5 minute timeout). The name follows the rules of a DocType name and is unique within the app; the
+// job is known as <app>.<name>. A hook enqueues it with HookContext.Enqueue (the job is written in the same
+// transaction as the document change), another job with JobContext.Enqueue, an operator with `forgebase job
+// enqueue`; `forgebase worker` runs it. See [JobHandler] for what a handler does and how delivery works.
+func (a *App) Job(name string, handler JobHandler) *App {
+	return a.JobWith(name, handler, NewJobOptions())
+}
+
+// JobWith is like Job, with [JobOptions]. Invalid options are a startup error.
+func (a *App) JobWith(name string, handler JobHandler, options JobOptions) *App {
+	if handler == nil {
+		a.appProblems = append(a.appProblems, fmt.Sprintf("app `%s`: job `%s` has no handler", a.name, name))
+		return a
+	}
+	a.jobs = append(a.jobs, jobDef{name: name, handler: handler, options: options})
+	return a
+}
+
+// Schedule runs one of this app's jobs on a [Schedule]. job is the short name given to Job; the job runs as
+// <app>.<job> and gets the payload {"scheduled_for": "<RFC 3339 UTC time of the tick>"}. `forgebase worker`
+// enqueues it at every tick (once, however many workers run) and runs it like any other job, with the actor
+// `scheduler`.
+//
+// Startup errors: a job this app did not register (a schedule for another app's job is refused too), a second
+// schedule for the same job, and an invalid schedule.
+//
+// The schedules are stored by `forgebase migrate`, so run it after adding, changing or removing one; see
+// [Schedule] and ADR 0013.
+func (a *App) Schedule(job string, schedule Schedule) *App {
+	a.schedules = append(a.schedules, scheduleDef{job: job, schedule: schedule})
 	return a
 }
 

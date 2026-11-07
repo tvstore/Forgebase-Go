@@ -20,6 +20,10 @@
 // with CSRF tokens, API tokens, the login lockout, the purge functions), the management of user
 // permissions (user_permissions.go), the list query (list.go) and link titles (link_titles.go).
 //
+// Implemented in P5.1: the job queue (jobs.go: ClaimJob with leases, the guarded CompleteJob, FailJob and
+// ReleaseJob, PurgeFinishedJobs, ListJobs, GetJob and RetryDeadJob) and the scheduler (schedule.go: Spec,
+// SyncSchedules and Tick), which MigrateAll runs inside migrate.
+//
 // Import direction: db may import internal/core. It must not import internal/httpapi,
 // internal/app or the root package forgebase.
 package db

@@ -1,6 +1,6 @@
 # Operating Forgebase
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. The worker (`forgebase worker`) and the job commands are in the Go binary since P5; `site`, the webhooks and the rest arrive with their phases.
 
 For the person who runs a Forgebase deployment: one server, one binary, one or more sites. Every command here was run against the repository at the time of writing (the two-site flow is `examples/sites/ci.sh`, run by the CI job `sites`). Design and decisions: [ADR 0014](../adr/0014-multi-site-database-per-site.md). Security notes: [security model](../blueprint/security-model.md#multi-site-isolation-m71-accepted-adr-0014).
 
@@ -162,7 +162,7 @@ TimeoutStopSec=45
 WantedBy=multi-user.target
 ```
 
-A unit for `serve` is the same without `%i` and `--site`. The worker does not migrate: run `migrate` first. The worker also sends the **webhooks** of its site ([webhooks guide](webhooks.md)): it opens the outgoing connections, so it needs the network access to the receivers and the operating system's CA certificates (the Docker image has them), and a site with webhooks has no deliveries without one.
+A unit for `serve` is the same without `%i` and `--site`. The worker does not migrate: run `migrate` first. `worker --concurrency N` (1 to 64, default 1) runs N jobs at the same time on a pool of N+2 connections (one per running job, two for claiming and recording), so add `N+2` per worker to the connections PostgreSQL must allow. The worker claims only the jobs of the apps installed on its site and the built-in ones, so a binary that does not contain an app leaves that app's jobs queued for one that does. The worker also sends the **webhooks** of its site ([webhooks guide](webhooks.md)): it opens the outgoing connections, so it needs the network access to the receivers and the operating system's CA certificates (the Docker image has them), and a site with webhooks has no deliveries without one.
 
 ## Upgrading
 

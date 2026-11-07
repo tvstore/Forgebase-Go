@@ -2,23 +2,28 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/db/dbtest"
 )
 
 // Apps per site (M7.2, ADR 0014): a binary with two apps, base and extra (which depends on base), run with a
 // config file of sites that install different apps, against real PostgreSQL databases. Ported from the
 // scenarios migrate_per_site and cli_per_site of crates/forgebase/tests/site_apps.rs, and from the
-// config validation of config_and_site_list that needs only the apps of the binary. Deferred, with the
-// phase that brings what they use: site list and site create (P5), the worker of a site (P5), the HTTP
-// view of a site's apps (cmd/forgebase tests, with the sales example in P4 and the methods in P7), and
-// the removed-app scenario with fixtures (P7).
+// config validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules
+// of the apps are part of them since P5 (the worker of a site is in site_workers_test.go of the root
+// package, which runs the apps as a real process). Deferred, with the phase that brings what they use: site
+// list and site create (P5), the HTTP view of a site's apps (cmd/forgebase tests, with the sales example in
+// P4 and the methods in P7), and the removed-app scenario with fixtures (P7).
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +
@@ -27,14 +32,54 @@ const (
 		"[[fields]]\nname = \"code\"\ntype = \"data\"\nrequired = true\nunique = true\n"
 )
 
+func noop(context.Context, *JobContext) error { return nil }
+
+// stamp is extra.stamp: it inserts an extra_item with the code of its payload.
+func stamp(ctx context.Context, job *JobContext) error {
+	var p struct {
+		Code string `json:"code"`
+	}
+	code := "none"
+	if err := job.DecodePayload(&p); err == nil && p.Code != "" {
+		code = p.Code
+	}
+	_, err := job.Documents().Insert(ctx, "extra_item", core.Document{Values: map[string]core.Value{"code": core.Text(code)}})
+	return err
+}
+
 func baseApp() *App {
-	return NewApp("base").Version("1.0.0").DocTypes(files("doctypes/item.toml", siteItem))
+	return NewApp("base").Version("1.0.0").
+		DocTypes(files("doctypes/item.toml", siteItem)).
+		Job("tick", noop).
+		Schedule("tick", DailyAt(4, 0))
 }
 
 func extraApp() *App {
 	return NewApp("extra").DependsOn("base").
 		DocTypes(files("doctypes/extra_item.toml", siteExtraItem)).
-		Migrations(fstest.MapFS{"migrations/0001_seed.sql": {Data: []byte("CREATE TABLE extra_seed (entry text)")}})
+		Migrations(fstest.MapFS{"migrations/0001_seed.sql": {Data: []byte("CREATE TABLE extra_seed (entry text)")}}).
+		Job("stamp", stamp).
+		Job("mark", noop).
+		Schedule("mark", EveryMinutes(60))
+}
+
+const (
+	siteSchedules = `SELECT name FROM fb_schedule ORDER BY name COLLATE "C"`
+)
+
+// withBuiltin is the names of the schedules of the apps and the built-in ones, in the order of the query.
+func withBuiltin(own ...string) []string {
+	all := append(append([]string{}, own...), "forgebase.purge_jobs", "forgebase.purge_login_failures", "forgebase.purge_sessions")
+	sort.Strings(all)
+	return all
+}
+
+func names(d *dbtest.DB, sql string) []string {
+	var out []string
+	for _, r := range d.Rows(sql) {
+		out = append(out, r[0])
+	}
+	return out
 }
 
 func siteApps() []*App { return []*App{baseApp(), extraApp()} }
@@ -112,6 +157,19 @@ func TestMigrateInstallsOnlyTheAppsOfTheSite(t *testing.T) {
 	if got := p.b.Rows("SELECT name FROM fb_app ORDER BY name"); len(got) != 2 {
 		t.Errorf("site b records %v", got)
 	}
+	// The schedules are those of the apps the site installs, and the built-in ones.
+	if got := names(p.a, siteSchedules); !reflect.DeepEqual(got, withBuiltin("base.tick")) {
+		t.Errorf("site a schedules %v", got)
+	}
+	if got := names(p.b, siteSchedules); !reflect.DeepEqual(got, withBuiltin("base.tick", "extra.mark")) {
+		t.Errorf("site b schedules %v", got)
+	}
+	// Migrating again changes nothing and warns about nothing.
+	again := p.run("migrate", "--site", "b")
+	expectCode(t, again, 0, "migrate b again")
+	if again.stderr != "" || strings.Contains(again.stdout, "schedules:") {
+		t.Errorf("%+v", again)
+	}
 }
 
 // Rust: site_apps.rs::removed_app (the warning; the data kept by the migrate is checked above)
@@ -137,6 +195,11 @@ func TestMigrateWarnsAboutAnAppRecordedButNotInstalled(t *testing.T) {
 	if got := p.a.Rows("SELECT name FROM fb_app ORDER BY name"); len(got) != 2 {
 		t.Errorf("fb_app %v", got)
 	}
+	// The schedule of the app that is not installed is deleted (and reported); nothing else is dropped.
+	expectContains(t, r.stdout, "remove extra.mark (every 60m)")
+	if got := names(p.a, siteSchedules); !reflect.DeepEqual(got, withBuiltin("base.tick")) {
+		t.Errorf("site a schedules %v", got)
+	}
 }
 
 // Rust: site_apps.rs::cli_per_site
@@ -154,6 +217,17 @@ func TestCommandsKnowOnlyTheAppsOfTheSite(t *testing.T) {
 	if r.stderr != "error: unknown DocType `extra_item`; known DocTypes: item\n" {
 		t.Errorf("%q", r.stderr)
 	}
+
+	// The jobs of an app that is not installed are unknown too, and nothing is enqueued.
+	r = p.run("job", "enqueue", "extra.stamp", "--site", "a")
+	expectCode(t, r, 1, "enqueue on a")
+	expectContains(t, r.stderr, "unknown job `extra.stamp`")
+	if got := scalar(t, p.a, "SELECT count(*)::text FROM fb_job"); got != "0" {
+		t.Errorf("%s jobs on a", got)
+	}
+	expectCode(t, p.run("job", "enqueue", "extra.stamp", "--site", "b"), 0, "enqueue on b")
+	// Built-in jobs are in every site.
+	expectCode(t, p.run("job", "enqueue", "forgebase.purge_jobs", "--site", "a"), 0, "built-in on a")
 }
 
 // Rust: site_apps.rs::config_and_site_list (the validation of the apps list, which needs the apps of the

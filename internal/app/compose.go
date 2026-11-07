@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -22,13 +23,14 @@ import (
 // found is collected and reported together. The reference and hook checks only run when every DocType file
 // loaded, because a file that did not load would make them report follow-up errors.
 //
-// Overlays (P7), jobs and schedules (P5), reports (P6), methods (P7) and fixtures (P7) are added to this
-// order by the phases that bring them.
+// Jobs and schedules (P5) are checked after the DocTypes, hooks and references (they do not depend on the DocType
+// files, so their problems are reported with the others). Overlays (P7), reports (P6), methods (P7) and
+// fixtures (P7) are added to this order by the phases that bring them.
 
 // localApp is the name of the app that the --doctypes directory forms.
 const localApp = "local"
 
-// frameworkApp is the name the framework keeps for its own jobs (P5).
+// frameworkApp is the name the framework keeps for its own jobs.
 const frameworkApp = "forgebase"
 
 func validUTF8(b []byte) bool { return utf8.Valid(b) }
@@ -82,6 +84,11 @@ func (e *StartupError) Error() string {
 // Composed is the apps of a binary, composed: one registry and what migrate needs.
 type Composed struct {
 	registry *core.Registry
+	// jobs are the jobs of all apps and the built-in ones by full name (<app>.<job>); the registry has the
+	// names.
+	jobs map[string]*jobDef
+	// schedules are the schedules of all apps and the built-in ones, by full job name (valid ones only).
+	schedules map[string]db.Spec
 	// apps are the registered apps (not local) in app order.
 	apps []appInfo
 }
@@ -108,9 +115,9 @@ func (c *Composed) hasApp(name string) bool {
 	return false
 }
 
-// Migrate runs the framework migrations, the schema sync and the app migrations in app order
-// (db.MigrateApps). The schedules, the workflow backfill, the fixtures and the report check are added here
-// in P5 to P7.
+// Migrate runs the framework migrations, the schema sync, the app migrations in app order and the sync of the
+// declared schedules (db.MigrateAll). The workflow backfill, the fixtures and the report check are added here
+// in P6 and P7.
 func (c *Composed) Migrate(ctx context.Context, pool *pgxpool.Pool, options db.SyncOptions) (*db.MigrateReport, error) {
 	specs := make([]db.AppSpec, len(c.apps))
 	for i, a := range c.apps {
@@ -119,7 +126,14 @@ func (c *Composed) Migrate(ctx context.Context, pool *pgxpool.Pool, options db.S
 			specs[i].Migrations = append(specs[i].Migrations, db.AppMigration{Version: m.Version, Name: m.Name, SQL: m.SQL})
 		}
 	}
-	return db.MigrateApps(ctx, pool, c.registry, specs, options)
+	// The schedules by name, as Rust's BTreeMap gives them (not nil: a binary with no schedule deletes the
+	// rows of a binary that had some).
+	declared := make([]db.DeclaredSchedule, 0, len(c.schedules))
+	for name, spec := range c.schedules {
+		declared = append(declared, db.DeclaredSchedule{Name: name, Spec: spec})
+	}
+	sort.Slice(declared, func(i, j int) bool { return declared[i].Name < declared[j].Name })
+	return db.MigrateAll(ctx, pool, c.registry, specs, declared, options)
 }
 
 // ComposeBinary composes the apps of b, for forgebase/testing.
@@ -185,10 +199,12 @@ func compose(apps []*App, local string) (*Composed, *StartupError) {
 		checkReferences(registry, definedIn, reach, localReach, errs)
 		checkHooks(apps, reach, registry, errs)
 	}
+	jobs := checkJobs(apps, registry, errs)
+	schedules := checkSchedules(apps, errs)
 	if !errs.isEmpty() {
 		return nil, errs
 	}
-	c := &Composed{registry: registry}
+	c := &Composed{registry: registry, jobs: jobs, schedules: schedules}
 	for _, a := range apps {
 		c.apps = append(c.apps, appInfo{name: a.name, version: a.version, migrations: a.migrations})
 	}
@@ -380,4 +396,93 @@ func checkHooks(apps []*App, reach map[string]map[string]bool, registry *core.Re
 			}
 		}
 	}
+}
+
+// checkJobs checks the job names and options and registers the valid jobs: the names in the registry, the
+// definitions in the result, by full name. The framework's own jobs come first: they exist in every binary.
+func checkJobs(apps []*App, registry *core.Registry, errs *StartupError) map[string]*jobDef {
+	jobs := map[string]*jobDef{}
+	for _, b := range builtinJobs() {
+		def := b.def
+		registry.AddJob(def.name)
+		jobs[def.name] = &def
+	}
+	for _, a := range apps {
+		if a == nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, job := range a.jobs {
+			name := job.name
+			if err := core.ValidateDocTypeName(name); err != nil {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: job name %s %s", a.name, rustQuote(name), err))
+				continue
+			}
+			if seen[name] {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: job `%s` is registered more than once", a.name, name))
+				continue
+			}
+			seen[name] = true
+			problems := job.options.problems()
+			for _, problem := range problems {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: job `%s`: %s", a.name, name, problem))
+			}
+			full := a.name + "." + name
+			// The same full name from two apps with the same name is reported as a duplicate app.
+			if _, taken := jobs[full]; len(problems) == 0 && !taken {
+				registry.AddJob(full)
+				def := job
+				def.name = full
+				jobs[full] = &def
+			}
+		}
+	}
+	return jobs
+}
+
+// checkSchedules checks the schedules of the apps and adds the built-in ones. A schedule must name a job the
+// same app registered, at most once, and have valid values. It returns the valid schedules by full job name.
+func checkSchedules(apps []*App, errs *StartupError) map[string]db.Spec {
+	schedules := map[string]db.Spec{}
+	for _, b := range builtinJobs() {
+		if b.spec != nil {
+			schedules[b.def.name] = *b.spec
+		}
+	}
+	for _, a := range apps {
+		if a == nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, s := range a.schedules {
+			registeredJob := false
+			for _, job := range a.jobs {
+				if job.name == s.job {
+					registeredJob = true
+					break
+				}
+			}
+			if !registeredJob {
+				errs.apps = append(errs.apps, fmt.Sprintf(
+					"app `%s`: schedule for job `%s`, which `%s` did not register (register it with App.Job first; an app schedules only its own jobs)",
+					a.name, s.job, a.name))
+				continue
+			}
+			if seen[s.job] {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: job `%s` has more than one schedule", a.name, s.job))
+				continue
+			}
+			seen[s.job] = true
+			problems := s.schedule.problems()
+			for _, problem := range problems {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: schedule for job `%s`: %s", a.name, s.job, problem))
+			}
+			if len(problems) == 0 {
+				if _, taken := schedules[a.name+"."+s.job]; !taken {
+					schedules[a.name+"."+s.job] = s.schedule.spec
+				}
+			}
+		}
+	}
+	return schedules
 }
