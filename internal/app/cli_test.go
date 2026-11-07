@@ -582,7 +582,6 @@ func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
 		phase string
 		name  string
 	}{
-		{[]string{"new-app", "crm", "--forgebase-path", "/x"}, "P4", "new-app"},
 		{[]string{"worker", "--doctypes", "d"}, "P5", "worker"},
 		{[]string{"job", "list"}, "P5", "job list"},
 		{[]string{"site", "list"}, "P5", "site list"},

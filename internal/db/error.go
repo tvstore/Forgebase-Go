@@ -99,6 +99,18 @@ const (
 	// the field, a value of the wrong kind, or a limit or offset out of range (Message). Nothing from
 	// the query was sent to the database.
 	ErrInvalidQuery
+	// ErrAppChecksumMismatch: an applied app migration no longer matches the SQL the app declares
+	// now (App, Version, Name, Expected, Actual).
+	ErrAppChecksumMismatch
+	// ErrUnknownAppMigration: the database has an app migration that the app does not declare any
+	// more (App, Version, Name).
+	ErrUnknownAppMigration
+	// ErrOutOfOrderAppMigration: an app migration is not applied but one with a higher version of
+	// the same app is (App, Version, Name, AppliedVersion).
+	ErrOutOfOrderAppMigration
+	// ErrAppMigrationFailed: an app migration failed and was rolled back (App, Version, Name,
+	// Message).
+	ErrAppMigrationFailed
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -107,9 +119,14 @@ type Error struct {
 	Kind ErrorKind
 	// Message is the reason, for ErrPostgres, ErrTLS, ErrCreatePool and ErrPool.
 	Message string
-	// Version and Name identify the migration of ErrChecksumMismatch and ErrUnknownMigration.
+	// Version and Name identify the migration of ErrChecksumMismatch and ErrUnknownMigration, and
+	// of the app migration errors.
 	Version int32
 	Name    string
+	// App is the app of the app migration errors.
+	App string
+	// AppliedVersion is the highest applied version of ErrOutOfOrderAppMigration.
+	AppliedVersion int32
 	// Expected and Actual are the checksums of ErrChecksumMismatch (the embedded SQL and the
 	// database).
 	Expected, Actual string
@@ -163,6 +180,18 @@ func (e *Error) Error() string {
 	case ErrUnknownMigration:
 		return fmt.Sprintf("database has framework migration %d (%s) that this version of Forgebase does not know; upgrade Forgebase",
 			e.Version, e.Name)
+	case ErrAppChecksumMismatch:
+		return fmt.Sprintf("migration %d (%s) of app `%s` was changed after it was applied: expected checksum %s, database has %s",
+			e.Version, e.Name, e.App, e.Expected, e.Actual)
+	case ErrUnknownAppMigration:
+		return fmt.Sprintf("database has migration %d (%s) of app `%s` that the app does not declare; the database is newer than the app, or a migration was removed",
+			e.Version, e.Name, e.App)
+	case ErrOutOfOrderAppMigration:
+		return fmt.Sprintf("migration %d (%s) of app `%s` is not applied, but migration %d of the app is; a new migration must have a version above every applied one (renumber it above %d); nothing was applied",
+			e.Version, e.Name, e.App, e.AppliedVersion, e.AppliedVersion)
+	case ErrAppMigrationFailed:
+		return fmt.Sprintf("migration %d (%s) of app `%s` failed and was rolled back (earlier migrations stay applied): %s",
+			e.Version, e.Name, e.App, e.Message)
 	case ErrFrameworkNotMigrated:
 		return "framework tables are missing; run the framework migrations before schema sync"
 	case ErrSyncConflicts:

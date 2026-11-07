@@ -9,13 +9,14 @@
 crates/
 Cargo.toml
 
-# Created by P4 (the example apps). P3.2 copied only the DocType files of examples/sales/doctypes/
-# (the end-to-end seed needs them), so the rest of examples/ is listed path by path.
-examples/sales/README.md
+# The example apps (P4) are Go modules: examples/sales and examples/sales_extension have sales.go, sales_test.go and
+# so on, not the Rust layout. The guides still link to the Rust paths below where they show the Rust code of an
+# example (the job, the method, the fixture and the overlay: P5 to P7 rewrite those passages and remove the entries).
 examples/sales/src/
 examples/sales/tests/
 examples/sales/fixtures/
-examples/sales_extension/
+examples/sales_extension/src/
+examples/sales_extension/overlays/
 examples/sites/
 
 # Created by P5 (container, deploy, sites)

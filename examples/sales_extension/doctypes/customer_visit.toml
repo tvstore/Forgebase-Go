@@ -1,0 +1,47 @@
+# A DocType of the `sales_extension` example app (examples/sales_extension): a visit to a customer.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "customer_visit"
+label = "Customer Visit"
+# Random naming (the default, written out here on purpose): a visit has no natural key, and a
+# naming series would serialize every insert on one counter row for no benefit.
+naming = "random"
+title_field = "customer"
+list_fields = ["customer", "visited_on"]
+
+# A Link to a DocType of another app: allowed because `sales_extension` depends on `sales`.
+[[fields]]
+name = "customer"
+type = "link"
+target = "customer"
+required = true
+
+[[fields]]
+name = "visited_on"
+type = "date"
+required = true
+
+[[fields]]
+name = "notes"
+type = "text"
+
+# The sales order this visit follows up, set by the job `sales_extension.plan_follow_up_visit`, which looks for it
+# before it plans a visit. A plain Data field and not a Link: the visit needs no foreign key, which would also stop
+# a cancelled order from being deleted. It is unique so that the database, not only the check, keeps two visits from
+# following up one order (empty values do not collide).
+[[fields]]
+name = "source_order"
+type = "data"
+unique = true
+
+[[permissions]]
+role = "Sales User"
+read = true
+write = true
+create = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true
+write = true
+create = true
+delete = true

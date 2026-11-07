@@ -28,7 +28,9 @@ import (
 type Options struct {
 	// Version is printed by --version.
 	Version string
-	Args    []string
+	// Apps are the apps compiled into the binary, in order. The stock binary has none.
+	Apps []*App
+	Args []string
 	// Getenv reads an environment variable; "" means not set.
 	Getenv func(string) string
 	Stdin  io.Reader
@@ -39,7 +41,6 @@ type Options struct {
 // notYet maps the commands that are not ported yet to the phase that brings them. The commands are
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
-	"new-app":         "P4",
 	"worker":          "P5",
 	"job":             "P5",
 	"site":            "P5",
@@ -73,9 +74,21 @@ func Run(o Options) int {
 		return exit.code
 	}
 	// A binary without apps has nothing but --doctypes to learn DocTypes from.
-	if m.cmd.arg("doctypes") != nil && m.str("doctypes") == "" && !m.flag("empty") {
+	if len(o.Apps) == 0 && m.cmd.arg("doctypes") != nil && m.str("doctypes") == "" && !m.flag("empty") {
 		return printExit(o, usageErr("the following required arguments were not provided:\n  --doctypes <DIR>",
 			"Usage: "+helpUsage(withRequired(m.cmd, "doctypes"))))
+	}
+	// The one command that needs neither the apps nor a database nor the config file.
+	if m.path[0] == "new-app" {
+		created, err := newApp(m.str("name"), m.str("forgebase_path"), m.str("dir"))
+		if err != nil {
+			return fail(o, err)
+		}
+		r := &runner{o: o, m: m}
+		if err := r.write(newAppReport(created)); err != nil {
+			return fail(o, err)
+		}
+		return 0
 	}
 	if phase := phaseOf(m.path); phase != "" {
 		return fail(o, fmt.Errorf("%s is not available yet in the Go port (arrives in phase %s)", strings.Join(m.path, " "), phase))
@@ -123,7 +136,7 @@ func (r *runner) write(text string) error {
 // config file and --site before anything else is done. The site gives the command its pool; there
 // is no other way to reach a database.
 func (r *runner) run(ctx context.Context) error {
-	cfg, err := loadConfig(r.m.str("config"), r.o.Getenv, nil)
+	cfg, err := loadConfig(r.m.str("config"), r.o.Getenv, binaryApps(r.o.Apps))
 	if err != nil {
 		return err
 	}
@@ -138,9 +151,9 @@ func (r *runner) run(ctx context.Context) error {
 	}
 	switch r.m.path[0] {
 	case "migrate":
-		composed, startup := compose(r.m.str("doctypes"))
-		if startup != nil {
-			return startup
+		composed, err := r.siteComposed(site, r.m.str("doctypes"))
+		if err != nil {
+			return err
 		}
 		options := db.SyncOptions{
 			DryRun:      r.m.flag("dry_run"),
@@ -163,6 +176,36 @@ func (r *runner) run(ctx context.Context) error {
 	return fmt.Errorf("unknown command %q", r.m.path[0])
 }
 
+// siteComposed is the apps installed on site plus the --doctypes directory (the app `local`, which
+// depends on those apps), composed into the registry of that site. It composes first all the apps of the
+// binary, so a problem in the binary or the directory is reported once, as for every command; then, when
+// the site installs only some of the apps, those (a problem found only there names the site).
+func (r *runner) siteComposed(site *site, local string) (*Composed, error) {
+	all, startup := compose(r.o.Apps, local)
+	if startup != nil {
+		return nil, startup
+	}
+	if !site.appsListed {
+		return all, nil
+	}
+	installed, startup := compose(site.installed(r.o.Apps), local)
+	if startup != nil {
+		return nil, startup.forSite(site.name)
+	}
+	return installed, nil
+}
+
+// binaryApps are the apps as the config file validation needs them: the names and the dependencies.
+func binaryApps(apps []*App) []binaryApp {
+	out := make([]binaryApp, 0, len(apps))
+	for _, a := range apps {
+		if a != nil {
+			out = append(out, binaryApp{name: a.name, dependsOn: a.dependsOn})
+		}
+	}
+	return out
+}
+
 // millis is a number of milliseconds as a duration, at most the longest duration (the sync clamps
 // it further to what PostgreSQL accepts).
 func millis(ms uint64) time.Duration {
@@ -174,17 +217,27 @@ func millis(ms uint64) time.Duration {
 
 // migrateSite migrates site with its composed DocTypes and returns the report. What was applied is
 // returned with an error too (a refused fixture), so that the caller prints it first. The warnings
-// are written to standard error: the apps recorded in the database that are not installed (P4), and
+// are written to standard error: the apps recorded in the database that are not installed, and
 // the documents of a workflow that are in a state it no longer defines (P6).
-func (r *runner) migrateSite(ctx context.Context, site *site, c *composed, options db.SyncOptions) (string, error) {
+func (r *runner) migrateSite(ctx context.Context, site *site, c *Composed, options db.SyncOptions) (string, error) {
 	sc, err := site.open(ctx, r.o.Getenv, c.registry.Clone(), 0)
 	if err != nil {
 		return "", err
 	}
 	defer sc.close()
-	report, err := c.migrate(ctx, sc.pool, options)
+	report, err := c.Migrate(ctx, sc.pool, options)
 	if err != nil {
 		return "", err
+	}
+	recorded, err := db.RecordedApps(ctx, sc.pool)
+	if err != nil {
+		return "", err
+	}
+	for _, name := range recorded {
+		if !c.hasApp(name) {
+			_, _ = fmt.Fprintf(r.o.Stderr, "warning: site `%s`: app `%s` is recorded in the database but not installed; its tables and data are kept\n",
+				sc.site.name, name)
+		}
 	}
 	for _, warning := range report.WorkflowWarnings {
 		_, _ = fmt.Fprintf(r.o.Stderr, "warning: site `%s`: %s\n", sc.site.name, warning)
@@ -243,9 +296,9 @@ func (r *runner) doc(ctx context.Context, site *site) error {
 	// The DocType is looked up in the files (before the database is opened, so an unknown one never
 	// touches it) and the input is read; the input is then checked against the registry of the site
 	// context.
-	composed, startup := compose(r.m.str("doctypes"))
-	if startup != nil {
-		return startup
+	composed, err := r.siteComposed(site, r.m.str("doctypes"))
+	if err != nil {
+		return err
 	}
 	if composed.registry.Get(op.doctype) == nil {
 		return unknownDocType(composed.registry, op.doctype)

@@ -1,0 +1,8 @@
+# Fixture of apps_test.go: links to the Widget of the same app.
+name = "gizmo"
+label = "Gizmo"
+
+[[fields]]
+name = "widget"
+type = "link"
+target = "widget"

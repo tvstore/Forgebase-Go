@@ -23,7 +23,7 @@ import (
 //
 // A site may list the apps installed on it (M7.2): a subset of the apps compiled into the binary,
 // closed under depends_on. Without the key the site has all of them. The stock binary has no apps,
-// so every name is unknown; the app model arrives in P4 (binaryApp is its seam).
+// so every name is unknown.
 //
 // There is no process-global pool or URL. A command picks exactly one site (serve picks all of
 // them), turns it into a siteContext (its own pool and the registry of its apps) and passes that down.
@@ -60,6 +60,21 @@ type site struct {
 	// of the binary.
 	apps       []string
 	appsListed bool
+}
+
+// installed are the apps installed on the site, in the order of the binary: all of apps when the site lists
+// none, else the listed ones. (Validation made the list a subset closed under depends_on.)
+func (s *site) installed(apps []*App) []*App {
+	var out []*App
+	for _, a := range apps {
+		if a == nil {
+			continue
+		}
+		if !s.appsListed || containsString(s.apps, a.name) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // implicitSiteValue is the implicit site of a setup without a config file.

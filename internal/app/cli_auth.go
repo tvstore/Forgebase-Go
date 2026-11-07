@@ -39,6 +39,10 @@ func (r *runner) readPassword() (string, error) {
 // user runs a `user` command. The password of create and set-password is read from standard input
 // before the database is opened, so that a bad input never touches it.
 func (r *runner) user(ctx context.Context, site *site) error {
+	// Every command first checks that the apps fit together.
+	if _, err := r.siteComposed(site, ""); err != nil {
+		return err
+	}
 	verb := r.m.path[1]
 	password := ""
 	if verb == "create" || verb == "set-password" {
@@ -102,6 +106,9 @@ func (r *runner) user(ctx context.Context, site *site) error {
 
 // token runs a `token` command. create prints key:secret and nothing else.
 func (r *runner) token(ctx context.Context, site *site) error {
+	if _, err := r.siteComposed(site, ""); err != nil {
+		return err
+	}
 	sc, err := site.open(ctx, r.o.Getenv, core.NewRegistry(), 0)
 	if err != nil {
 		return err

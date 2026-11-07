@@ -1,0 +1,20 @@
+# Fixture of apps_test.go: an app DocType file embedded with //go:embed.
+name = "widget"
+label = "Widget"
+naming = { field = "code" }
+
+[[fields]]
+name = "code"
+type = "data"
+required = true
+unique = true
+
+[[fields]]
+name = "title"
+type = "data"
+
+[[permissions]]
+role = "Fixture User"
+read = true
+write = true
+create = true

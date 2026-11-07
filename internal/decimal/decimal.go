@@ -4,7 +4,7 @@
 // stays "12.50" (see ADR 0027).
 //
 // Only what Forgebase uses is implemented: parsing (every form rust_decimal's FromStr accepts),
-// formatting, comparison, normalisation and a few accessors. A Decimal is an immutable value; the
+// formatting, comparison, normalisation, a few accessors and (arith.go, P4) the arithmetic an app's hooks need. A Decimal is an immutable value; the
 // zero value is 0 with scale 0. Two Decimals compare equal with == only when mantissa, scale and
 // sign are the same; use Equal or Cmp to compare the numbers.
 package decimal
