@@ -19,3 +19,7 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
+
+// The desk's npm packages are not Go code: some of them ship a Go package (desk/node_modules/flatted), which
+// `./...` would otherwise pick up after `npm ci`.
+ignore ./desk/node_modules

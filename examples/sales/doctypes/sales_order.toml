@@ -1,0 +1,130 @@
+# A DocType of the `sales` example app (examples/sales). Used by the quick start of the getting-started guide. It has a child table, a naming series
+# (SO-2026-00001, ...) and is submittable:
+# draft -> submitted (locked, except `remarks`) -> cancelled -> amended into a new draft named SO-2026-00001-1.
+# Rules in Rust (src/lib.rs): `validate` computes the row amounts and `total` (both `read_only`); `before_submit` refuses an order without items.
+# Approval workflow (M8.5, ADR 0015, the [workflow] section at the end): plain submit and cancel are refused; an order moves by transitions
+# (Draft -> Pending Approval -> Approved [submitted] -> Cancelled), and `before_transition` limits what a Sales User may approve.
+# Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+#
+# Changes made when the example became an app (all additive): the field `total`; `items` is no longer required, so a draft can be saved
+# without items (the submit rule enforces them instead).
+name = "sales_order"
+label = "Sales Order"
+submittable = true
+naming = { series = "SO-.YYYY.-.#####" }
+title_field = "customer"
+icon = "shopping-cart"
+list_fields = ["customer", "order_date", "total"]
+
+[[fields]]
+name = "customer"
+type = "link"
+target = "customer"
+required = true
+
+[[fields]]
+name = "order_date"
+type = "date"
+
+# Computed by the `validate` hook: the sum of the row amounts. `read_only`: a client that sends a different value is refused (UX.1).
+[[fields]]
+name = "total"
+type = "decimal"
+precision = 12
+scale = 2
+read_only = true
+
+[[fields]]
+name = "items"
+label = "Items"
+type = "table"
+target = "sales_order_item"
+# Not required: a draft may have no items yet. `before_submit` refuses to submit an order without any.
+
+[[fields]]
+name = "remarks"
+type = "text"
+# A submitted order is locked, except for the fields marked allow_on_submit.
+allow_on_submit = true
+
+# A Sales User works on orders and takes them through the workflow transitions (see [workflow] below); a Sales Manager can also delete, cancel and amend.
+# (Child rows follow the parent: `sales_order_item` has no rules of its own.)
+[[permissions]]
+role = "Sales User"
+read = true
+write = true
+create = true
+submit = true
+export = true
+
+[[permissions]]
+role = "Sales Manager"
+read = true
+write = true
+create = true
+delete = true
+submit = true
+cancel = true
+amend = true
+export = true
+
+# The approval workflow (ADR 0015). The first state is the initial one. A transition needs one of its roles AND the right its move needs
+# (`write` for 0 to 0, `submit` for 0 to 1, `cancel` for 1 to 2): the roles below narrow the rules above, they never widen them.
+# Plain submit and cancel are refused on this DocType; the transitions run the same `before_submit` and `before_cancel` hooks.
+[workflow]
+
+[[workflow.states]]
+name = "Draft"
+docstatus = 0
+style = "neutral"
+
+# While an order waits for approval only a Sales Manager may edit it (`edit_roles`), so a Sales User cannot change the total after
+# sending the order and then approve it under the limit.
+[[workflow.states]]
+name = "Pending Approval"
+docstatus = 0
+style = "warning"
+edit_roles = ["Sales Manager"]
+
+# docstatus 1: the order is submitted (locked, except `remarks`). Reached by an approval, which runs `before_submit`.
+[[workflow.states]]
+name = "Approved"
+docstatus = 1
+style = "success"
+
+[[workflow.states]]
+name = "Cancelled"
+docstatus = 2
+style = "danger"
+
+[[workflow.transitions]]
+action = "Submit for Approval"
+from = "Draft"
+to = "Pending Approval"
+roles = ["Sales User", "Sales Manager"]
+
+# Limited by the hook `OrderRules::before_transition`: above `APPROVAL_LIMIT` it refuses, and the order needs "Approve as Manager".
+[[workflow.transitions]]
+action = "Approve"
+from = "Pending Approval"
+to = "Approved"
+roles = ["Sales User", "Sales Manager"]
+
+# The same move for any total. Hooks do not see roles (ADR 0009), so the limit is written as two actions instead of a role check.
+[[workflow.transitions]]
+action = "Approve as Manager"
+from = "Pending Approval"
+to = "Approved"
+roles = ["Sales Manager"]
+
+[[workflow.transitions]]
+action = "Reject"
+from = "Pending Approval"
+to = "Draft"
+roles = ["Sales Manager"]
+
+[[workflow.transitions]]
+action = "Cancel"
+from = "Approved"
+to = "Cancelled"
+roles = ["Sales Manager"]

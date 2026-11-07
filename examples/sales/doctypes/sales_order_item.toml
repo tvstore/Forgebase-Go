@@ -1,0 +1,31 @@
+# A child DocType of the `sales` example app (examples/sales): the rows of the `items` table of `sales_order`. A child belongs to exactly one
+# parent, has no name of its own and is read and written through its parent. Format: docs/blueprint/architecture.md section 3 ("DocType file format").
+name = "sales_order_item"
+label = "Sales Order Item"
+is_child = true
+
+[[fields]]
+name = "description"
+type = "data"
+required = true
+
+[[fields]]
+name = "qty"
+label = "Quantity"
+type = "int"
+required = true
+
+[[fields]]
+name = "rate"
+type = "decimal"
+precision = 12
+scale = 2
+
+# Computed by the `validate` hook of `sales_order` as qty * rate (rounded to 2 places). `read_only`: a client must leave it out of its rows
+# (a row with a value is refused, UX.1). Added when the example became an app (additive).
+[[fields]]
+name = "amount"
+type = "decimal"
+precision = 12
+scale = 2
+read_only = true

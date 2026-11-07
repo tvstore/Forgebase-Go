@@ -27,11 +27,9 @@ GO_PREFIXES = ("cmd/", "internal/", "testing/", "examples/")
 GO_FILES = {"go.mod", "go.sum"}
 DOCKER_FILES = {"Dockerfile", ".dockerignore"}
 DOC_FILES = {"AGENTS.md", "CHANGELOG.md", "LICENSE"}
-# Files outside desk/ that the desk reads. They stay Go and also run the desk job. Empty for now:
-# P3 adds the Go equivalent of the Rust doctype_icons.txt (the icon list that the desk's icon test
-# imports) here, at its new path in the Go module. Add a path whenever a desk file imports from
-# outside desk/.
-DESK_ALSO = set()
+# Files outside desk/ that the desk reads (desk/src/icons.test.ts imports the first one). They stay Go
+# and also run the desk job. Add a path here whenever a desk file imports from outside desk/.
+DESK_ALSO = {"internal/core/doctype_icons.txt"}
 
 
 def classify_path(path):

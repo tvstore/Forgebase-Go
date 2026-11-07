@@ -1,8 +1,11 @@
 package db
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -152,6 +155,40 @@ func TestFormattedOutputRedactsSecrets(t *testing.T) {
 		if text := fmt.Sprintf(verb, token); !strings.Contains(text, "the-key") || strings.Contains(text, "api-secret") {
 			t.Errorf("%s: %s", verb, text)
 		}
+	}
+}
+
+// encoding/json and log/slog never print the tokens either (a carried review finding of P3.1).
+func TestJSONAndSlogOutputRedactSecrets(t *testing.T) {
+	session := LoginSession{Token: "tok-secret", CSRFToken: "csrf-secret", User: AuthUser{Username: "alice"}}
+	token := APITokenSecret{Key: "the-key", Secret: "api-secret"}
+	for _, v := range []any{session, &session, token, &token, []any{session, token}, map[string]any{"s": session}} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"tok-secret", "csrf-secret", "api-secret"} {
+			if strings.Contains(string(b), secret) {
+				t.Errorf("%s in %s", secret, b)
+			}
+		}
+		if !strings.Contains(string(b), "[redacted]") {
+			t.Errorf("no marker in %s", b)
+		}
+	}
+	var out bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&out, nil))
+	logger.Info("login", "session", session, "token", token)
+	logger = slog.New(slog.NewTextHandler(&out, nil))
+	logger.Info("login", "session", &session, "token", &token)
+	text := out.String()
+	for _, secret := range []string{"tok-secret", "csrf-secret", "api-secret"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("%s in the log: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "alice") || !strings.Contains(text, "the-key") {
+		t.Errorf("the public parts are missing: %s", text)
 	}
 }
 

@@ -185,6 +185,135 @@ jobs:
       - name: Check the licences
         run: go run ./.github/ci/licensecheck
 
+  # The desk (the React app of desk/, copied unchanged from the Rust repository except for the path of the
+  # icon list in desk/src/icons.test.ts, which is internal/core/doctype_icons.txt here): lint, typecheck,
+  # unit tests, build, licences and audit.
+  desk:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.desk == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The npm download cache (not node_modules), keyed on the lockfile.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('desk/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+      - name: Check the Node version
+        run: node -e 'const [a, b] = process.versions.node.split(".").map(Number); if (!((a === 20 && b >= 19) || (a === 22 && b >= 12) || a > 22)) { console.error("Node ^20.19.0 or >=22.12.0 is required (Vite 8), found " + process.version); process.exit(1); }'
+      # desk/.npmrc sets ignore-scripts=true: no dependency install script runs in CI.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run licenses
+      - run: npm audit --audit-level=high
+
+  # The desk end-to-end tests (Playwright in Chromium) against a real `forgebase serve` with the built desk:
+  # login, list, create, edit and submit a sales order, and a user without the submit right, and the
+  # smaller tests of the command bar, the recent documents, the filter chip with the Link title and
+  # prefers-reduced-motion. Seeding: .github/ci/e2e-seed.sh (a temporary, phase-scoped copy of
+  # desk/e2e/seed.sh, see its header). Only the tests whose routes exist run: E2E_GREP below names them, and
+  # the phase that ports the routes of a group of tests adds that group (CHANGELOG, "P3.2"). No artifact
+  # upload (no pinned action for it is in use); on failure the server log is printed. The database URL is
+  # built from the service container's credentials and never printed.
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forgebase
+          POSTGRES_PASSWORD: forgebase
+          POSTGRES_DB: forgebase_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgebase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The service's own database, empty and used by this job only.
+      FORGEBASE_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/forgebase_e2e
+      E2E_BASE_URL: http://127.0.0.1:8000
+      # The tests that run in P3 (a regular expression on the test titles, over desk/e2e/smoke.spec.ts and
+      # desk/e2e/restrict.spec.ts): login, list, create, edit and submit; the command bar; the recent
+      # documents; the filter chip with the Link title; prefers-reduced-motion; the Columns menu; the
+      # keyboard focus (UX.5); and the two tests of the level 1 field (credit_limit) that need only the field
+      # levels. The others need routes of later phases: the workflow, the saved views and the summary, and
+      # the reports (P6); export and import (P7, desk/e2e/transfer.spec.ts); the user permissions and the
+      # custom field (P7, the rest of desk/e2e/restrict.spec.ts). The phase that ports those routes adds the
+      # titles (CHANGELOG, "P3.2"); in P7 the pattern and the seed go.
+      E2E_GREP: "login, list, create, edit and submit|command bar opens|recent documents of one user|clerk without create rights|filter shows as a chip|prefers-reduced-motion|Columns menu hides a column|focus indicator check reads|keyboard focus is visible|Sales Manager sees credit_limit|reads level 1 but not writes it"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Go toolchain
+        run: .github/ci/install-go.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-e2e-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: ${{ runner.os }}-e2e-
+      # The stock binary (no apps): the same one a user builds.
+      - run: go build -o bin/forgebase ./cmd/forgebase
+      # The npm download cache (not node_modules), keyed on the lockfile.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('desk/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+      - name: Check the Node version
+        run: node -e 'const [a, b] = process.versions.node.split(".").map(Number); if (!((a === 20 && b >= 19) || (a === 22 && b >= 12) || a > 22)) { console.error("Node ^20.19.0 or >=22.12.0 is required (Vite 8), found " + process.version); process.exit(1); }'
+      # desk/.npmrc sets ignore-scripts=true: no dependency install script runs in CI.
+      - name: Build the desk
+        working-directory: desk
+        run: |
+          npm ci
+          npm run build
+      # Downloads the Chromium that this exact Playwright version drives (and its system libraries).
+      - name: Install Chromium
+        working-directory: desk
+        run: npx playwright install --with-deps chromium
+      - name: Seed the database
+        run: .github/ci/e2e-seed.sh
+      - name: Start the server
+        run: |
+          FORGEBASE_DESK_DIR=desk/dist \
+          FORGEBASE_DEV_INSECURE_COOKIES=1 \
+          FORGEBASE_ALLOWED_HOSTS=localhost,127.0.0.1 \
+          bin/forgebase serve --doctypes bin/e2e/doctypes > server.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8000/desk/; then exit 0; fi
+            sleep 1
+          done
+          echo "the server did not answer in 30 seconds" >&2
+          cat server.log >&2
+          exit 1
+      - name: Run the end-to-end tests
+        working-directory: desk
+        run: npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts --grep "$E2E_GREP"
+      - name: Show the server log
+        if: failure()
+        run: tail -n 100 server.log
+
   # The single required status check of the branch ruleset on main (owner decision of 2026-10-31,
   # docs/blueprint/maintenance-policy.md, "CI"). It runs always, also when a job failed or was
   # cancelled, and fails unless every job it needs finished with `success` or `skipped` (a skipped
@@ -197,11 +326,11 @@ jobs:
   # or fails on its merits, when the pull request is marked ready for review; merging needs the
   # `ci-result` of the run on the READY pull request head (AGENTS.md section 10.3).
   #
-  # Later phases add jobs (docker, desk, e2e, sites, app-template, ...). Every new job must be added
-  # to `needs` here, or the ruleset does not guard it.
+  # Later phases add jobs (docker, sites, app-template, ...). Every new job must be added to `needs`
+  # here, or the ruleset does not guard it.
   ci-result:
     if: always()
-    needs: [changes, docs, check, licenses]
+    needs: [changes, docs, check, licenses, desk, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
