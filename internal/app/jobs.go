@@ -45,7 +45,9 @@ import (
 // its timeout, or the worker stops and the grace period is over): pass it on to every call and return
 // when it is done. A handler that ignores it cannot be stopped (Go cannot abort a goroutine): its attempt
 // is still failed or given back, its transaction is never committed, but the goroutine and its connection
-// stay in use until it returns.
+// stay in use until it returns. The worker process does not wait for such a handler: after one signal it stops
+// after the grace period and a wait of at most 5 seconds, after a second signal within about a second, and the
+// job stays running with its lease for another worker to recover.
 //
 // # Delivery
 //
