@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# TEMPORARY, phase-scoped seed of the end-to-end job of P3 (the Go port, ADR 0026). It is desk/e2e/seed.sh
-# with the Go binary, and without the steps that need commands of later phases. It is removed in P7, when
-# desk/e2e/seed.sh runs unchanged: the Rust seed needs
-#   - `customize field add` and `user permission add` (P7), for the site custom field and the restricted
-#     users of desk/e2e/restrict.spec.ts, and
-#   - the binary of the example app `e2e_app` (P4 and P6: a query report can only come from an app that is
-#     compiled into the binary), for the report test of desk/e2e/smoke.spec.ts.
-# Everything else is the same as in desk/e2e/seed.sh: the DocTypes of examples/sales/doctypes (the metadata
-# files of the example app, which P4 completes) with the same awk and role edits, the migration, the users
-# and the customers, all made with the stock commands of the stock binary. The restricted users
-# (e2e_retail, e2e_retail_manager) are created but have no user permission yet, so restrict.spec.ts does not
-# run (see .github/workflows/ci.yml for the tests that do).
+# TEMPORARY, phase-scoped seed of the end-to-end job (the Go port, ADR 0026). It is desk/e2e/seed.sh with the Go
+# binary, and without the steps that need commands of a later phase. It is removed in P7, when desk/e2e/seed.sh
+# runs unchanged: the Rust seed needs `customize field add` and `user permission add` (P7), for the site custom
+# field and the restricted users of desk/e2e/restrict.spec.ts.
+#
+# The binary is examples/e2e_app (P6, the Go equivalent of the Rust example e2e_app): the stock command plus one
+# app that defines the query report "Sales by customer" (M8.4), which can only come from an app compiled into the
+# binary. Everything else is the same as in desk/e2e/seed.sh: the DocTypes of examples/sales/doctypes (the
+# metadata files of the example app) with the same awk and role edits, the migration, the users and the customers,
+# all made with the stock commands of that binary. The restricted users (e2e_retail, e2e_retail_manager) are
+# created but have no user permission yet, so restrict.spec.ts does not run completely (see
+# .github/workflows/ci.yml for the tests that do).
 #
 # Run it from the repository root with an EMPTY (scratch) database in FORGEBASE_DATABASE_URL; the URL is
 # read by the forgebase tool from the environment and is never printed here.
 #
-#   go build -o bin/forgebase ./cmd/forgebase
+#   go build -o bin/e2e_app ./examples/e2e_app
 #   FORGEBASE_DATABASE_URL=postgres://... .github/ci/e2e-seed.sh
 #
-# Start the server with:  bin/forgebase serve --doctypes "$E2E_DIR/doctypes"
+# Start the server with:  bin/e2e_app serve --doctypes "$E2E_DIR/doctypes"
 # Passwords come from E2E_PASSWORD (default below): a throw-away password of a throw-away database.
 set -euo pipefail
 
 : "${FORGEBASE_DATABASE_URL:?set FORGEBASE_DATABASE_URL to an empty scratch database}"
-BIN="${FORGEBASE_BIN:-bin/forgebase}"
+BIN="${FORGEBASE_BIN:-bin/e2e_app}"
 E2E_DIR="${E2E_DIR:-bin/e2e}"
 PASSWORD="${E2E_PASSWORD:-e2e-test-password}"
 DOCTYPES="$E2E_DIR/doctypes"
@@ -175,4 +175,4 @@ printf '%s\n' "$PASSWORD" | "$BIN" user create e2e_retail --role "Sales User" > 
 printf '%s\n' "$PASSWORD" | "$BIN" user create e2e_retail_manager --role "Sales Manager" > /dev/null
 # P7: `user permission add` (e2e_retail and e2e_retail_manager are restricted to Retail) and `customize field
 # add` (the site custom field custom_region) come with desk/e2e/seed.sh.
-echo "seeded (P3 subset): users e2e_manager, e2e_clerk, e2e_admin, e2e_auditor, e2e_sales, e2e_retail and e2e_retail_manager, customers ada@example.com, rita@example.com and walt@example.com, DocTypes in $DOCTYPES"
+echo "seeded (P6 subset): users e2e_manager, e2e_clerk, e2e_admin, e2e_auditor, e2e_sales, e2e_retail and e2e_retail_manager, customers ada@example.com, rita@example.com and walt@example.com, DocTypes in $DOCTYPES"

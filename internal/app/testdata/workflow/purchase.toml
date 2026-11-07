@@ -1,0 +1,57 @@
+# Fixture of the CLI workflow tests (crates/forgebase/tests/cli.rs), owned by those tests: a
+# submittable DocType with a workflow (M8.1, ADR 0015). The `doc` commands run as the system
+# context, so the roles below are not checked by them.
+name = "purchase"
+label = "Purchase"
+submittable = true
+
+[[fields]]
+name = "title"
+type = "data"
+required = true
+
+[[permissions]]
+role = "Buyer"
+read = true
+write = true
+create = true
+submit = true
+
+[workflow]
+
+[[workflow.states]]
+name = "Draft"
+docstatus = 0
+
+[[workflow.states]]
+name = "Pending"
+docstatus = 0
+style = "warning"
+
+[[workflow.states]]
+name = "Approved"
+docstatus = 1
+style = "success"
+
+[[workflow.states]]
+name = "Cancelled"
+docstatus = 2
+style = "danger"
+
+[[workflow.transitions]]
+action = "Send"
+from = "Draft"
+to = "Pending"
+roles = ["Buyer"]
+
+[[workflow.transitions]]
+action = "Approve"
+from = "Pending"
+to = "Approved"
+roles = ["Buyer Manager"]
+
+[[workflow.transitions]]
+action = "Cancel"
+from = "Approved"
+to = "Cancelled"
+roles = ["Buyer Manager"]

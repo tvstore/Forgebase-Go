@@ -1,8 +1,8 @@
 # Workflow, saved views and reports
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: ported in P6. The workflow, the saved views, the summary and the query reports behave as described, over HTTP, in the command line and in the desk, and the code examples are Go ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) has the API). The one part that is not ported yet is the **export** of a report result (section 3, "Export"), which comes with import and export in P7.
 
-For the person who builds an app on Forgebase and has done the [first-app guide](first-app.md). This page covers the three parts of M8 that an app uses: an **approval workflow** on a DocType, **saved views and the summary** that the desk gives every list, and **query reports** (SQL that the app ships). Everything here is in the `sales` example, [`examples/sales`](../../examples/sales/README.md), and uses only the public `forgebase` crate. The rules and the reasons are in [ADR 0015](../adr/0015-workflow-states-and-transitions.md) (workflow), [ADR 0016](../adr/0016-query-reports-read-only-execution.md) (reports) and [architecture, section 11](../blueprint/architecture.md#11-desk-reports-workflow) (desk, views, summary).
+For the person who builds an app on Forgebase and has done the [first-app guide](first-app.md). This page covers the three parts of M8 that an app uses: an **approval workflow** on a DocType, **saved views and the summary** that the desk gives every list, and **query reports** (SQL that the app ships). Everything here is in the `sales` example, [`examples/sales`](../../examples/sales/README.md), and uses only the public `forgebase` package. The rules and the reasons are in [ADR 0015](../adr/0015-workflow-states-and-transitions.md) (workflow), [ADR 0016](../adr/0016-query-reports-read-only-execution.md) (reports) and [architecture, section 11](../blueprint/architecture.md#11-desk-reports-workflow) (desk, views, summary).
 
 ## 1. An approval workflow
 
@@ -79,32 +79,32 @@ On a DocType with a workflow **plain submit and cancel are refused** (409 `workf
 
 ### A condition on a transition: `before_transition`
 
-Conditions are Rust, not expressions in the TOML. `DocTypeHooks::before_transition` runs after the permission checks and before the `validate`, `before_submit` and `before_cancel` hooks of the move. It gets the **whole stored document** and `ctx.transition` (the `action`, `from` and `to`), may veto with `Err`, change values (the changes are validated and written with the move) and enqueue jobs (the outbox: a job exists only if the transition committed).
+Conditions are Go, not expressions in the TOML. `BeforeTransition` of `DocTypeHooks` runs after the permission checks and before the `Validate`, `BeforeSubmit` and `BeforeCancel` hooks of the move. It gets the **whole stored document** and `ctx.Transition` (the `Action`, `From` and `To`; nil for every other operation), may veto by returning an error, change values (the changes are validated and written with the move) and enqueue jobs (the outbox: a job exists only if the transition committed).
 
-The example wants "a Sales User may approve orders up to 10 000; above that a Sales Manager is needed". **Hooks do not see roles**, only `ctx.actor` ([ADR 0009](../adr/0009-lifecycle-pipeline-and-hooks.md): rules that depend on roles belong in the permission rules, which the framework checks before any hook). So the role goes into the *action*:
+The example wants "a Sales User may approve orders up to 10 000; above that a Sales Manager is needed". **Hooks do not see roles**, only `ctx.Actor` ([ADR 0009](../adr/0009-lifecycle-pipeline-and-hooks.md): rules that depend on roles belong in the permission rules, which the framework checks before any hook). So the role goes into the *action*:
 
 - `"Approve"` is open to Sales User and Sales Manager and is limited by the hook;
 - `"Approve as Manager"` is open to the Sales Manager only (the framework checks the role) and has no limit and no hook rule.
-- There is no four-eyes rule in the example: a Sales User may approve an order they sent, up to the limit. An app that needs one can veto in `before_transition` when `ctx.actor` equals the document's `owner`.
+- There is no four-eyes rule in the example: a Sales User may approve an order they sent, up to the limit. An app that needs one can veto in `BeforeTransition` when `ctx.Actor` equals the document's owner.
 
-```rust
-/// The largest total a Sales User may approve.
-pub const APPROVAL_LIMIT: Decimal = Decimal::from_parts(1_000_000, 0, 0, false, 2); // 10 000.00
+```go
+// ApprovalLimit is the largest total a Sales User may approve: 10 000.00.
+var ApprovalLimit = forgebase.NewDecimal(1_000_000, 2)
 
-fn before_transition(&self, ctx: &HookContext<'_>, doc: &mut Document) -> Result<(), HookError> {
-    let is_approve = ctx.transition.is_some_and(|t| t.action == "Approve");
-    if let (true, Some(Value::Decimal(total))) = (is_approve, doc.values.get("total"))
-        && *total > APPROVAL_LIMIT
-    {
-        return Err(HookError::new(format!(
-            "orders above {APPROVAL_LIMIT} need a Sales Manager: use 'Approve as Manager'"
-        )));
-    }
-    Ok(())
+func (OrderRules) BeforeTransition(ctx forgebase.HookContext, doc *forgebase.Document) error {
+	if ctx.Transition == nil || ctx.Transition.Action != "Approve" {
+		return nil // only "Approve" is limited
+	}
+	total := doc.Values["total"]
+	if total.Kind == forgebase.KindDecimal && total.Dec.Cmp(ApprovalLimit) > 0 {
+		return forgebase.NewHookError(fmt.Sprintf(
+			"orders above %s need a Sales Manager: use 'Approve as Manager'", ApprovalLimit))
+	}
+	return nil
 }
 ```
 
-`total` is the value `validate` computed when the order entered Pending Approval (that draft-to-draft transition runs `validate`), and `edit_roles` on Pending Approval keeps a Sales User from changing it before approving. A veto answers 422 `hook_rejected` with the message, and **rolls everything back**: the state, the version, the log row and any job are unchanged. A hook is tested without a database: build the context with `HookContext::new(..).with_transition(&TransitionInfo::new("Approve", "Pending Approval", "Approved"))`, as `tests/sales.rs` does.
+`total` is the value `Validate` computed when the order entered Pending Approval (that draft-to-draft transition runs `validate`), and `edit_roles` on Pending Approval keeps a Sales User from changing it before approving. A veto answers 422 `hook_rejected` with the message, and **rolls everything back**: the state, the version, the log row and any job are unchanged. A hook is tested without a database: build the context with `forgebase.NewHookContext("sales_order", "ann", forgebase.OpTransition).WithTransition(forgebase.NewTransitionInfo("Approve", "Pending Approval", "Approved"))`, as `sales_test.go` does.
 
 ### Using it
 
@@ -123,7 +123,7 @@ curl -s -H "Authorization: token $TOKEN" http://localhost:8000/api/v1/resource/s
 
 Errors, all 409 unless noted: `workflow_required` (plain submit or cancel), `unknown_transition` (a wrong state, an unknown action, or a document without a state), `no_workflow` (a transition on a DocType without one), `conflict` (a stale version; of two concurrent transitions one wins); 403 `permission_denied` (a missing role or right, or an update refused by `edit_roles`); 422 `hook_rejected` (a veto). `GET /api/v1/meta/sales_order` has the states and transitions, **without the roles**.
 
-From the command line: `cargo run -p sales -- doc transition sales_order SO-2026-00001 "Approve" --version 2 [--actor NAME]`. Like every `doc` command it runs as the system context, so **the roles of the transition are not checked** (the actor is recorded in the log).
+From the command line: `go run ./cmd/sales doc transition sales_order SO-2026-00001 "Approve" --version 2 [--actor NAME]`. Like every `doc` command it runs as the system context, so **the roles of the transition are not checked** (the actor is recorded in the log).
 
 **In the desk** the form shows the state as the badge (in the tone of its `style`, also in the list's Status column); Submit and Cancel are replaced by the actions the user may take (the first is the primary button, the second a secondary one, the rest are in the More menu). Every action asks for a confirmation, an action is disabled while the form has unsaved changes ("Save first"), and the history is the Activity timeline in the side panel. A veto or a conflict is shown in the form.
 
@@ -133,7 +133,7 @@ From the command line: `cargo run -p sales -- doc transition sales_order SO-2026
 
 ### What a job cannot do
 
-The jobs `Documents` API (`ctx.documents()`) has **no `transition`**, and its `submit` and `cancel` are refused on a workflow DocType ([ADR 0015](../adr/0015-workflow-states-and-transitions.md)). A background job cannot approve or cancel an order; the `sales` jobs only read orders and write logs.
+The jobs `Documents` API (`job.Documents()`) has `Transition`, which runs as the system context like the rest of it (the roles of the transition are not checked, the `BeforeTransition` hooks and the validation run), and its `Submit` and `Cancel` are refused on a workflow DocType ([ADR 0015](../adr/0015-workflow-states-and-transitions.md)). A job that has to approve or cancel an order therefore takes the transition; the `sales` jobs only read orders and write logs.
 
 ## 2. Saved views and the summary
 
@@ -174,22 +174,24 @@ A list shows one DocType. A **report** is a SQL statement the app ships, for num
 
 ### Declare it
 
-`examples/sales/src/lib.rs`:
+`examples/sales/sales.go`:
 
-```rust
-.report(
-    "sales_by_customer",
-    Report::sql(include_str!("../reports/sales_by_customer.sql"))
-        .label("Sales by customer")
-        .roles(&["Sales Manager"])
-        .param(Param::date("from").required())
-        .param(Param::date("to").required())
-        .param(Param::link("customer", "customer"))
-        .column(Column::link("customer", "customer"))
-        .column(Column::int("orders"))
-        .column(Column::decimal("total"))
-        .column(Column::date("last_order")),
-)
+```go
+//go:embed reports/sales_by_customer.sql
+var salesByCustomerSQL string
+
+// in App(), next to the hooks and the jobs:
+Report("sales_by_customer",
+	forgebase.NewReport(salesByCustomerSQL).
+		Label("Sales by customer").
+		Roles("Sales Manager").
+		Param(forgebase.DateParam("from").Required()).
+		Param(forgebase.DateParam("to").Required()).
+		Param(forgebase.LinkParam("customer", "customer")).
+		Column(forgebase.LinkColumn("customer", "customer")).
+		Column(forgebase.IntColumn("orders")).
+		Column(forgebase.DecimalColumn("total")).
+		Column(forgebase.DateColumn("last_order")))
 ```
 
 `examples/sales/reports/sales_by_customer.sql`:
@@ -208,7 +210,7 @@ GROUP BY c.name
 ORDER BY sum(o.total) DESC, c.name COLLATE "C"
 ```
 
-- **The SQL is compiled into the binary** (`include_str!`), so it is trusted code like an app migration: written by a developer and reviewed in a pull request. Nothing is stored in the database or editable at run time.
+- **The SQL is compiled into the binary** (`//go:embed`), so it is trusted code like an app migration: written by a developer and reviewed in a pull request. Nothing is stored in the database or editable at run time.
 - **Positional parameters.** `$1..$n` are the parameters in the order you declare them (types: `data`, `int`, `decimal`, `date`, `check`, `link`, `select`). They are checked like fields and **always bound**, never put into the text, so a value cannot inject SQL. An optional parameter that is absent is bound as `NULL`: write `($3::text IS NULL OR c.name = $3::text)`. Cast a placeholder (`$1::date`) when PostgreSQL cannot infer its type.
 - **Positional columns.** The statement returns the declared columns in order, with SQL types that fit (`int2`/`int4`/`int8` for int, `numeric` for decimal, `text` or `varchar` for data and link, `date`, `timestamptz`, `bool`). A Link field is stored as the **id** of the target row, so join the target table and return its `name` (the document name is what a Link column carries). Table names are `doc_<doctype>`.
 - Use `COLLATE "C"` in an `ORDER BY` of names so the order does not depend on the database's locale.
@@ -217,12 +219,14 @@ ORDER BY sum(o.total) DESC, c.name COLLATE "C"
 
 - **Roles are required** (a report without a role is a startup error: there is no "any user" report). The Administrator and the system context always pass. Anyone else gets **404**, as for a report that does not exist, and does not see it in the list. In the example a Sales User cannot run it.
 - **Row-level rules do not apply inside a report.** The SQL shows what it selects to every role that may run it, whatever the `[[permissions]]` or `if_owner` of the DocTypes say, and the caller is not available to the SQL. **Filter in the SQL yourself, and gate the report with roles**: give it only to roles that may see all the rows it selects.
-- **Read-only, with limits.** It runs in a `READ ONLY` transaction: a statement that writes fails and changes nothing. It has a statement timeout (30 seconds by default, at most 300; `.timeout(..)`) and returns at most 10 000 rows (at most 100 000; `.max_rows(..)`); more rows only set `truncated`. A timeout is 504 `report_timeout`. The SQL text is never in a response.
+- **Read-only, with limits.** It runs in a `READ ONLY` transaction: a statement that writes fails and changes nothing. It has a statement timeout (30 seconds by default, at most 300; `.Timeout(..)`) and returns at most 10 000 rows (at most 100 000; `.MaxRows(..)`); more rows only set `truncated`. A timeout is 504 `report_timeout`. The SQL text is never in a response.
 - **The static check.** After the migrations, `forgebase migrate` **prepares** every report of the site's apps (nothing runs) and exits 1 when the parameter or column counts or types do not fit what the report declares. The migrations stay applied; fix the report and run `migrate` again, and treat exit 1 as a failed release. In your tests call it directly:
 
-```rust
-db.migrate(&binary, false).await.expect("migrate"); // runs the check too
-assert_eq!(forgebase::testing::check_reports(&binary, &db).await, Vec::<String>::new());
+```go
+db.Migrate(binary, false) // runs the check too: it fails with the problems
+if problems := fbtest.CheckReports(binary, db); len(problems) > 0 {
+	t.Fatal(problems)
+}
 ```
 
 ### Run it
@@ -237,8 +241,8 @@ curl -s -X POST -H "Authorization: token $MANAGER_TOKEN" -H 'Content-Type: appli
 # {"data": {"columns": [...], "rows": [["bob@example.com", 1, "40.00", "2026-10-03"], ...], "truncated": false}}
 ```
 
-**Export.** In the desk the result has an **Export** menu (CSV or JSON): it runs the report again with the same parameters and saves the file. Over HTTP, `POST /api/v1/report/<app>.<name>/export?format=csv|json` takes the same body as a run and answers the file (CSV has the column names as its header; JSON is `{"columns", "rows", "truncated"}`); it is for the same roles, with the report's own row limit and time limit, and `X-Forgebase-Truncated: true` marks a result that was cut at the limit ([ADR 0021](../adr/0021-import-and-export.md)). Text that a spreadsheet could take for a formula gets a leading `'` in CSV; numbers and dates never change. There are no charts yet.
+**Export** (comes with import and export in P7; not in the Go port yet). In the desk the result has an **Export** menu (CSV or JSON): it runs the report again with the same parameters and saves the file. Over HTTP, `POST /api/v1/report/<app>.<name>/export?format=csv|json` takes the same body as a run and answers the file (CSV has the column names as its header; JSON is `{"columns", "rows", "truncated"}`); it is for the same roles, with the report's own row limit and time limit, and `X-Forgebase-Truncated: true` marks a result that was cut at the limit ([ADR 0021](../adr/0021-import-and-export.md)). Text that a spreadsheet could take for a formula gets a leading `'` in CSV; numbers and dates never change. There are no charts yet.
 
 ## 4. Test it
 
-`tests/sales.rs` in the example shows each of the following against a real PostgreSQL, with the public API only (`forgebase::testing`): the whole workflow (`an_order_goes_from_draft_to_cancelled_through_the_workflow`), the veto and the manager's action (`a_sales_user_approves_up_to_the_limit_and_a_manager_above_it`), reject and edit again, refused plain submit and cancel, the report (`sales_by_customer_counts_the_approved_orders_of_the_period`, `a_sales_user_cannot_run_or_see_the_report`, `the_report_sql_fits_its_declaration`) and the hook alone, without a database (`approve_is_limited_to_the_approval_limit_and_the_limit_itself_passes`). `examples/sales_extension/tests/extension.rs` shows that an app that extends `sales` submits an order through the same transitions. The framework's own tests cover the rules for every DocType: the workflow matrix, saved views, the summary and the report limits.
+`sales_test.go` in the example shows each of the following against a real PostgreSQL, with the public API only (`forgebase/testing`): the whole workflow (`TestAnOrderGoesFromDraftToCancelledThroughTheWorkflow`), the veto and the manager's action (`TestASalesUserApprovesUpToTheLimitAndAManagerAboveIt`), reject and edit again, refused plain submit and cancel, the report (`TestSalesByCustomerCountsTheApprovedOrdersOfThePeriod`, `TestASalesUserCannotRunOrSeeTheReport`, `TestTheReportSQLFitsItsDeclaration`) and the hook alone, without a database (`TestApproveIsLimitedToTheApprovalLimitAndTheLimitItselfPasses`). `examples/sales_extension/sales_extension_test.go` shows that an app that extends `sales` submits an order through the same transitions. The framework's own tests cover the rules for every DocType: the workflow matrix, saved views, the summary and the report limits.

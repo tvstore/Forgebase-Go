@@ -323,8 +323,7 @@ jobs:
   # can be run locally. It needs the client tools (pg_dump, pg_restore, version 16, the server's) like the `check`
   # job, and curl and jq (on the runner image). The URLs are built from the service container's throwaway
   # credentials; the script never prints them. The databases are created by the script (`site create`). The
-  # parts of the Rust script that need the workflow (P6), webhooks, custom fields and user permissions (P7) are
-  # added by those phases.
+  # parts of the Rust script that need webhooks, custom fields and user permissions (P7) are added by that phase.
   sites:
     needs: changes
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
@@ -419,10 +418,12 @@ jobs:
       - run: npm audit --audit-level=high
 
   # The desk end-to-end tests (Playwright in Chromium) against a real `forgebase serve` with the built desk:
-  # login, list, create, edit and submit a sales order, and a user without the submit right, and the
-  # smaller tests of the command bar, the recent documents, the filter chip with the Link title and
-  # prefers-reduced-motion. Seeding: .github/ci/e2e-seed.sh (a temporary, phase-scoped copy of
-  # desk/e2e/seed.sh, see its header). Only the tests whose routes exist run: E2E_GREP below names them, and
+  # login, list, create, edit and submit a sales order, and a user without the submit right, the smaller
+  # tests of the command bar, the recent documents, the filter chip with the Link title and
+  # prefers-reduced-motion, and (P6) the workflow, the saved views, the summary and the report. The binary is
+  # examples/e2e_app (the stock command plus the app that defines the report, the Go equivalent of the Rust
+  # example e2e_app). Seeding: .github/ci/e2e-seed.sh (a temporary, phase-scoped copy of desk/e2e/seed.sh, see
+  # its header). Only the tests whose routes exist run: E2E_GREP below names them, and
   # the phase that ports the routes of a group of tests adds that group (CHANGELOG, "P3.2"). No artifact
   # upload (no pinned action for it is in use); on failure the server log is printed. The database URL is
   # built from the service container's credentials and never printed.
@@ -451,15 +452,16 @@ jobs:
       # The service's own database, empty and used by this job only.
       FORGEBASE_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/forgebase_e2e
       E2E_BASE_URL: http://127.0.0.1:8000
-      # The tests that run in P3 (a regular expression on the test titles, over desk/e2e/smoke.spec.ts and
-      # desk/e2e/restrict.spec.ts): login, list, create, edit and submit; the command bar; the recent
-      # documents; the filter chip with the Link title; prefers-reduced-motion; the Columns menu; the
-      # keyboard focus (UX.5); and the two tests of the level 1 field (credit_limit) that need only the field
-      # levels. The others need routes of later phases: the workflow, the saved views and the summary, and
-      # the reports (P6); export and import (P7, desk/e2e/transfer.spec.ts); the user permissions and the
-      # custom field (P7, the rest of desk/e2e/restrict.spec.ts). The phase that ports those routes adds the
-      # titles (CHANGELOG, "P3.2"); in P7 the pattern and the seed go.
-      E2E_GREP: "login, list, create, edit and submit|command bar opens|recent documents of one user|clerk without create rights|filter shows as a chip|prefers-reduced-motion|Columns menu hides a column|focus indicator check reads|keyboard focus is visible|Sales Manager sees credit_limit|reads level 1 but not writes it"
+      # The tests that run (a regular expression on the test titles, over desk/e2e/smoke.spec.ts and
+      # desk/e2e/restrict.spec.ts). P3: login, list, create, edit and submit; the command bar; the recent
+      # documents; the filter chip with the Link title; prefers-reduced-motion; the Columns menu; the keyboard
+      # focus (UX.5); and the two tests of the level 1 field (credit_limit) that need only the field levels.
+      # P6: the workflow (a clerk sends a purchase request, the stale version), the saved views (private,
+      # shared, a stale one), the summary and the report. The others need routes of P7: export and import
+      # (desk/e2e/transfer.spec.ts); the user permissions and the custom field (the rest of
+      # desk/e2e/restrict.spec.ts). The phase that ports those routes adds the titles (CHANGELOG, "P3.2"); in
+      # P7 the pattern and the seed go.
+      E2E_GREP: "login, list, create, edit and submit|command bar opens|recent documents of one user|clerk without create rights|filter shows as a chip|prefers-reduced-motion|Columns menu hides a column|focus indicator check reads|keyboard focus is visible|Sales Manager sees credit_limit|reads level 1 but not writes it|clerk sends a purchase request|workflow action on a stale version|private view survives|administrator shares a view|view that names a field|Summary panel counts|manager runs a report, sorts it"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -473,8 +475,9 @@ jobs:
             ~/.cache/go-build
           key: ${{ runner.os }}-e2e-${{ hashFiles('go.mod', 'go.sum') }}
           restore-keys: ${{ runner.os }}-e2e-
-      # The stock binary (no apps): the same one a user builds.
-      - run: go build -o bin/forgebase ./cmd/forgebase
+      # The stock command plus the app that defines the report (examples/e2e_app, P6): a report can only come
+      # from an app compiled into the binary.
+      - run: go build -o bin/e2e_app ./examples/e2e_app
       # The npm download cache (not node_modules), keyed on the lockfile.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -500,7 +503,7 @@ jobs:
           FORGEBASE_DESK_DIR=desk/dist \
           FORGEBASE_DEV_INSECURE_COOKIES=1 \
           FORGEBASE_ALLOWED_HOSTS=localhost,127.0.0.1 \
-          bin/forgebase serve --doctypes bin/e2e/doctypes > server.log 2>&1 &
+          bin/e2e_app serve --doctypes bin/e2e/doctypes > server.log 2>&1 &
           for _ in $(seq 1 30); do
             if curl -fsS -o /dev/null http://127.0.0.1:8000/desk/; then exit 0; fi
             sleep 1

@@ -117,6 +117,31 @@ const (
 	// ErrBackup: PgEnvironment or InspectDatabase cannot use the URL or the server's answer
 	// (Message). Never contains the URL or a value of it.
 	ErrBackup
+	// ErrNoWorkflow: a transition, its list or its history on a DocType without a workflow (DocType).
+	ErrNoWorkflow
+	// ErrUnknownTransition: the document's state has no transition with this action (DocType, Name,
+	// State, Action).
+	ErrUnknownTransition
+	// ErrTransitionDenied: the caller may not take the transition (DocType, Action, Right).
+	ErrTransitionDenied
+	// ErrInvalidView: a saved view cannot be written (Message).
+	ErrInvalidView
+	// ErrViewExists: a view with this label exists for the DocType (DocType, Label).
+	ErrViewExists
+	// ErrViewDenied: the caller may not do this with a view they can see (Message).
+	ErrViewDenied
+	// ErrReportNotFound: the report does not exist or the caller may not run it (Report).
+	ErrReportNotFound
+	// ErrReportTimeout: a report ran over its timeout or waited too long for a lock (Report).
+	ErrReportTimeout
+	// ErrReportReadOnly: a report's SQL tried to write (Report).
+	ErrReportReadOnly
+	// ErrReport: the statement of a report does not have the declared parameters or columns
+	// (Message; never the SQL).
+	ErrReport
+	// ErrReportCheck: migrate found reports whose SQL does not fit what they declare (Problems as
+	// text in Details).
+	ErrReportCheck
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -162,6 +187,14 @@ type Error struct {
 	AmendedBy string
 	// State is the workflow state of ErrEditDenied.
 	State string
+	// Action is the transition of ErrUnknownTransition and ErrTransitionDenied.
+	Action string
+	// Label is the label of ErrViewExists.
+	Label string
+	// Report is the full name of the report of the report errors.
+	Report string
+	// Details are the problems of ErrReportCheck, one message each.
+	Details []string
 	// Hook is the failed hook of ErrHook: before_insert, validate, before_delete, before_submit,
 	// before_cancel or before_transition.
 	Hook string
@@ -256,6 +289,28 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("DocType `%s` has a workflow; use a transition (cannot %s)", e.DocType, e.Operation)
 	case ErrEditDenied:
 		return fmt.Sprintf("permission denied: a `%s` document in state `%s` can be edited only by the roles of that state", e.DocType, e.State)
+	case ErrNoWorkflow:
+		return fmt.Sprintf("DocType `%s` has no workflow", e.DocType)
+	case ErrUnknownTransition:
+		return fmt.Sprintf("%s `%s` is in state `%s`: no transition `%s` from it", e.DocType, e.Name, e.State, e.Action)
+	case ErrTransitionDenied:
+		return fmt.Sprintf("permission denied: transition `%s` of DocType `%s` needs one of its roles and the `%s` right", e.Action, e.DocType, e.Right)
+	case ErrInvalidView:
+		return "invalid saved view: " + e.Message
+	case ErrViewExists:
+		return fmt.Sprintf("a view named %s already exists for DocType `%s`", core.DebugQuote(e.Label), e.DocType)
+	case ErrViewDenied:
+		return "permission denied: " + e.Message
+	case ErrReportNotFound:
+		return fmt.Sprintf("report `%s` not found", e.Report)
+	case ErrReportTimeout:
+		return fmt.Sprintf("report `%s` took too long and was stopped", e.Report)
+	case ErrReportReadOnly:
+		return fmt.Sprintf("report `%s` tried to write, which a report may not do", e.Report)
+	case ErrReport:
+		return e.Message
+	case ErrReportCheck:
+		return fmt.Sprintf("report check failed (%d problem(s))", len(e.Details))
 	case ErrJob:
 		return "job: " + e.Message
 	case ErrHook:

@@ -13,9 +13,9 @@ import (
 // migrations of the apps, under one session-level lock (the Rust functions migrate, migrate_apps and
 // migrate_all of forgebase-db).
 //
-// The workflow backfill and the fixtures arrive with workflows (P6) and fixtures (P7): the report already
-// has their places (and the app's text report prints them), so adding them does not change these
-// signatures. The schedules (P5) are synced by MigrateAll.
+// The workflow backfill (P6) runs after the sync; the fixtures arrive with P7: the report already has
+// their place (and the app's text report prints it), so adding them does not change these signatures.
+// The schedules (P5) are synced by MigrateAll.
 
 // AppliedAppMigration is one app data migration that was applied (or, in a dry run, is pending).
 type AppliedAppMigration struct {
@@ -44,7 +44,7 @@ type MigrateReport struct {
 	// line each; with a dry run, the planned ones. Empty when the schedules were not given (MigrateApps)
 	// or, in a dry run, while framework migrations are pending.
 	Schedules []string
-	// WorkflowWarnings are documents in a workflow state the workflow no longer defines (P6).
+	// WorkflowWarnings are documents in a workflow state the workflow no longer defines (see backfillWorkflowStates).
 	WorkflowWarnings []string
 	// Fixtures are the fixtures of the apps that have some (P4).
 	Fixtures []AppFixtures
@@ -191,7 +191,16 @@ func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry,
 			return nil, err
 		}
 	}
-	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, Schedules: lines, FixturesPlanned: true}, nil
+	// After the sync, so the workflow_state columns exist; a dry run keeps nothing, so there is nothing
+	// to backfill.
+	var warnings []string
+	if !options.DryRun {
+		if warnings, err = backfillWorkflowStates(ctx, conn, registry); err != nil {
+			return nil, err
+		}
+	}
+	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, Schedules: lines,
+		WorkflowWarnings: warnings, FixturesPlanned: true}, nil
 }
 
 func applied(app string, m AppMigration) AppliedAppMigration {

@@ -13,7 +13,7 @@ It shows:
 - **Background jobs and a schedule** (`sales.go`; [guide](../../docs/guide/first-app.md#7-background-jobs-and-schedules)): `sales.log_order_event` (registered with `Job`, enqueued by the two hooks above) writes one `sales_order_log` row per submit or cancel and is safe to run twice; `sales.daily_summary` (`Schedule("daily_summary", forgebase.DailyAt(2, 0))`) writes the `sales_daily_summary` of the day before the tick. `forgebase worker` runs them; `migrate` stores the schedule.
 - **Tests** (`sales_test.go`): the hooks without a database (and the jobs they enqueue, with `forgebase.EnqueuedJobs`), and the HTTP API and the jobs (`fbtest.RunJobs`, `fbtest.RunSchedulesAt`) against a real PostgreSQL: the data migration, the computed amounts and total, permissions, the level 1 field and the two jobs.
 
-**Not in the Go port yet** (the Rust example has them; each arrives with the phase that ports the feature, and then the tests of the Rust example listed at the top of `sales_test.go` come with it): the workflow transitions over HTTP and the command line, and the query report "Sales by customer" (P6); the app method `order_summary` and the fixture of customer groups (P7). The two hooks that enqueue `sales.log_order_event` run inside the workflow transitions, which are P6, so until then the tests queue that job with SQL and make an order submitted with SQL.
+**Not in the Go port yet** (the Rust example has them; each arrives with the phase that ports the feature, and then the tests of the Rust example listed at the top of `sales_test.go` come with it): the app method `order_summary` and the fixture of customer groups (P7). The workflow transitions and the query report "Sales by customer" (`reports/sales_by_customer.sql`) came with P6.
 
 ## Run it
 

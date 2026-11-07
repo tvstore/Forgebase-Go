@@ -172,6 +172,14 @@ func (s *State) buildRoutes() []*route {
 		h(map[string]handlerFunc{"POST": handleSubmit}, "POST", "/api/v1/resource/{doctype}/{name}/submit"),
 		h(map[string]handlerFunc{"POST": handleCancel}, "POST", "/api/v1/resource/{doctype}/{name}/cancel"),
 		h(map[string]handlerFunc{"POST": handleAmend}, "POST", "/api/v1/resource/{doctype}/{name}/amend"),
+		h(map[string]handlerFunc{"POST": handleTransition}, "POST", "/api/v1/resource/{doctype}/{name}/transition"),
+		h(map[string]handlerFunc{"GET": handleTransitions}, "GET,HEAD", "/api/v1/resource/{doctype}/{name}/transitions"),
+		h(map[string]handlerFunc{"GET": handleHistory}, "GET,HEAD", "/api/v1/resource/{doctype}/{name}/history"),
+		h(map[string]handlerFunc{"GET": handleViewList, "POST": handleViewCreate}, "GET,HEAD,POST", "/api/v1/views/{doctype}"),
+		h(map[string]handlerFunc{"PATCH": handleViewUpdate, "DELETE": handleViewDelete}, "PATCH,DELETE", "/api/v1/views/{doctype}/{id}"),
+		h(map[string]handlerFunc{"GET": handleSummary}, "GET,HEAD", "/api/v1/summary/{doctype}"),
+		h(map[string]handlerFunc{"GET": handleReportList}, "GET,HEAD", "/api/v1/report"),
+		h(map[string]handlerFunc{"POST": handleReportRun}, "POST", "/api/v1/report/{name}"),
 	}
 	// The desk routes exist only when a directory is configured.
 	if s.config.DeskDir != "" {

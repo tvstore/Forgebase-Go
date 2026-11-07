@@ -23,9 +23,9 @@ import (
 // found is collected and reported together. The reference and hook checks only run when every DocType file
 // loaded, because a file that did not load would make them report follow-up errors.
 //
-// Jobs and schedules (P5) are checked after the DocTypes, hooks and references (they do not depend on the DocType
-// files, so their problems are reported with the others). Overlays (P7), reports (P6), methods (P7) and
-// fixtures (P7) are added to this order by the phases that bring them.
+// Reports (P6) are checked and registered after the hooks. Jobs and schedules (P5) are checked after that
+// (they do not depend on the DocType files, so their problems are reported with the others). Overlays (P7),
+// methods (P7) and fixtures (P7) are added to this order by the phases that bring them.
 
 // localApp is the name of the app that the --doctypes directory forms.
 const localApp = "local"
@@ -116,8 +116,8 @@ func (c *Composed) hasApp(name string) bool {
 }
 
 // Migrate runs the framework migrations, the schema sync, the app migrations in app order and the sync of the
-// declared schedules (db.MigrateAll). The workflow backfill, the fixtures and the report check are added here
-// in P6 and P7.
+// declared schedules and the workflow backfill (db.MigrateAll). The check of the reports (CheckReports) is
+// the caller's, after the report; the fixtures are added here in P7.
 func (c *Composed) Migrate(ctx context.Context, pool *pgxpool.Pool, options db.SyncOptions) (*db.MigrateReport, error) {
 	specs := make([]db.AppSpec, len(c.apps))
 	for i, a := range c.apps {
@@ -134,6 +134,25 @@ func (c *Composed) Migrate(ctx context.Context, pool *pgxpool.Pool, options db.S
 	}
 	sort.Slice(declared, func(i, j int) bool { return declared[i].Name < declared[j].Name })
 	return db.MigrateAll(ctx, pool, c.registry, specs, declared, options)
+}
+
+// reportCount is how many reports the composed apps define.
+func (c *Composed) reportCount() int { return len(c.registry.Reports()) }
+
+// CheckReports prepares the SQL of every report against the database and returns one message per report
+// that does not fit what it declares (db.CheckReports). Run after the migrations, which create the tables
+// the reports read.
+func (c *Composed) CheckReports(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	reports := c.registry.Reports()
+	if len(reports) == 0 {
+		return nil, nil
+	}
+	conn, err := db.GetReportConnection(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+	return db.CheckReports(ctx, conn.Conn(), reports)
 }
 
 // ComposeBinary composes the apps of b, for forgebase/testing.
@@ -198,6 +217,7 @@ func compose(apps []*App, local string) (*Composed, *StartupError) {
 	if len(errs.files) == 0 {
 		checkReferences(registry, definedIn, reach, localReach, errs)
 		checkHooks(apps, reach, registry, errs)
+		checkReports(apps, reach, registry, errs)
 	}
 	jobs := checkJobs(apps, registry, errs)
 	schedules := checkSchedules(apps, errs)
@@ -438,6 +458,52 @@ func checkJobs(apps []*App, registry *core.Registry, errs *StartupError) map[str
 		}
 	}
 	return jobs
+}
+
+// checkReports checks the reports and registers the valid ones, in the registry by full name. A Link param
+// or column may name a DocType of the app itself or of an app it depends on (the rule of the Link fields),
+// so the report works on every site that installs the app.
+func checkReports(apps []*App, reach map[string]map[string]bool, registry *core.Registry, errs *StartupError) {
+	for _, a := range apps {
+		if a == nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, r := range a.reports {
+			name := r.name
+			if seen[name] {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: report `%s` is registered more than once", a.name, name))
+				continue
+			}
+			seen[name] = true
+			def := r.report.definition(a.name, name)
+			problems := def.Problems()
+			uses := reach[a.name]
+			for _, target := range def.LinkTargets() {
+				dt := registry.Get(target.DocType)
+				switch {
+				case dt == nil:
+					problems = append(problems, fmt.Sprintf("%s links to unknown DocType `%s`", target.Place, target.DocType))
+				case dt.IsChild:
+					problems = append(problems, fmt.Sprintf("%s links to `%s`, a child DocType (its rows belong to a parent document)",
+						target.Place, target.DocType))
+				default:
+					owner, _ := registry.Owner(target.DocType)
+					if owner != a.name && !uses[owner] {
+						problems = append(problems, fmt.Sprintf("%s links to `%s`, which belongs to app `%s`; app `%s` does not depend on `%s`",
+							target.Place, target.DocType, owner, a.name, owner))
+					}
+				}
+			}
+			for _, problem := range problems {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: report `%s`: %s", a.name, name, problem))
+			}
+			// The same full name from two apps with the same name is reported as a duplicate app.
+			if len(problems) == 0 {
+				registry.AddReport(&def)
+			}
+		}
+	}
 }
 
 // checkSchedules checks the schedules of the apps and adds the built-in ones. A schedule must name a job the

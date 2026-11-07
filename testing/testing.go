@@ -130,8 +130,9 @@ func (d *DB) drop() {
 // URL is the URL of this database, for code that connects on its own.
 func (d *DB) URL() string { return d.url }
 
-// Migrate runs what `forgebase migrate` runs for b: the framework migrations, the DocType schema sync
-// and the app migrations in app order. With dryRun nothing is kept. The error is the message
+// Migrate runs what `forgebase migrate` runs for b: the framework migrations, the DocType schema sync,
+// the app migrations in app order and then the check of the reports' SQL. With dryRun nothing is kept
+// (and the reports are not checked). The error is the message
 // `forgebase migrate` would print: a *forgebase.StartupError when the apps do not fit together (nothing
 // was run), else a refused schema sync, a changed or unknown applied migration, a failing migration, a
 // lock timeout or a database error.
@@ -145,11 +146,48 @@ func (d *DB) Migrate(b *forgebase.Binary, dryRun bool) (*Migrated, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Like `forgebase migrate`: after the migrations, and not in a dry run.
+	if !dryRun {
+		problems, err := composed.CheckReports(context.Background(), d.pool)
+		if err != nil {
+			return nil, err
+		}
+		if len(problems) > 0 {
+			lines := make([]string, len(problems))
+			for i, p := range problems {
+				lines[i] = "  - " + p
+			}
+			return nil, fmt.Errorf("the migrations were applied, but %d report(s) do not fit their SQL:\n%s", len(problems), strings.Join(lines, "\n"))
+		}
+	}
 	done := &Migrated{}
 	for _, m := range report.AppMigrations {
 		done.AppMigrations = append(done.AppMigrations, AppliedMigration{App: m.App, Version: m.Version, Name: m.Name})
 	}
 	return done, nil
+}
+
+// CheckReports prepares the SQL of every report of b against d and returns one message per problem: the
+// check `forgebase migrate` runs after the migrations (and [DB.Migrate] too, which fails with the same
+// messages). It reads the tables the migrations create, so migrate first. An empty list means every report
+// fits what it declares: its parameter and column counts, and the SQL types of its parameters and columns
+// (ADR 0016).
+//
+//	db.Migrate(binary, false)
+//	if problems := fbtest.CheckReports(binary, db); len(problems) > 0 { t.Fatal(problems) }
+//
+// It fails the test when the apps do not fit together or on a database error.
+func CheckReports(b *forgebase.Binary, d *DB) []string {
+	d.t.Helper()
+	composed, err := app.ComposeBinary(b)
+	if err != nil {
+		d.t.Fatalf("the apps do not fit together: %v", err)
+	}
+	problems, err := composed.CheckReports(context.Background(), d.pool)
+	if err != nil {
+		d.t.Fatalf("CheckReports: %v", err)
+	}
+	return problems
 }
 
 // JobRun is what [RunJobs] did. Only read it.

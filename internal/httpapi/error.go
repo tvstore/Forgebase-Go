@@ -286,10 +286,25 @@ func fromDB(e *db.Error) *apiError {
 		return api
 	case db.ErrUnknownDocType, db.ErrChildDocType:
 		return errNotFound("unknown doctype")
-	case db.ErrPermissionDenied, db.ErrEditDenied:
+	case db.ErrPermissionDenied, db.ErrEditDenied, db.ErrTransitionDenied:
 		return newError(http.StatusForbidden, "permission_denied", text)
 	case db.ErrWorkflowRequired:
 		return newError(http.StatusConflict, "workflow_required", text)
+	case db.ErrNoWorkflow:
+		return newError(http.StatusConflict, "no_workflow", text)
+	case db.ErrUnknownTransition:
+		return newError(http.StatusConflict, "unknown_transition", text)
+	case db.ErrInvalidView:
+		return errValidation([]string{e.Message})
+	case db.ErrViewExists:
+		return newError(http.StatusConflict, "conflict", text)
+	case db.ErrViewDenied:
+		return newError(http.StatusForbidden, "permission_denied", text)
+	// The same answer for a report that does not exist and one the caller may not run.
+	case db.ErrReportNotFound:
+		return errNotFound("report not found")
+	case db.ErrReportTimeout:
+		return newError(http.StatusGatewayTimeout, "report_timeout", "the report took too long; narrow the parameters")
 	case db.ErrInvalidQuery:
 		return errInvalidQuery(text)
 	case db.ErrNoChanges:
@@ -312,7 +327,8 @@ func fromDB(e *db.Error) *apiError {
 	case db.ErrHook:
 		return newError(http.StatusUnprocessableEntity, "hook_rejected", text)
 	}
-	// ErrJob (a mistake of the app, not of the caller), ErrPostgres, ErrPool, ErrDecode and everything
+	// ErrReportReadOnly and ErrReport are mistakes of the app: the message names the report and never the
+	// SQL; it is logged, not sent. ErrJob (a mistake of the app, not of the caller), ErrPostgres, ErrPool, ErrDecode and everything
 	// else: the caller cannot help.
 	return errInternal(e)
 }

@@ -15,7 +15,7 @@ import (
 // that every document operation enqueues in its own transaction. Ported from
 // crates/forgebase-db/tests/webhooks.rs, the tests that are about the outbox. The management of the
 // webhooks (add, list, enable, remove, rotate) is P7: a webhook is added here with a plain INSERT into
-// fb_webhook (what webhooks::add does, without its checks). The test of the transition's events is P6.
+// fb_webhook (what webhooks::add does, without its checks).
 
 const whNote = `
 name = "note"
@@ -52,6 +52,45 @@ type = "table"
 target = "invoice_line"
 `
 
+const whOrder = `
+name = "order"
+label = "Order"
+submittable = true
+[[fields]]
+name = "title"
+type = "data"
+required = true
+
+[workflow]
+[[workflow.states]]
+name = "Draft"
+docstatus = 0
+[[workflow.states]]
+name = "Review"
+docstatus = 0
+[[workflow.states]]
+name = "Done"
+docstatus = 1
+[[workflow.states]]
+name = "Void"
+docstatus = 2
+[[workflow.transitions]]
+action = "Send"
+from = "Draft"
+to = "Review"
+roles = ["Manager"]
+[[workflow.transitions]]
+action = "Finish"
+from = "Review"
+to = "Done"
+roles = ["Manager"]
+[[workflow.transitions]]
+action = "Revoke"
+from = "Done"
+to = "Void"
+roles = ["Manager"]
+`
+
 func whWorld(t *testing.T, texts ...string) *core.Registry {
 	t.Helper()
 	reg := registry(t, texts...)
@@ -64,7 +103,7 @@ func whWorld(t *testing.T, texts ...string) *core.Registry {
 func whSetup(t *testing.T) (*dbtest.DB, *core.Registry) {
 	t.Helper()
 	d := dbtest.Migrated(t)
-	reg := whWorld(t, whNote, whLine, whInvoice)
+	reg := whWorld(t, whNote, whLine, whInvoice, whOrder)
 	mustSync(t, d, reg)
 	return d, reg
 }
@@ -185,8 +224,6 @@ func TestARolledBackOrFailedOperationEnqueuesNothing(t *testing.T) {
 }
 
 // Rust: webhooks.rs::every_operation_fires_its_events
-//
-// The events of the transition are P6.
 func TestEveryOperationFiresItsEvents(t *testing.T) {
 	d, reg := whSetup(t)
 	hook(t, d, "w", "invoice", "insert", "update", "delete", "submit", "cancel", "transition")
@@ -215,6 +252,41 @@ func TestEveryOperationFiresItsEvents(t *testing.T) {
 		statuses = append(statuses, r[0])
 	}
 	want(t, statuses, []string{"0", "0", "1", "2", "0", "0"}, "statuses")
+}
+
+// Rust: webhooks.rs::a_transition_fires_transition_and_the_docstatus_event
+func TestATransitionFiresTransitionAndTheDocstatusEvent(t *testing.T) {
+	d, reg := whSetup(t)
+	hook(t, d, "t", "order", "transition")
+	hook(t, d, "s", "order", "submit", "cancel")
+	ann := sys("ann")
+	order := mustInsert(t, d, reg, "order", doc("title", text("o")), ann)
+	step := func(stored *db.StoredDocument, action string) *db.StoredDocument {
+		got, err := db.Transition(bg, d.Pool, reg, "order", stored.Name, action, stored.Version, ann)
+		if err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		return got
+	}
+	// Draft -> Review: a transition only. Review -> Done: moves docstatus to 1. Done -> Void: moves it to 2.
+	got := step(step(step(order, "Send"), "Finish"), "Revoke")
+	_ = got
+	n := order.Name
+	// One op after the other; within one op by webhook name (s before t), and for a webhook the events in the
+	// order of the operation.
+	want(t, deliveries(d), []string{
+		fmt.Sprintf("t/transition/order/%s/ann/queued", n),
+		fmt.Sprintf("s/submit/order/%s/ann/queued", n),
+		fmt.Sprintf("t/transition/order/%s/ann/queued", n),
+		fmt.Sprintf("s/cancel/order/%s/ann/queued", n),
+		fmt.Sprintf("t/transition/order/%s/ann/queued", n),
+	}, "deliveries")
+	// The snapshot has the workflow state after the transition.
+	var states []string
+	for _, r := range d.Rows("SELECT payload->>'event' || ':' || (payload->'data'->>'workflow_state') FROM fb_job ORDER BY id") {
+		states = append(states, r[0])
+	}
+	want(t, states, []string{"transition:Review", "submit:Done", "transition:Done", "cancel:Void", "transition:Void"}, "states")
 }
 
 // Rust: webhooks.rs::a_delete_sends_the_document_as_it_was_with_its_rows

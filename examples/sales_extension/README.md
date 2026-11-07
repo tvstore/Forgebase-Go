@@ -12,7 +12,7 @@ It shows:
 - **The composed binary** (`cmd/sales_extension/main.go`): `sales`, then this app.
 - **Tests** (`sales_extension_test.go`): the hooks without a database, and both apps together against a real PostgreSQL: hook order, the cross-app Link, the `"app"` of each DocType in `GET /api/v1/meta`, permissions, and the jobs of both apps (`fbtest.RunJobs`).
 
-**Not in the Go port yet** (each arrives with the phase that ports the feature): the workflow transitions that submit an order (P6); the field `loyalty_tier` that the Rust example adds to `customer` with an overlay file (`overlays/customer.toml` and `ExtendDocType`, P7). The tests of the Rust example that need them are listed at the top of `sales_extension_test.go`.
+**Not in the Go port yet** (each arrives with the phase that ports the feature): the field `loyalty_tier` that the Rust example adds to `customer` with an overlay file (`overlays/customer.toml` and `ExtendDocType`, P7). The tests of the Rust example that need them are listed at the top of `sales_extension_test.go`.
 
 ## Run it
 

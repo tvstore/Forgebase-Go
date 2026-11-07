@@ -2,8 +2,8 @@
 //
 // It shows what an app is made of (DocTypes, hooks, a data migration, background jobs and a schedule) using the
 // public forgebase API only. cmd/sales puts it into a binary; the module examples/sales_extension builds on it.
-// The report, the method and the fixture of the Rust example arrive with the phases that port the framework
-// features they use (README.md has the list).
+// The method and the fixture of the Rust example arrive with the phase that ports the framework features they use
+// (README.md has the list).
 package sales
 
 import (
@@ -20,6 +20,11 @@ import (
 //
 //go:embed doctypes/*.toml
 var doctypes embed.FS
+
+// The SQL of the report sales_by_customer (see App).
+//
+//go:embed reports/sales_by_customer.sql
+var salesByCustomerSQL string
 
 // Data migrations (SQL, append-only): see the comments in the file. The file name is the version and the
 // name: 0001_default_customer_groups.sql is version 1, default_customer_groups.
@@ -46,10 +51,23 @@ func App() *forgebase.App {
 		Job("daily_summary", dailySummary).
 		// Every day at 02:00 UTC. Run `migrate` after changing a schedule: it stores them.
 		Schedule("daily_summary", forgebase.DailyAt(2, 0)).
+		// A query report (ADR 0016): SQL compiled into the binary, run by the roles named here in a read-only
+		// transaction. Parameters and columns are positional, see the SQL file.
+		Report("sales_by_customer",
+			forgebase.NewReport(salesByCustomerSQL).
+				Label("Sales by customer").
+				Roles("Sales Manager").
+				Param(forgebase.DateParam("from").Required()).
+				Param(forgebase.DateParam("to").Required()).
+				Param(forgebase.LinkParam("customer", "customer")).
+				Column(forgebase.LinkColumn("customer", "customer")).
+				Column(forgebase.IntColumn("orders")).
+				Column(forgebase.DecimalColumn("total")).
+				Column(forgebase.DateColumn("last_order"))).
 		// Data migrations (SQL, append-only): see the comments in the file.
 		Migrations(migrations)
-	// Later phases add to this chain, in the order of the Rust example: the report sales_by_customer (P6), the
-	// method order_summary and the fixtures (P7).
+	// A later phase adds to this chain, in the order of the Rust example: the method order_summary and the
+	// fixtures (P7).
 }
 
 // OrderRules are the business rules of a sales order: computed amounts and total, and what a submit needs.
@@ -151,9 +169,9 @@ func (OrderRules) BeforeCancel(ctx forgebase.HookContext, doc *forgebase.Documen
 // version conflict) nothing is committed and no job exists. A hook cannot write the log itself: hooks have no
 // database access, and the log must not exist for an operation that failed.
 //
-// The job itself (sales.log_order_event, which writes a sales_order_log row) is logOrderEvent below. Nothing
-// can reach this call over HTTP or the command line before P6, because a sales order has a workflow and its
-// submit and cancel are transitions.
+// The job itself (sales.log_order_event, which writes a sales_order_log row) is logOrderEvent below. This call
+// runs inside the workflow transitions: a sales order has a workflow, so its submit and cancel are transitions
+// (the "Approve" actions and "Cancel").
 func enqueueLog(ctx forgebase.HookContext, doc *forgebase.Document, event string) error {
 	if doc.Name == "" {
 		return forgebase.NewHookError("the sales order has no name")

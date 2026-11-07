@@ -188,3 +188,17 @@ func lookupDocType(registry *core.Registry, target string) (*core.DocType, error
 	}
 	return d, nil
 }
+
+// readGrant is grantFor for an operation whose right is not known before the document is read (a
+// transition): only the caller's name and the read access are checked, the right is core.RightRead and
+// is not limited to own documents (the Rust read_grant).
+func readGrant(doctype *core.DocType, caller core.Caller) (*grant, error) {
+	if err := checkActor(caller.Name()); err != nil {
+		return nil, err
+	}
+	read, err := readScopeOf(doctype, caller)
+	if err != nil {
+		return nil, err
+	}
+	return &grant{right: core.RightRead, read: read}, nil
+}

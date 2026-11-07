@@ -20,8 +20,14 @@ func TestValidationErrorsAreListedOnePerLine(t *testing.T) {
 	}
 }
 
-// error.rs::report_problems_are_listed_and_say_what_to_do needs db.ErrReportCheck, which arrives with
-// the reports (P6).
+// Rust: error.rs::report_problems_are_listed_and_say_what_to_do
+func TestReportProblemsAreListedAndSayWhatToDo(t *testing.T) {
+	err := &db.Error{Kind: db.ErrReportCheck, Details: []string{"report `a.b`: x", "report `a.c`: y"}}
+	want := "the migrations were applied, but 2 report(s) do not fit their SQL:\n  - report `a.b`: x\n  - report `a.c`: y\nfix the report and run migrate again"
+	if got := describeError(err); got != want {
+		t.Fatalf("%q", got)
+	}
+}
 
 func TestSyncConflictsAndMetadataAreListed(t *testing.T) {
 	err := &db.Error{Kind: db.ErrSyncConflicts, Conflicts: []db.Conflict{{Kind: db.ConflictUnmanagedTable, Table: "doc_x"}}}

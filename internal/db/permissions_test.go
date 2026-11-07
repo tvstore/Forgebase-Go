@@ -15,9 +15,9 @@ import (
 // if_owner, deny by default, the union of roles, hidden documents that look missing (also for stale
 // versions and links), and what errors may say. Ported from crates/forgebase-db/tests/permissions.rs.
 //
-// Deferred, with the phase that has what they need: the export and import rights of the matrix (P7)
-// and the export, transition and available_transitions parts of the_matrix_with_user_permissions (P6
-// and P7). Each place says so. The calls to list are ported (P3).
+// Deferred, with the phase that has what they need: the export and import rights of the matrix and the export
+// part of the_matrix_with_user_permissions (P7). Each place says so. The calls to list are ported (P3), the
+// workflow transition and available_transitions of the matrix (P6).
 
 // permTicket is submittable, one role per right (each also reads), and Own, which has every right
 // on own documents only. A Link to party in the document and in its rows.
@@ -1044,8 +1044,7 @@ func attemptLinked(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Ri
 // NotFound for every operation (before the right, the version or the state), a visible one behaves as
 // without the restriction, and the Administrator and the system ignore the rows.
 //
-// Not ported here: the workflow transition and available_transitions on agent_case (P6) and the
-// export (P7).
+// Not ported here: the export of the cases (P7).
 func TestTheMatrixWithUserPermissions(t *testing.T) {
 	d, reg := permSetup(t)
 	makeParty(t, d, reg, "ok@x.y", sys("sys"))
@@ -1082,6 +1081,56 @@ func TestTheMatrixWithUserPermissions(t *testing.T) {
 					t.Errorf("%s on a ticket linked to %q by %s: %v", right, ticket.customer, who.label, err)
 				}
 			}
+		}
+	}
+
+	// A workflow transition, on cases with an allowed, an empty and a hidden Link: the hidden one is NotFound
+	// for the transition, for the restricted user only.
+	agent := user("rita", "Agent").WithRestrictions(restrictions)
+	agentPlain := user("pat", "Agent")
+	agentAdmin := user("root", core.Administrator).WithRestrictions(restrictions)
+	for _, ticket := range tickets {
+		title := ticket.customer
+		if title == "" {
+			title = "none"
+		}
+		kv := []any{"title", text(title)}
+		if ticket.customer != "" {
+			kv = append(kv, "customer", text(ticket.customer))
+		}
+		made := mustInsert(t, d, reg, "agent_case", doc(kv...), sys("sys"))
+		for _, who := range []struct {
+			caller  core.Caller
+			visible bool
+			label   string
+		}{
+			{agent, ticket.visible, "restricted"},
+			{agentPlain, true, "unrestricted"},
+			{agentAdmin, true, "administrator"},
+			{sys("sys"), true, "system"},
+		} {
+			// A stale version is NotFound for a hidden case, before the version is compared.
+			_, err := db.Transition(bg, d.Pool, reg, "agent_case", made.Name, "Close", made.Version+7, who.caller)
+			var e *db.Error
+			switch {
+			case !who.visible && errorsAs(err, &e) && e.Kind == db.ErrNotFound:
+			case who.visible && errorsAs(err, &e) && e.Kind == db.ErrConflict:
+			default:
+				t.Errorf("stale transition on %q by %s: %v", ticket.customer, who.label, err)
+			}
+			_, err = db.AvailableTransitions(bg, d.Pool, reg, "agent_case", made.Name, who.caller)
+			if (err == nil) != who.visible {
+				t.Errorf("%s: %v", who.label, err)
+			}
+		}
+		// The real transition: refused for the restricted user on a hidden case, taken otherwise.
+		_, err := db.Transition(bg, d.Pool, reg, "agent_case", made.Name, "Close", made.Version, agent)
+		var e *db.Error
+		switch {
+		case err == nil && ticket.visible:
+		case !ticket.visible && errorsAs(err, &e) && e.Kind == db.ErrNotFound:
+		default:
+			t.Errorf("transition on %q: %v", ticket.customer, err)
 		}
 	}
 
