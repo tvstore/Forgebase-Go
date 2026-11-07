@@ -35,7 +35,7 @@ Status: **Accepted by owner** (G2 of the plan approved on 2026-11-06, "setuju G1
 | Module | Version | Licence | Dependencies of its own | Used by | Decision |
 |---|---|---|---|---|---|
 | `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause | `golang.org/x/sys` (below) | `internal/db/auth.go`: `argon2` (`IDKey` and `Key`, with `blake2b` inside it) hashes and verifies passwords. Only these packages are linked into the binary | G2 of the approved plan ("Argon2id, m=19456, t=2, p=1"). The Rust `argon2` crate is the RustCrypto implementation of the same algorithm; the PHC string it writes is the string `internal/db` writes and reads (tested against a string of the reference C implementation). Maintained by the Go team, no cgo. The standard library has no Argon2. `go get` for this module also raised the indirect `golang.org/x/sync` and `golang.org/x/text` to the versions that its own `go.mod` requires |
-| `golang.org/x/sys` | v0.49.0 | BSD-3-Clause | none | `golang.org/x/crypto/blake2b` (CPU feature detection, `cpu`) | transitive |
+| `golang.org/x/sys` | v0.49.0 | BSD-3-Clause | none | `golang.org/x/crypto/argon2` and `golang.org/x/crypto/blake2b` (CPU feature detection, `x/sys/cpu`) | transitive |
 
 `govulncheck` (v1.9.0) lists GO-2026-5932 for `golang.org/x/crypto` v0.58.0: the `openpgp` package is unmaintained and unsafe by design. Nothing in this repository imports it and the tool reports no affected code; the advisory names a later pseudo-version as the fix, which is not a release and is not adopted. Recheck when a release newer than v0.58.0 exists.
 
