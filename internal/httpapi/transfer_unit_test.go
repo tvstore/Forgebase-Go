@@ -574,3 +574,40 @@ func TestAnEmptyJSONNameIsAGivenName(t *testing.T) {
 		t.Errorf("%+v", parsed.Problems)
 	}
 }
+
+// A second byte order mark: Rust strips one in parse_import and csv-core strips another at the start of its
+// first read (reader.rs strip_utf8_bom); the bytes still count in the offsets of the crate's messages.
+func TestASecondByteOrderMarkIsStrippedByTheReader(t *testing.T) {
+	parsed, err := trCSV(t, "\xEF\xBB\xBF\xEF\xBB\xBFtitle\r\nx")
+	if err != nil || len(parsed.Rows) != 1 || parsed.Rows[0].Values["title"] != core.Text("x") {
+		t.Fatalf("%+v %v", parsed, err)
+	}
+	// Three of them: the third is part of the first column name.
+	if got := trRefused(t, "\xEF\xBB\xBF\xEF\xBB\xBF\xEF\xBB\xBFtitle\r\nx"); !strings.Contains(got, "unknown column") {
+		t.Error(got)
+	}
+}
+
+// Rust: cell_value lower-cases a check cell with to_ascii_lowercase: only A to Z.
+func TestACheckCellIsLowerCasedAsASCIIOnly(t *testing.T) {
+	_, err := trCSV(t, "done\nTRU\u00c9\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := trCSV(t, "done\nTRU\u00c9\n")
+	if got := strings.Join(parsed.Problems[0].Details, ";"); !strings.Contains(got, "`tru\u00c9` is not true, false, 1 or 0") {
+		t.Error(got)
+	}
+}
+
+// The error of a record of another length is the text of the csv crate, with the position it reports.
+func TestTheErrorOfARecordOfAnotherLengthIsTheCratesText(t *testing.T) {
+	for file, want := range map[string]string{
+		"title\r\na,b\r\n": "the CSV file cannot be read: CSV error: record 1 (line: 1, byte: 6): found record with 2 fields, but the previous record has 1 fields",
+		"title\na,b\n":     "the CSV file cannot be read: CSV error: record 1 (line: 2, byte: 6): found record with 2 fields, but the previous record has 1 fields",
+	} {
+		if got := trRefused(t, file); got != want {
+			t.Errorf("%q: %q, want %q", file, got, want)
+		}
+	}
+}

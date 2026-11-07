@@ -597,6 +597,12 @@ const (
 
 func parseCSV(doctype *core.DocType, mode db.ImportMode, text string, maxRows int) (*ParsedImport, error) {
 	reader := &csvReader{text: text, line: 1}
+	// Rust strips one BOM before the crate sees the text; the crate strips a second one at the start of its
+	// first read (csv-core strip_utf8_bom). Its bytes still count in the byte offsets, so the reader starts
+	// after them instead of the text being cut.
+	if strings.HasPrefix(text, "\ufeff") {
+		reader.pos = len("\ufeff")
+	}
 	header, ok := reader.next()
 	// No record at all, or one empty field.
 	if !ok || (len(header.fields) == 1 && header.fields[0] == "") {
@@ -701,7 +707,7 @@ func cellValue(name string, ft core.FieldType, cell string) (core.Value, error) 
 		}
 		return core.Int(n), nil
 	case core.FieldCheck:
-		switch lower := strings.ToLower(strings.TrimSpace(cell)); lower {
+		switch lower := asciiLower(strings.TrimSpace(cell)); lower {
 		case "true", "1":
 			return core.Bool(true), nil
 		case "false", "0":
@@ -817,4 +823,15 @@ func RunImport(ctx context.Context, client db.TxStarter, registry *core.Registry
 	}
 	return &ImportSummary{DryRun: dryRun, Mode: mode, Rows: total, Inserted: outcome.Inserted, Updated: outcome.Updated,
 		Errors: errors, ErrorCount: problems + outcome.ErrorCount}, nil
+}
+
+// asciiLower lower-cases A to Z only, as Rust's to_ascii_lowercase does.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
