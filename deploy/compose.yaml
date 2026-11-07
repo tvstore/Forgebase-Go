@@ -1,0 +1,91 @@
+# Forgebase on one VM: PostgreSQL, the web server, a worker and Caddy (automatic HTTPS).
+# Guide: docs/guide/deploy.md. Run it from this directory:
+#
+#   cp .env.example .env && $EDITOR .env      # secrets live in .env, never in this file
+#   docker compose up -d --build
+#   docker compose run --rm cli migrate
+#   printf '%s\n' 'a long password' | docker compose run --rm -T cli user create admin --role Administrator
+#
+# This is the recommended layout: `forgebase` (serve) and `worker` are separate containers of the same
+# image. For a very small machine, one container can run both: give a service `command: ["all"]` and
+# drop the `worker` service (single-container mode, see the guide for the trade-offs).
+
+name: forgebase
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    args:
+      APP_DIR: ${FORGEBASE_APP_DIR:-examples/sales}
+      APP_PKG: ${FORGEBASE_APP_PKG:-./cmd/sales}
+  image: forgebase-app:local
+  init: true
+  environment: &app-env
+    FORGEBASE_DATABASE_URL: postgres://forgebase:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/forgebase
+    FORGEBASE_LISTEN: 0.0.0.0:8000
+    # The Host header must be one of these (comma separated, no ports); anything else is refused.
+    FORGEBASE_ALLOWED_HOSTS: ${FORGEBASE_ALLOWED_HOSTS:-${FORGEBASE_DOMAIN:?set FORGEBASE_DOMAIN in .env}}
+    # Insecure, for testing over plain HTTP only. Leave unset behind HTTPS.
+    FORGEBASE_DEV_INSECURE_COOKIES: ${FORGEBASE_DEV_INSECURE_COOKIES:-}
+    FORGEBASE_MIGRATE_ON_START: ${FORGEBASE_MIGRATE_ON_START:-0}
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-bookworm@sha256:5264710be20f409750ac6dc4e5706dcef929c87e241605463f0f9aefa932a8d9
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: forgebase
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: forgebase
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U forgebase -d forgebase"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  forgebase:
+    <<: *app
+    command: ["serve"]
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    restart: unless-stopped
+    # A stopping worker lets running jobs finish for up to 30 s; Docker's default is 10 s.
+    stop_grace_period: 45s
+
+  # One-shot commands, not started by `up`: docker compose run --rm cli <command>.
+  # /backups is a host directory (BACKUP_DIR), for `site backup`; it must be writable by uid 10001.
+  cli:
+    <<: *app
+    profiles: ["tools"]
+    volumes:
+      - ${BACKUP_DIR:-/var/backups/forgebase}:/backups
+
+  caddy:
+    image: caddy:2-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      FORGEBASE_DOMAIN: ${FORGEBASE_DOMAIN:?set FORGEBASE_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - forgebase
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

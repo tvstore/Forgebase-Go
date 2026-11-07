@@ -1,0 +1,5 @@
+# Automatic HTTPS (Let's Encrypt) for FORGEBASE_DOMAIN. Caddy passes the original Host header to
+# Forgebase unchanged, which Forgebase needs: it checks Host against FORGEBASE_ALLOWED_HOSTS.
+{$FORGEBASE_DOMAIN} {
+	reverse_proxy forgebase:8000
+}
