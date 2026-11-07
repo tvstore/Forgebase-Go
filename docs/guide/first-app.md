@@ -112,7 +112,7 @@ bin/forgebase new-app tasks --forgebase-path . --dir ~/apps   # in the Forgebase
 ```sh
 cd ~/apps/tasks
 rm doctypes/tasks_note.toml cmd/tasks/main_test.go
-go mod edit -require=crm@v0.0.0 -replace=crm=.bin/crm   # crm is a module next to this one
+go mod edit -require=crm@v0.0.0 -replace=crm=../crm   # crm is a module next to this one
 ```
 
 (With a module that has a proper path and a version, `go get` it instead; the `replace` is for modules that live on your disk.)
