@@ -55,7 +55,9 @@ import (
 //	import_failed                         422  at least one row of an import has an error, so nothing was imported;
 //	                                     details is the summary with the per-row errors (M9.3)
 //
-// Codes of later phases (customize, user permissions) arrive with their routes.
+// The customize routes (M10.1) and the user permission routes (M10.3) use the codes above: 403 permission_denied for a
+// caller who is not an Administrator, 404 not_found, 409 conflict for a custom field that exists, 422 validation_failed
+// for a field or a permission that breaks a rule, and 503 lock_timeout (with Retry-After) while a migrate holds the lock.
 //
 // Every error body, and every import summary, is bounded where it is built: the message and the details share a budget of
 // maxErrorBodyBytes (64 KiB of JSON-escaped bytes), each string is cut to maxMessageChars characters
@@ -401,6 +403,20 @@ func fromDB(e *db.Error) *apiError {
 		return errValidation([]string{e.Message})
 	case db.ErrExportTooLarge:
 		return errExportTooLarge(e.Count, e.Limit)
+	// Custom fields (M10.1): an unknown DocType is a 404 like everywhere, a name that is taken a conflict,
+	// anything else the field's own problem.
+	case db.ErrCustomField:
+		switch e.Overlay.Kind {
+		case core.OverlayUnknownDocType:
+			return errNotFound("unknown doctype")
+		case core.OverlayCollision:
+			return newError(http.StatusConflict, "conflict", text)
+		}
+		return errValidation([]string{e.Overlay.Error()})
+	case db.ErrCustomFieldExists:
+		return newError(http.StatusConflict, "conflict", text)
+	case db.ErrCustomFieldNotFound:
+		return errNotFound(text)
 	case db.ErrNotFound:
 		return errNotFound(text)
 	case db.ErrLockTimeout:

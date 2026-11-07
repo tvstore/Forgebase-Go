@@ -46,5 +46,8 @@
 //
 // [DB.Migrate] also applies the fixtures of the apps ([Migrated.Fixtures] has the counts, ADR 0022).
 //
-// Not in this version (later phases): custom fields and metadata reload (P7).
+// [DB.AddCustomField] and [DB.SetCustomFieldEnabled] add, disable and enable a site custom field as the commands
+// of `forgebase customize field` do (ADR 0023). [DB.ClientPolling] is a [DB.Client] whose server checks the
+// metadata version at the given interval (10 seconds in [DB.Client]), and [Client.ReloadMetadata] rebuilds the
+// registry of that server at once.
 package testing

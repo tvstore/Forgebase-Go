@@ -43,7 +43,7 @@ func (r *runner) webhook(ctx context.Context, site *site) (err error) {
 	insecure := r.m.flag("insecure_http")
 	// The site is opened (the pool, with the registry loaded) before anything of add that needs no database is
 	// checked, as the Rust command does: an unreachable database is reported before a bad URL.
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
+	sc, err := site.open(ctx, r.o, composed.registry, 0)
 	if err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func (r *runner) webhook(ctx context.Context, site *site) (err error) {
 			InsecureHTTP: insecure,
 		}
 		given := secret != nil
-		text, err := db.AddWebhook(ctx, sc.pool, composed.registry, new, secret)
+		text, err := db.AddWebhook(ctx, sc.pool, sc.registry, new, secret)
 		if err != nil {
 			return err
 		}

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"io"
 	"math"
 	"strconv"
 	"time"
@@ -29,6 +30,9 @@ type SyncOptions struct {
 	// becomes 1 ms, and PostgreSQL rejects larger values. The zero value of SyncOptions is
 	// therefore a 1 ms timeout: start from DefaultSyncOptions (5 s) for the usual one.
 	LockTimeout time.Duration
+	// Warn is where migrate writes the warnings that do not stop it (a stored custom field that no longer
+	// validates), at the point Rust writes them with eprintln. nil is standard error.
+	Warn io.Writer
 }
 
 // DefaultSyncOptions are the options of a sync that is not a dry run and waits at most

@@ -103,22 +103,25 @@ func (s *site) toolConnectionURL(getenv func(string) string) (string, error) {
 }
 
 // siteContext is everything a command needs for one site: the site, its pool and its registry,
-// which holds only the DocTypes of the apps installed on the site (and, from P7, the site's custom
-// fields).
+// which holds only the DocTypes of the apps installed on the site and the site's custom fields.
 type siteContext struct {
-	site     *site
-	pool     *pgxpool.Pool
+	site *site
+	pool *pgxpool.Pool
+	// registry is the registry as it was when the context was made: what a short command uses.
 	registry *core.Registry
+	// holder is the registry behind registry, which a long-running command (serve, worker) keeps current.
+	holder *db.RegistryHolder
 	// methods runs the app methods of the site (nil: none, every method call is a 404). Set by serve.
 	methods httpapi.MethodDispatch
 }
 
-// open opens the pool of the site (poolSize overrides the configured size) and joins it with
-// registry, the registry of the site's apps. This is the only way a command gets a database
-// connection. A connection error names the site (and never the URL), so that serve with several
-// sites says which one failed.
-func (s *site) open(ctx context.Context, getenv func(string) string, registry *core.Registry, poolSize int) (*siteContext, error) {
-	url, err := s.databaseURL(getenv)
+// open opens the pool of the site (poolSize overrides the configured size) and joins it with registry, the
+// registry of the site's apps, plus the site's custom fields as they are now (ADR 0023; a database without
+// them is served with the registry of the apps alone). This is the only way a command gets a database
+// connection. A connection error names the site (and never the URL), so that serve with several sites says
+// which one failed. The warnings about stored custom fields that were skipped go to o.Stderr.
+func (s *site) open(ctx context.Context, o Options, registry *core.Registry, poolSize int) (*siteContext, error) {
+	url, err := s.databaseURL(o.Getenv)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +132,12 @@ func (s *site) open(ctx context.Context, getenv func(string) string, registry *c
 	if err != nil {
 		return nil, errSite(s.name, err)
 	}
-	return &siteContext{site: s, pool: pool, registry: registry}, nil
+	holder, err := db.LoadRegistryHolder(ctx, s.name, registry, pool, o.Stderr)
+	if err != nil {
+		pool.Close()
+		return nil, errSite(s.name, err)
+	}
+	return &siteContext{site: s, pool: pool, registry: holder.Snapshot(), holder: holder}, nil
 }
 
 func (c *siteContext) close() { c.pool.Close() }

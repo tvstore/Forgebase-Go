@@ -8,13 +8,3 @@
 # Permanent (the frozen Rust implementation)
 crates/
 Cargo.toml
-
-# The example apps (P4) are Go modules: examples/sales and examples/sales_extension have sales.go, sales_test.go and
-# so on, not the Rust layout. The guides still link to the Rust paths below where they show the Rust code of an
-# example (the job, the method, the fixture and the overlay: P5 to P7 rewrite those passages and remove the entries).
-examples/sales/src/
-examples/sales/tests/
-examples/sales_extension/src/
-examples/sales_extension/overlays/
-
-

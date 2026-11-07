@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +17,7 @@ import (
 // migrate_all of forgebase-db).
 //
 // The workflow backfill (P6) runs after the sync, then the schedules (P5, synced by MigrateAll), and last the
-// fixtures of the apps (P7, ADR 0022).
+// fixtures of the apps (P7.2, ADR 0022). A stored custom field of the site keeps its column through the sync (P7.3, ADR 0023).
 
 // AppliedAppMigration is one app data migration that was applied (or, in a dry run, is pending).
 type AppliedAppMigration struct {
@@ -51,6 +53,9 @@ type MigrateReport struct {
 	// FixturesPlanned is false while framework migrations are pending in a dry run: the fixtures
 	// are then only counted.
 	FixturesPlanned bool
+	// CustomFieldWarnings are the stored custom fields that were skipped because they no longer validate (one
+	// message each; they are also written to SyncOptions.Warn as warning: lines before the sync, as Rust does).
+	CustomFieldWarnings []string
 	// FixturesFailure is a refused fixture: the report says what was committed, and the caller
 	// reports this error after it.
 	FixturesFailure error
@@ -166,7 +171,20 @@ func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry,
 	if err != nil {
 		return nil, err
 	}
-	sync, err := Sync(ctx, conn, registry, options)
+	// Every stored custom field, enabled or disabled, keeps its column: the sync works from the registry of the
+	// apps plus those fields (M10.1). Fields that no longer validate are skipped.
+	stored, err := schemaRegistry(ctx, conn, registry)
+	if err != nil {
+		return nil, err
+	}
+	warn := options.Warn
+	if warn == nil {
+		warn = os.Stderr
+	}
+	for _, warning := range stored.Warnings {
+		_, _ = fmt.Fprintf(warn, "warning: %s\n", warning)
+	}
+	sync, err := Sync(ctx, conn, stored.Registry, options)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +251,8 @@ func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry,
 		fixtures = append(fixtures, *one)
 	}
 	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, Schedules: lines,
-		WorkflowWarnings: warnings, Fixtures: fixtures, FixturesPlanned: true, FixturesFailure: failure}, nil
+		WorkflowWarnings: warnings, Fixtures: fixtures, FixturesPlanned: true, FixturesFailure: failure,
+		CustomFieldWarnings: stored.Warnings}, nil
 }
 
 func applied(app string, m AppMigration) AppliedAppMigration {

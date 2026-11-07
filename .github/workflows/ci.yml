@@ -323,7 +323,8 @@ jobs:
   # can be run locally. It needs the client tools (pg_dump, pg_restore, version 16, the server's) like the `check`
   # job, and curl and jq (on the runner image). The URLs are built from the service container's throwaway
   # credentials; the script never prints them. The databases are created by the script (`site create`). The
-  # parts of the Rust script that need webhooks, custom fields and user permissions (P7) are added by that phase.
+  # script is the one of the Rust implementation (workflow and views, fixtures, a webhook, a site custom field and
+  # user permissions).
   sites:
     needs: changes
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
@@ -417,16 +418,13 @@ jobs:
       - run: npm run licenses
       - run: npm audit --audit-level=high
 
-  # The desk end-to-end tests (Playwright in Chromium) against a real `forgebase serve` with the built desk:
-  # login, list, create, edit and submit a sales order, and a user without the submit right, the smaller
-  # tests of the command bar, the recent documents, the filter chip with the Link title and
-  # prefers-reduced-motion, and (P6) the workflow, the saved views, the summary and the report. The binary is
-  # examples/e2e_app (the stock command plus the app that defines the report, the Go equivalent of the Rust
-  # example e2e_app). Seeding: .github/ci/e2e-seed.sh (a temporary, phase-scoped copy of desk/e2e/seed.sh, see
-  # its header). Only the tests whose routes exist run: E2E_GREP below names them, and
-  # the phase that ports the routes of a group of tests adds that group (CHANGELOG, "P3.2"). No artifact
-  # upload (no pinned action for it is in use); on failure the server log is printed. The database URL is
-  # built from the service container's credentials and never printed.
+  # The desk end-to-end tests (Playwright in Chromium) against a real `forgebase serve` with the built desk: every
+  # spec of desk/e2e (the same as the e2e job of the Rust implementation): login, list, create, edit and submit a
+  # sales order, the workflow, the saved views, the summary and the report, export and import, and the field
+  # levels, the user permissions and the site custom field of restrict.spec.ts. The binary is examples/e2e_app (the
+  # stock command plus the app that defines the report, the Go equivalent of the Rust example e2e_app). Seeding:
+  # desk/e2e/seed.sh, unchanged. No artifact upload (no pinned action for it is in use); on failure the server log
+  # is printed. The database URL is built from the service container's credentials and never printed.
   e2e:
     needs: changes
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.e2e == 'true'
@@ -452,17 +450,6 @@ jobs:
       # The service's own database, empty and used by this job only.
       FORGEBASE_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/forgebase_e2e
       E2E_BASE_URL: http://127.0.0.1:8000
-      # The tests that run (a regular expression on the test titles, over desk/e2e/smoke.spec.ts,
-      # desk/e2e/restrict.spec.ts and desk/e2e/transfer.spec.ts). P3: login, list, create, edit and submit;
-      # the command bar; the recent documents; the filter chip with the Link title; prefers-reduced-motion;
-      # the Columns menu; the keyboard focus (UX.5); and the two tests of the level 1 field (credit_limit)
-      # that need only the field levels.
-      # P6: the workflow (a clerk sends a purchase request, the stale version), the saved views (private,
-      # shared, a stale one), the summary and the report. P7.2: export and import (the four tests of
-      # desk/e2e/transfer.spec.ts). The others need routes of a later phase of P7: the user permissions and the
-      # custom field (the rest of desk/e2e/restrict.spec.ts). The phase that ports those routes adds the
-      # titles (CHANGELOG, "P3.2"); in P7 the pattern and the seed go.
-      E2E_GREP: "login, list, create, edit and submit|command bar opens|recent documents of one user|clerk without create rights|filter shows as a chip|prefers-reduced-motion|Columns menu hides a column|focus indicator check reads|keyboard focus is visible|Sales Manager sees credit_limit|reads level 1 but not writes it|clerk sends a purchase request|workflow action on a stale version|private view survives|administrator shares a view|view that names a field|Summary panel counts|manager runs a report, sorts it|manager exports the filtered list as CSV|import with a bad row shows the row error|valid import creates the documents|manager exports the result of a report"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -498,7 +485,11 @@ jobs:
         working-directory: desk
         run: npx playwright install --with-deps chromium
       - name: Seed the database
-        run: .github/ci/e2e-seed.sh
+        # desk/e2e/seed.sh, unchanged: the Go binary and its directory come from the environment.
+        env:
+          FORGEBASE_BIN: bin/e2e_app
+          E2E_DIR: bin/e2e
+        run: desk/e2e/seed.sh
       - name: Start the server
         run: |
           FORGEBASE_DESK_DIR=desk/dist \
@@ -514,7 +505,7 @@ jobs:
           exit 1
       - name: Run the end-to-end tests
         working-directory: desk
-        run: npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts e2e/transfer.spec.ts --grep "$E2E_GREP"
+        run: npx playwright test
       - name: Show the server log
         if: failure()
         run: tail -n 100 server.log

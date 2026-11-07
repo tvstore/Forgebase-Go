@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tvstore/forgebase-go/internal/db"
@@ -199,7 +200,8 @@ func (r *runner) siteList(cfg *config) string {
 	return textTable(header, rows)
 }
 
-// textTable is a table of left-aligned columns separated by two spaces, without trailing spaces.
+// textTable is a table of left-aligned columns separated by two spaces, without trailing white space (the
+// trim_end of the Rust list commands).
 func textTable(header []string, rows [][]string) string {
 	widths := make([]int, len(header))
 	for i, h := range header {
@@ -216,7 +218,7 @@ func textTable(header []string, rows [][]string) string {
 			out.WriteString(strings.Repeat(" ", widths[i]-utf8.RuneCountInString(cell)))
 			out.WriteString("  ")
 		}
-		b.WriteString(strings.TrimRight(out.String(), " "))
+		b.WriteString(strings.TrimRightFunc(out.String(), unicode.IsSpace))
 		b.WriteString("\n")
 	}
 	line(header)

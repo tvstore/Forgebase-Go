@@ -1,4 +1,4 @@
-// Command e2e_app is the binary of the desk's Playwright tests (.github/ci/e2e-seed.sh, the e2e job of CI): the
+// Command e2e_app is the binary of the desk's Playwright tests (desk/e2e/seed.sh, the e2e job of CI): the
 // forgebase command with one app, e2e, that defines a query report (M8.4, ADR 0016). It is the Go equivalent
 // of the Rust example crates/forgebase/examples/e2e_app.rs.
 //

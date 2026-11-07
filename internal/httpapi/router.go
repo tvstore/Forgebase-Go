@@ -184,6 +184,11 @@ func (s *State) buildRoutes() []*route {
 		h(map[string]handlerFunc{"GET": handleExport}, "GET,HEAD", "/api/v1/export/{doctype}"),
 		h(map[string]handlerFunc{"POST": handleImport}, "POST", "/api/v1/import/{doctype}"),
 		h(map[string]handlerFunc{"POST": handleMethodCall}, "POST", "/api/v1/method/{name}"),
+		h(map[string]handlerFunc{"GET": handleCustomizeList, "POST": handleCustomizeAdd}, "GET,HEAD,POST", "/api/v1/customize/{doctype}/fields"),
+		h(map[string]handlerFunc{"POST": handleCustomizeDisable}, "POST", "/api/v1/customize/{doctype}/fields/{name}/disable"),
+		h(map[string]handlerFunc{"POST": handleCustomizeEnable}, "POST", "/api/v1/customize/{doctype}/fields/{name}/enable"),
+		h(map[string]handlerFunc{"GET": handleUserPermissionList, "POST": handleUserPermissionAdd}, "GET,HEAD,POST", "/api/v1/user-permissions"),
+		h(map[string]handlerFunc{"POST": handleUserPermissionRemove}, "POST", "/api/v1/user-permissions/remove"),
 	}
 	// The desk routes exist only when a directory is configured.
 	if s.config.DeskDir != "" {

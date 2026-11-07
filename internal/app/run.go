@@ -38,24 +38,6 @@ type Options struct {
 	Stderr io.Writer
 }
 
-// notYet maps the commands that are not ported yet to the phase that brings them. The commands are
-// parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
-var notYet = map[string]string{
-	"customize":       "P7",
-	"user permission": "P7",
-}
-
-// phaseOf is the phase that brings the command with this path, or "" when it exists.
-func phaseOf(path []string) string {
-	// The longest match wins: user permission is P7, the rest of user exists.
-	for n := len(path); n > 0; n-- {
-		if phase, ok := notYet[strings.Join(path[:n], " ")]; ok {
-			return phase
-		}
-	}
-	return ""
-}
-
 // Run executes the command line and returns the process exit code. It never exits the process.
 func Run(o Options) int {
 	m, exit := parse(rootCommand(), o.Version, o.Args)
@@ -83,9 +65,6 @@ func Run(o Options) int {
 			return fail(o, err)
 		}
 		return 0
-	}
-	if phase := phaseOf(m.path); phase != "" {
-		return fail(o, fmt.Errorf("%s is not available yet in the Go port (arrives in phase %s)", strings.Join(m.path, " "), phase))
 	}
 	r := &runner{o: o, m: m}
 	if err := r.run(context.Background()); err != nil {
@@ -156,6 +135,7 @@ func (r *runner) run(ctx context.Context) error {
 		options := db.SyncOptions{
 			DryRun:      r.m.flag("dry_run"),
 			LockTimeout: millis(r.m.u64("lock_timeout_ms")),
+			Warn:        r.o.Stderr,
 		}
 		text, err := r.migrateSite(ctx, site, composed, options)
 		if text != "" {
@@ -176,6 +156,8 @@ func (r *runner) run(ctx context.Context) error {
 		return r.job(ctx, site)
 	case "webhook":
 		return r.webhook(ctx, site)
+	case "customize":
+		return r.customize(ctx, site)
 	case "worker":
 		return r.worker(ctx, site)
 	}
@@ -226,11 +208,12 @@ func millis(ms uint64) time.Duration {
 // are written to standard error: the apps recorded in the database that are not installed, and
 // the documents of a workflow that are in a state it no longer defines.
 func (r *runner) migrateSite(ctx context.Context, site *site, c *Composed, options db.SyncOptions) (string, error) {
-	sc, err := site.open(ctx, r.o.Getenv, c.registry.Clone(), 0)
+	sc, err := site.open(ctx, r.o, c.registry.Clone(), 0)
 	if err != nil {
 		return "", err
 	}
 	defer sc.close()
+	options.Warn = r.o.Stderr
 	report, err := c.Migrate(ctx, sc.pool, options)
 	if err != nil {
 		return "", err
@@ -347,7 +330,7 @@ func (r *runner) doc(ctx context.Context, site *site) error {
 			return err
 		}
 	}
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
+	sc, err := site.open(ctx, r.o, composed.registry, 0)
 	if err != nil {
 		return err
 	}
@@ -540,13 +523,13 @@ func (r *runner) worker(ctx context.Context, site *site) error {
 		return err
 	}
 	concurrency := int(r.m.u64("concurrency"))
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, concurrency+2)
+	sc, err := site.open(ctx, r.o, composed.registry, concurrency+2)
 	if err != nil {
 		return err
 	}
 	signals, stopSignals := stopSignals()
 	defer stopSignals()
-	w := newWorker(sc.pool, sc.registry, composed, defaultWorkerConfig(), r.o.Stderr)
+	w := newWorker(sc.pool, sc.holder, composed, defaultWorkerConfig(), r.o.Stderr)
 	ok := w.runWorker(ctx, concurrency, workerID(), signals)
 	// pgxpool's Close waits for every acquired connection. After a second signal, or when a handler that
 	// ignores its context was abandoned, a connection is still held by a goroutine that cannot be stopped, so

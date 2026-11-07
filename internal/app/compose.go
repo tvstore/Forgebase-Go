@@ -19,7 +19,8 @@ import (
 //
 // Order of work (documented in ADR 0012 and ADR 0028): the apps' own consistency (names, dependencies,
 // order, migration versions); the DocTypes of every app in app order, then the DocTypes of the --doctypes
-// directory (the app `local`); the references between DocTypes (the rules of the registry, plus: a Link or
+// directory (the app `local`); the overlays (fields that an app adds to a dependency's DocType) in app order, then
+// file order; the references between DocTypes (the rules of the registry, plus: a Link or
 // Table may only target a DocType of its own app or of a dependency); the hooks in app order. Every problem
 // found is collected and reported together. The reference and hook checks only run when every DocType file
 // loaded, because a file that did not load would make them report follow-up errors.
@@ -27,7 +28,8 @@ import (
 // Reports (P6) are checked and registered after the hooks. Jobs (P5) and methods (P7.1) are checked after that,
 // then the schedules (they do not depend on the DocType files, so their problems are reported with the
 // others). The fixtures (P7.2) are checked after the reports: they need the DocTypes, the apps they may use and
-// the registry as it is. Overlays (P7) are added to this order by the phase that brings them.
+// the registry as it is. The overlays (P7.3) are parsed with the DocType files and added after them, in app order
+// and then file order (ADR 0023), before the references are checked.
 
 // localApp is the name of the app that the --doctypes directory forms.
 const localApp = "local"
@@ -221,11 +223,17 @@ func compose(apps []*App, local string) (*Composed, *StartupError) {
 			}
 		}
 	}
+	// The overlay files are parsed with the DocType files: a file that does not parse is a file problem, and
+	// stops the checks that follow it like any other.
+	overlays := parseOverlays(apps, errs)
+	// (DocType, field) of a field added by an overlay -> the app and the file that added it.
+	fieldFiles := map[[2]string][2]string{}
 	// Only when everything loaded: a Link to a DocType from a broken file would be reported twice,
 	// and a hook on one as an unknown DocType.
 	fixtures := make([][]db.FixtureRecord, len(apps))
 	if len(errs.files) == 0 {
-		checkReferences(registry, definedIn, reach, localReach, errs)
+		applyOverlays(overlays, reach, definedIn, registry, fieldFiles, errs)
+		checkReferences(registry, definedIn, fieldFiles, reach, localReach, errs)
 		checkHooks(apps, reach, registry, errs)
 		checkReports(apps, reach, registry, errs)
 		fixtures = checkFixtures(apps, reach, registry, errs)
@@ -355,12 +363,19 @@ func load(app string, files []file, registry *core.Registry, definedIn map[strin
 // checkReferences runs the reference rules of the registry, each problem naming the file of the DocType it is
 // about, and the app rule: a Link or Table field may only target a DocType of its own app or of an app it
 // depends on.
-func checkReferences(registry *core.Registry, definedIn map[string][2]string, reach map[string]map[string]bool, localReach map[string]bool, errs *StartupError) {
+func checkReferences(registry *core.Registry, definedIn map[string][2]string, fieldFiles map[[2]string][2]string, reach map[string]map[string]bool, localReach map[string]bool, errs *StartupError) {
 	for _, problem := range registry.CheckReferences() {
 		doctype := problem.DocType
 		switch problem.Kind {
 		case core.ErrChildSharedByTables:
 			doctype = problem.Child
+		}
+		// A Link field that an overlay added is reported at the overlay file.
+		if problem.Kind == core.ErrUnknownLinkTarget || problem.Kind == core.ErrLinkToChild {
+			if def, ok := fieldFiles[[2]string{problem.DocType, problem.Field}]; ok {
+				errs.files = append(errs.files, fmt.Sprintf("app `%s`: %s: %s", def[0], def[1], problem))
+				continue
+			}
 		}
 		if def, ok := definedIn[doctype]; ok && doctype != "" {
 			if def[0] == localApp {
@@ -379,15 +394,19 @@ func checkReferences(registry *core.Registry, definedIn map[string][2]string, re
 		if !ok {
 			continue
 		}
-		app, path := def[0], def[1]
-		uses := localReach
-		if app != localApp {
-			var known bool
-			if uses, known = reach[app]; !known {
-				continue
-			}
-		}
 		for _, field := range doctype.Fields {
+			// A field that an overlay added belongs to the app and the file of the overlay.
+			app, path := def[0], def[1]
+			if added, ok := fieldFiles[[2]string{doctype.Name, field.Name}]; ok {
+				app, path = added[0], added[1]
+			}
+			uses := localReach
+			if app != localApp {
+				var known bool
+				if uses, known = reach[app]; !known {
+					continue
+				}
+			}
 			if field.Type.Kind != core.FieldLink && field.Type.Kind != core.FieldTable {
 				continue
 			}

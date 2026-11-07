@@ -8,10 +8,12 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/tvstore/forgebase-go/internal/core"
 )
 
-// Ported from the unit tests of crates/forgebase/src/compose.rs (the app model parts and, since P6, the report
-// tests; the overlay tests arrive with P7).
+// Ported from the unit tests of crates/forgebase/src/compose.rs (the app model parts, since P6 the report
+// tests and, since P7.3, the overlay tests at the end of the file).
 
 const composeCustomer = "name = \"customer\"\nlabel = \"C\"\n"
 const composeLinking = "name = \"{n}\"\nlabel = \"L\"\n[[fields]]\nname = \"f\"\ntype = \"link\"\ntarget = \"{t}\"\n"
@@ -234,6 +236,220 @@ func TestANilReportIsAStartupError(t *testing.T) {
 	_, startup := compose([]*App{NewApp("a").Report("r", nil)}, "")
 	if startup == nil || !strings.Contains(startup.Error(), "app `a`: report `r` is nil") {
 		t.Fatal(startup)
+	}
+}
+
+// ---- overlays (M10.1, ADR 0023) ---------------------------------------------------------------------------
+
+const composeTier = "[[fields]]\nname = \"tier\"\ntype = \"select\"\noptions = [\"a\", \"b\"]\n"
+
+// composeExt is an app that depends on depends and extends target with the overlay files (path, toml pairs).
+func composeExt(name string, depends []string, target string, overlays ...string) *App {
+	return NewApp(name).DependsOn(depends...).ExtendDocType(target, files(overlays...))
+}
+
+func composeProblems(t *testing.T, apps ...*App) []string {
+	t.Helper()
+	_, startup := compose(apps, "")
+	if startup == nil {
+		t.Fatal("the apps were accepted")
+	}
+	return startup.Problems()
+}
+
+func hasProblem(found []string, needle string) bool {
+	for _, p := range found {
+		if strings.Contains(p, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// Rust: compose.rs::an_overlay_adds_its_fields_after_the_doctype_in_app_order_then_file_order
+func TestAnOverlayAddsItsFieldsAfterTheDocTypeInAppOrderThenFileOrder(t *testing.T) {
+	c, startup := compose([]*App{
+		composeCRM(),
+		composeExt("first", []string{"crm"}, "customer",
+			"overlays/a1.toml", composeTier, "overlays/a2.toml", "[[fields]]\nname = \"note\"\ntype = \"text\"\n"),
+		composeExt("second", []string{"crm"}, "customer",
+			"overlays/b.toml", "[[fields]]\nname = \"rank\"\ntype = \"int\"\nunique = true\nrequired = true\n"),
+	}, "")
+	if startup != nil {
+		t.Fatal(startup)
+	}
+	customer := c.registry.Get("customer")
+	var names []string
+	for _, f := range customer.Fields {
+		names = append(names, f.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"tier", "note", "rank"}) {
+		t.Fatalf("%v", names)
+	}
+	if !customer.Field("rank").Unique {
+		t.Error("rank is not unique")
+	}
+	if owner, ok := c.registry.FieldOwner("customer", "tier"); !ok || owner != "first" {
+		t.Errorf("tier: %q", owner)
+	}
+	if owner, ok := c.registry.FieldOwner("customer", "rank"); !ok || owner != "second" {
+		t.Errorf("rank: %q", owner)
+	}
+}
+
+// Rust: compose.rs::an_overlay_may_target_a_transitive_dependency
+func TestAnOverlayMayTargetATransitiveDependency(t *testing.T) {
+	mid := NewApp("mid").DependsOn("crm")
+	top := composeExt("top", []string{"mid"}, "customer", "overlays/o.toml", composeTier)
+	if _, startup := compose([]*App{composeCRM(), mid, top}, ""); startup != nil {
+		t.Fatal(startup)
+	}
+}
+
+// Rust: compose.rs::overlay_problems_name_the_app_and_the_file
+func TestOverlayProblemsNameTheAppAndTheFile(t *testing.T) {
+	o := []string{"overlays/o.toml", composeTier}
+	found := composeProblems(t, composeCRM(), composeExt("e", []string{"crm"}, "nope", o...))
+	if len(found) != 1 || !strings.HasPrefix(found[0], "app `e`: overlays/o.toml: overlay for unknown DocType `nope`") {
+		t.Fatalf("%v", found)
+	}
+
+	// Not a dependency: e does not depend on crm.
+	found = composeProblems(t, composeCRM(), composeExt("e", nil, "customer", o...))
+	if !strings.Contains(found[0], "app `e`: overlays/o.toml: overlay for `customer`, which belongs to app `crm`; app `e` does not depend on `crm`") {
+		t.Fatalf("%v", found)
+	}
+
+	// The app's own DocType.
+	own := composeCRM().ExtendDocType("customer", files(o...))
+	found = composeProblems(t, own)
+	if !strings.Contains(found[0], "app `crm`: overlays/o.toml: overlay for `customer`, a DocType of app `crm` itself") {
+		t.Fatalf("%v", found)
+	}
+
+	// A child DocType.
+	parent := NewApp("p").DocTypes(files(
+		"doctypes/parent.toml", "name = \"parent\"\nlabel = \"P\"\n[[fields]]\nname = \"rows\"\ntype = \"table\"\ntarget = \"child\"\n",
+		"doctypes/child.toml", "name = \"child\"\nlabel = \"C\"\nis_child = true\n"))
+	found = composeProblems(t, parent, composeExt("e", []string{"p"}, "child", o...))
+	if !strings.Contains(found[0], "overlay for `child`, a child DocType") {
+		t.Fatalf("%v", found)
+	}
+
+	// A Table field, the reserved prefix.
+	found = composeProblems(t, composeCRM(), composeExt("e", []string{"crm"}, "customer",
+		"overlays/t.toml", "[[fields]]\nname = \"rows\"\ntype = \"table\"\ntarget = \"customer\"\n"))
+	if !strings.Contains(found[0], "app `e`: overlays/t.toml: field `rows` has type table") {
+		t.Fatalf("%v", found)
+	}
+	found = composeProblems(t, composeCRM(), composeExt("e", []string{"crm"}, "customer",
+		"overlays/p.toml", "[[fields]]\nname = \"custom_x\"\ntype = \"int\"\n"))
+	if !strings.Contains(found[0], "app `e`: overlays/p.toml: field `custom_x` starts with `custom_`") {
+		t.Fatalf("%v", found)
+	}
+
+	// Files that do not parse, or hold more than fields: file problems naming the file.
+	for _, c := range []struct{ path, text, expected string }{
+		{"overlays/x.toml", "", "app `e`: overlays/x.toml: the overlay has no [[fields]]"},
+		{"overlays/s.toml", "label = \"x\"\n[[fields]]\nname = \"a\"\ntype = \"int\"\n", "app `e`: overlays/s.toml: cannot parse the definition"},
+	} {
+		_, startup := compose([]*App{composeCRM(), composeExt("e", []string{"crm"}, "customer", c.path, c.text)}, "")
+		if startup == nil {
+			t.Fatalf("%s was accepted", c.path)
+		}
+		if text := startup.Error(); !strings.Contains(text, "cannot load DocType files") || !strings.Contains(text, c.expected) {
+			t.Errorf("%s", text)
+		}
+	}
+
+	// A field with its own problem (the same check as a DocType file).
+	found = composeProblems(t, composeCRM(), composeExt("e", []string{"crm"}, "customer",
+		"overlays/b.toml", "[[fields]]\nname = \"a\"\ntype = \"select\"\n"))
+	if !strings.Contains(found[0], "app `e`: overlays/b.toml:") {
+		t.Fatalf("%v", found)
+	}
+}
+
+// Rust: compose.rs::a_collision_names_both_apps
+func TestAnOverlayCollisionNamesBothApps(t *testing.T) {
+	found := composeProblems(t, composeCRM(),
+		composeExt("one", []string{"crm"}, "customer", "overlays/one.toml", composeTier),
+		composeExt("two", []string{"crm"}, "customer", "overlays/two.toml", composeTier))
+	if len(found) != 1 || !strings.Contains(found[0],
+		"app `two`: overlays/two.toml: field `tier` of doctype `customer` is already defined by app `one` (overlays/one.toml)") {
+		t.Fatalf("%v", found)
+	}
+	// With a field of the DocType itself.
+	crmWithEmail := NewApp("crm").DocTypes(files("doctypes/customer.toml",
+		"name = \"customer\"\nlabel = \"C\"\n[[fields]]\nname = \"email\"\ntype = \"data\"\n"))
+	found = composeProblems(t, crmWithEmail, composeExt("one", []string{"crm"}, "customer",
+		"overlays/own.toml", "[[fields]]\nname = \"email\"\ntype = \"data\"\n"))
+	if !strings.Contains(found[0], "already defined by app `crm` (doctypes/customer.toml); app `one` cannot add a field of the same name") {
+		t.Fatalf("%v", found)
+	}
+	// Twice in one app, and twice in one file.
+	found = composeProblems(t, composeCRM(), composeExt("one", []string{"crm"}, "customer",
+		"overlays/a.toml", composeTier, "overlays/b.toml", composeTier))
+	if !strings.Contains(found[0], "already defined by app `one` (overlays/a.toml)") {
+		t.Fatalf("%v", found)
+	}
+	found = composeProblems(t, composeCRM(), composeExt("one", []string{"crm"}, "customer",
+		"overlays/t.toml", "[[fields]]\nname = \"x\"\ntype = \"int\"\n[[fields]]\nname = \"x\"\ntype = \"int\"\n"))
+	if !strings.Contains(found[0], "overlays/t.toml") || !strings.Contains(found[0], "already exists") {
+		t.Fatalf("%v", found)
+	}
+}
+
+// Rust: compose.rs::an_overlay_link_follows_the_app_dependency_rule
+func TestAnOverlayLinkFollowsTheAppDependencyRule(t *testing.T) {
+	other := NewApp("other").DocTypes(files("doctypes/thing.toml", "name = \"thing\"\nlabel = \"T\"\n"))
+	link := func(target string) []string {
+		return []string{"overlays/o.toml", "[[fields]]\nname = \"buddy\"\ntype = \"link\"\ntarget = \"" + target + "\"\n"}
+	}
+	// e extends crm but does not depend on other: the link is refused at the overlay.
+	found := composeProblems(t, composeCRM(), other, composeExt("e", []string{"crm"}, "customer", link("thing")...))
+	if !hasProblem(found, "app `e`: overlays/o.toml: field `buddy` of doctype `customer` refers to `thing`, which belongs to app `other`") {
+		t.Fatalf("%v", found)
+	}
+	// A target nobody defines is reported at the overlay file.
+	g := []string{"overlays/g.toml", "[[fields]]\nname = \"buddy\"\ntype = \"link\"\ntarget = \"ghost\"\n"}
+	found = composeProblems(t, composeCRM(), composeExt("e", []string{"crm"}, "customer", g...))
+	ok := false
+	for _, p := range found {
+		ok = ok || (strings.Contains(p, "overlays/g.toml") && strings.Contains(p, "ghost"))
+	}
+	if !ok {
+		t.Fatalf("%v", found)
+	}
+	// A link into the extended app is fine.
+	if _, startup := compose([]*App{composeCRM(), composeExt("e", []string{"crm"}, "customer", link("customer")...)}, ""); startup != nil {
+		t.Fatalf("a link into the extended app is fine: %v", startup)
+	}
+}
+
+// Rust: compose.rs::the_prefix_custom_is_reserved_for_the_fields_of_app_doctypes_too
+func TestThePrefixCustomIsReservedForTheFieldsOfAppDocTypesToo(t *testing.T) {
+	app := NewApp("a").DocTypes(files("doctypes/t.toml",
+		"name = \"t\"\nlabel = \"T\"\n[[fields]]\nname = \"custom_x\"\ntype = \"int\"\n"))
+	found := composeProblems(t, app)
+	if !strings.Contains(found[0], "app `a`: doctypes/t.toml: field `custom_x` of doctype `t` starts with `custom_`") {
+		t.Fatalf("%v", found)
+	}
+}
+
+type composeNoop struct{ core.BaseHooks }
+
+// Rust: compose.rs::hooks_of_the_owning_app_see_the_overlay_fields
+func TestHooksOfTheOwningAppSeeTheOverlayFields(t *testing.T) {
+	// The hook registry is checked against the extended DocType: a hook may be registered for the overlay's
+	// target.
+	app := composeExt("e", []string{"crm"}, "customer", "overlays/o.toml", composeTier).Hooks("customer", composeNoop{})
+	c, startup := compose([]*App{composeCRM(), app}, "")
+	if startup != nil {
+		t.Fatal(startup)
+	}
+	if n := len(c.registry.Hooks("customer")); n != 1 {
+		t.Fatalf("%d hook sets", n)
 	}
 }
 

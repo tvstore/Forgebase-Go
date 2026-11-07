@@ -445,7 +445,7 @@ func uniqueIndexSQL(table, column string) string {
 // fieldSteps are the steps that give one field added to an existing table its column (M10.1): the
 // column, the foreign key and index of a Link, and the unique index of a unique field, in the order
 // the sync applies them. Built from the same statements the sync uses, so a field added by hand and
-// a field added by migrate end up with the same schema. (Used by custom fields, P7.)
+// a field added by migrate end up with the same schema. (Used by custom fields, custom_fields.go.)
 func fieldSteps(doctype string, field *core.DocField) []Step {
 	table := core.TableName(doctype)
 	steps := []Step{{Kind: StepAddColumn, DocType: doctype, Column: field.Name, SQL: addColumnSQL(table, field)}}

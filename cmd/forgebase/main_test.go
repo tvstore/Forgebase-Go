@@ -257,11 +257,3 @@ func TestInvalidDoctypeFilesExit1NamingTheFile(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
-
-// A command that is not ported yet fails with exit code 1 and says when it arrives.
-func TestACommandThatIsNotPortedYetSaysWhenItArrives(t *testing.T) {
-	r := runBinary(t, nil, "", "customize", "field", "list")
-	if r.code != 1 || r.stderr != "error: customize field list is not available yet in the Go port (arrives in phase P7)\n" || r.stdout != "" {
-		t.Fatalf("%+v", r)
-	}
-}

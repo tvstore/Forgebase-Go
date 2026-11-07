@@ -1,9 +1,8 @@
 // Package sales_extension is the sales_extension example app: a custom app on top of sales.
 //
-// It adds a DocType of its own (customer_visit, with a Link to sales' customer) and two hooks on a DocType of
-// sales (sales_order), without changing anything in sales, and a background job that works on sales documents
-// (sales_extension.plan_follow_up_visit). The field it adds to customer (an overlay, P7) arrives with the phase
-// that ports that feature.
+// It adds a DocType of its own (customer_visit, with a Link to sales' customer), a field on a DocType of sales
+// (loyalty_tier on customer, an overlay), two hooks on another DocType of sales (sales_order) and a background job
+// that works on sales documents (sales_extension.plan_follow_up_visit), without changing anything in sales.
 package sales_extension
 
 import (
@@ -20,6 +19,12 @@ import (
 //go:embed doctypes/*.toml
 var doctypes embed.FS
 
+// The overlay files: fields that this app adds to a DocType of sales (ADR 0023). An overlay file holds only
+// [[fields]] entries, written exactly like those of a DocType file.
+//
+//go:embed overlays/customer.toml
+var customerOverlays embed.FS
+
 // MinOrderTotal is the smallest total of a sales order that may be saved: 10.00.
 //
 // A variable of the package and not a setting, because hooks have no database access: they cannot read a
@@ -33,6 +38,9 @@ func App() *forgebase.App {
 		Version("0.1.0").
 		DependsOn("sales").
 		DocTypes(doctypes).
+		// A field added to customer, a DocType of sales (ADR 0023): sales does not change; migrate adds the
+		// column.
+		ExtendDocType("customer", customerOverlays).
 		// Hooks on a DocType of sales: allowed because we depend on it. They run after the hooks of sales, in
 		// this order.
 		Hooks("sales_order", MinimumOrder{}).
@@ -40,8 +48,6 @@ func App() *forgebase.App {
 		// A job of this app, known as sales_extension.plan_follow_up_visit. The binary's worker runs it next to
 		// the jobs of sales.
 		Job("plan_follow_up_visit", planFollowUpVisit)
-	// Later phases add to this chain, in the order of the Rust example: the overlay
-	// ExtendDocType("customer", ..) (P7).
 }
 
 // MinimumOrder refuses a sales order whose total is below MinOrderTotal.

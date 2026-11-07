@@ -1,6 +1,6 @@
 # Your first Forgebase app
 
-> Go port status: the app model (this guide, sections 1 to 6) and the background jobs (section 7) are ported ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). Section 8 (query reports) is ported in P6; sections 8 and 9 (app methods, fixtures, overlays) describe behaviour whose Go API arrives with its phase (P7, see the [README](../../README.md#status)): their text is that of the Rust implementation, which does not change, and they say where the Go spelling is not there yet.
+> Go port status: the app model (this guide, sections 1 to 6) and the background jobs (section 7) are ported ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). Section 8 (query reports) is ported in P6, and sections 8 and 9 (app methods, fixtures, overlays) in P7 (P7.1, P7.2 and P7.3).
 
 This guide takes you from nothing to an app with tests that runs, extends another app and upgrades safely. Every command here was run against the repository at the time of writing. Background and decisions: [ADR 0012](../adr/0012-app-model-and-public-api-boundary.md), [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) (the Go shape of the API) and [the architecture](../blueprint/architecture.md#the-app-model-m51-accepted-by-adr-0012).
 
@@ -275,7 +275,7 @@ Run `go test ./...` in both modules (`crm` still passes on its own). The test pa
 
 ### Add a field to another app's DocType (overlays)
 
-> Go port: arrives in P7 (`App.ExtendDocType`, [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). The behaviour below is that of the Rust implementation and does not change; until then the Go `App` has no way to add the overlay file.
+> Go port: ported in P7.3 (`App.ExtendDocType`, [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). The behaviour below is that of the Rust implementation and does not change.
 
 A worked example with `sales_extension`, and the site custom fields that complete it, is in [Customizing and restricting data](customizing.md#extending-another-apps-doctype).
 
@@ -289,11 +289,25 @@ type = "select"
 options = ["low", "normal", "high"]
 ```
 
-The overlay files are embedded like the DocType files and added to the app with a call that names the target DocType. The fields are appended after the fields of `crm_note` (apps in order, files in order), `migrate` adds the column, the hooks of every app see the field, and the `[[permissions]]` of `crm_note` apply to it (an overlay field may carry a `perm_level` as well; the rules of that level are the `level` rules of `crm_note`'s `[[permissions]]`, because an overlay file holds only `[[fields]]`, see [field permission levels](getting-started.md#field-permission-levels)). The DocType is still owned by `crm` (`"app": "crm"` in the metadata API).
+The overlay files are embedded like the DocType files and added to the app with `ExtendDocType`, which names the target DocType and takes the embedded directory (every `.toml` file in it, in lexical order; calling it again adds more):
+
+```go
+//go:embed overlays/crm_note/*.toml
+var crmNoteOverlays embed.FS
+
+func App() *forgebase.App {
+	return forgebase.NewApp("tasks").
+		DependsOn("crm").
+		DocTypes(doctypes).
+		ExtendDocType("crm_note", crmNoteOverlays) // files are "overlays/crm_note/priority.toml", ...
+}
+```
+
+The fields are appended after the fields of `crm_note` (apps in order, files in order), `migrate` adds the column, the hooks of every app see the field, and the `[[permissions]]` of `crm_note` apply to it (an overlay field may carry a `perm_level` as well; the rules of that level are the `level` rules of `crm_note`'s `[[permissions]]`, because an overlay file holds only `[[fields]]`, see [field permission levels](getting-started.md#field-permission-levels)). The DocType is still owned by `crm` (`"app": "crm"` in the metadata API).
 
 Startup errors, each naming the app and the file: an unknown target; a target that none of your dependencies owns (your **own** DocTypes too: put the field in the DocType's file); a child DocType; a `table` field; a field name that the DocType or another overlay already has (the message names both apps); and a name that starts with `custom_`, a prefix reserved for [site custom fields](cli.md#customize-field-commands-m101) (an app's own DocType fields may not start with it either).
 
-Two things are yours to watch: a `required` overlay field on a DocType that already has documents makes the next update of each of them fail until the field is filled in, and a `unique` field creates a unique index over the existing rows (they hold NULL for it, and NULLs never collide). The overlay of the Rust example is `examples/sales_extension/overlays/customer.toml` (`loyalty_tier`); the Go example gets it in P7.
+Two things are yours to watch: a `required` overlay field on a DocType that already has documents makes the next update of each of them fail until the field is filled in, and a `unique` field creates a unique index over the existing rows (they hold NULL for it, and NULLs never collide). The overlay of the example is `examples/sales_extension/overlays/customer.toml` (`loyalty_tier`).
 
 ## 6. Upgrade with migrations
 

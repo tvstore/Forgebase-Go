@@ -21,9 +21,8 @@ import (
 // (submittable: a Link to the customer and to the group, a table whose rows Link to the group, and a
 // Link at field level 1) and ticket (a workflow with a Link to the group).
 //
-// Deferred Rust tests, with their phase (the tests that mix them with get and the like are ported
-// without them; the visible names, the Rust env.names, are those get finds, one document at a time):
-//   - two_sites_keep_their_own_permissions: P5 (sites)
+// The tests that mix them with get and the like are ported without them; the visible names, the Rust
+// env.names, are those get finds, one document at a time.
 // The export part of every_read_shows_only_what_the_restriction_allows and an_import_applies_the_rules_to_every_row
 // are ported in P7.2. The summary part and the transition test are ported (P6). The list parts, link titles and
 // the auth and management tests are here (P3).
@@ -1245,5 +1244,23 @@ func TestADatabaseWithoutTheTableStillServesItsUsers(t *testing.T) {
 	u, err := db.ValidateSession(bg, d.Pool, session.Token)
 	if err != nil || u == nil || !u.Restrictions.IsEmpty() {
 		t.Fatalf("%v %v", u, err)
+	}
+}
+
+// Rust: user_permissions.rs::two_sites_keep_their_own_permissions
+func TestTwoSitesKeepTheirOwnPermissions(t *testing.T) {
+	siteA, siteB := newUpEnv(t), newUpEnv(t)
+	for _, env := range []*upEnv{siteA, siteB} {
+		env.seed()
+		if _, err := db.CreateUser(bg, env.d.Pool, "ann", "correct horse battery", []string{"Sales"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustAddPermission(t, siteA, "ann", "customer_group", "Retail", true)
+	onA := callerOf(t, siteA, "ann")
+	onB := callerOf(t, siteB, "ann")
+	want(t, siteA.names("customer_group", onA), strs("Retail"), "site A")
+	if got := siteB.names("customer_group", onB); len(got) != 2 {
+		t.Errorf("site B: %v", got)
 	}
 }

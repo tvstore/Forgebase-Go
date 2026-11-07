@@ -402,10 +402,10 @@ func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 		t.Fatal(err)
 	}
 	contexts := []*siteContext{
-		{site: sites[0], pool: p.a.Pool, registry: composeds[0].registry, methods: composeds[0].MethodDispatch()},
-		{site: sites[1], pool: p.b.Pool, registry: composeds[1].registry, methods: composeds[1].MethodDispatch()},
+		{site: sites[0], pool: p.a.Pool, registry: composeds[0].registry, holder: holderOf(composeds[0]), methods: composeds[0].MethodDispatch()},
+		{site: sites[1], pool: p.b.Pool, registry: composeds[1].registry, holder: holderOf(composeds[1]), methods: composeds[1].MethodDispatch()},
 	}
-	routing, lines, err := routeSites(true, contexts, nil, httpapi.DefaultConfig())
+	routing, lines, err := routeSites(context.Background(), nil, true, contexts, nil, httpapi.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,12 +476,17 @@ func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 		}
 	}
 	// A site that has no dispatcher (the State of a test, not of serve) answers 404 for every method.
-	bare := []*siteContext{{site: sites[1], pool: p.b.Pool, registry: composeds[1].registry}}
-	bareRouting, _, err := routeSites(true, bare, nil, httpapi.DefaultConfig())
+	bare := []*siteContext{{site: sites[1], pool: p.b.Pool, registry: composeds[1].registry, holder: holderOf(composeds[1])}}
+	bareRouting, _, err := routeSites(context.Background(), nil, true, bare, nil, httpapi.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if code, _, _ := siteRequest(t, bareRouting, "POST", "/api/v1/method/base.hello", "b.localhost", siteLogin(t, bareRouting, "b.localhost"), "{}"); code != 404 {
 		t.Errorf("without a dispatcher: %d", code)
 	}
+}
+
+// holderOf is the registry holder of a composed site, as serve's site context has it.
+func holderOf(c *Composed) *db.RegistryHolder {
+	return db.NewRegistryHolder("test", c.registry, c.registry, nil)
 }

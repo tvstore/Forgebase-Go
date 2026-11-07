@@ -40,7 +40,7 @@ func (r *runner) job(ctx context.Context, site *site) error {
 			return err
 		}
 	}
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
+	sc, err := site.open(ctx, r.o, composed.registry, 0)
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (r *runner) job(ctx context.Context, site *site) error {
 		}
 		return errf("job %s is %s: only a dead job can be retried", id, status)
 	case "enqueue":
-		id, err := db.Enqueue(ctx, sc.pool, composed.registry, r.m.str("name"), payload, r.m.str("actor"))
+		id, err := db.Enqueue(ctx, sc.pool, sc.registry, r.m.str("name"), payload, r.m.str("actor"))
 		if err != nil {
 			return enqueueError(err)
 		}

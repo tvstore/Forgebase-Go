@@ -85,8 +85,12 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 			sc.close()
 		}
 	}()
+	// The background version check of every site (custom fields, ADR 0023) stops when serve ends, before the
+	// pools are closed.
+	reloadCtx, stopReload := context.WithCancel(ctx)
+	defer stopReload()
 	for i, site := range sites {
-		sc, err := site.open(ctx, r.o.Getenv, composeds[i].registry, 0)
+		sc, err := site.open(ctx, r.o, composeds[i].registry, 0)
 		if err != nil {
 			return err
 		}
@@ -96,7 +100,7 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 	base := httpapi.DefaultConfig()
 	base.SecureCookies = !insecure
 	base.DeskDir = deskDir
-	routing, lines, err := routeSites(cfg.configured, opened, implicitHosts, base)
+	routing, lines, err := routeSites(reloadCtx, r.o.Stderr, cfg.configured, opened, implicitHosts, base)
 	if err != nil {
 		return err
 	}
@@ -262,7 +266,7 @@ func (r *runner) siteComposeds(sites []*site, local string) ([]*Composed, error)
 // registry, behind one router. With a config file (configured) each site answers to its own hosts and a
 // line "site NAME: HOSTS" is returned for the announcement; without one the only site answers to
 // implicitHosts. base has the settings that are the same for every site.
-func routeSites(configured bool, sites []*siteContext, implicitHosts []string, base httpapi.Config) (*httpapi.Sites, []string, error) {
+func routeSites(reload context.Context, log io.Writer, configured bool, sites []*siteContext, implicitHosts []string, base httpapi.Config) (*httpapi.Sites, []string, error) {
 	var (
 		routing *httpapi.Sites
 		lines   []string
@@ -276,7 +280,8 @@ func routeSites(configured bool, sites []*siteContext, implicitHosts []string, b
 		if configured {
 			appConfig.AllowedHosts = sc.site.hosts
 		}
-		state := httpapi.NewState(sc.pool, sc.registry, appConfig).WithMethods(sc.methods)
+		state := httpapi.NewStateWithHolder(sc.pool, sc.holder, appConfig).WithMethods(sc.methods)
+		state.StartMetaReload(reload, log)
 		if configured {
 			if err := routing.AddSite(sc.site.hosts, state); err != nil {
 				return nil, nil, errf("%s", err)

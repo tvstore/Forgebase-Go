@@ -6,13 +6,12 @@ It shows:
 
 - **`DependsOn("sales")`**: `sales` must be added before it in `cmd/sales_extension/main.go`; apps are never sorted.
 - **A DocType of its own** (`doctypes/customer_visit.toml`) with a Link to `customer`, a DocType of `sales`.
+- **A field on a DocType of `sales`** (`overlays/customer.toml`, registered with `ExtendDocType("customer", ..)`, ADR 0023): `loyalty_tier` on `customer`. `sales` does not change; `migrate` adds the column, the metadata lists the field after those of `sales` (and `customer` still belongs to `sales`), and the permission rules of `customer` apply to it. A site that installs `sales` without this app has no such column and no such field.
 - **A hook on another app's DocType** (`MinimumOrder` on `sales_order`): `Validate` refuses an order whose `total` is below `MinOrderTotal` (10.00). Hooks of one DocType run in app order, so it runs after the `sales` hook that computes `total`. The minimum is a variable of the package because hooks have no database access. In the composed binary, every save of a sales order (draft included) needs a total of at least 10.00, so a draft without items (total 0) can no longer be saved, unlike with `sales` alone.
 - **A second hook set for the same DocType** (`FollowUp`): when an order is submitted (in `sales` that is an approval transition, because `sales_order` has an approval workflow: plain submit is refused), a `BeforeSubmit` hook, registered after `MinimumOrder` and so after the hooks of `sales` too, enqueues `sales_extension.plan_follow_up_visit` with `ctx.Enqueue` (the transactional outbox: no job if the submit is refused).
 - **A background job** (`plan_follow_up_visit`, registered with `Job`): reads the order through the documents handle (a DocType of `sales`), and plans a `customer_visit` a week after its `order_date` for its customer. Idempotent: the visit remembers its order in `source_order`, which is unique. The worker of the composed binary runs it next to the jobs of `sales`.
 - **The composed binary** (`cmd/sales_extension/main.go`): `sales`, then this app.
-- **Tests** (`sales_extension_test.go`): the hooks without a database, and both apps together against a real PostgreSQL: hook order, the cross-app Link, the `"app"` of each DocType in `GET /api/v1/meta`, permissions, and the jobs of both apps (`fbtest.RunJobs`).
-
-**Not in the Go port yet** (each arrives with the phase that ports the feature): the field `loyalty_tier` that the Rust example adds to `customer` with an overlay file (`overlays/customer.toml` and `ExtendDocType`, P7). The tests of the Rust example that need them are listed at the top of `sales_extension_test.go`.
+- **Tests** (`sales_extension_test.go`): the hooks without a database, and both apps together against a real PostgreSQL: the overlay field, hook order, the cross-app Link, the `"app"` of each DocType in `GET /api/v1/meta`, permissions, and the jobs of both apps (`fbtest.RunJobs`).
 
 ## Run it
 

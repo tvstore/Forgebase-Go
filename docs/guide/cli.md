@@ -1,6 +1,6 @@
 # The command-line tool
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend|transition`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5.1), `webhook add|list|disable|enable|remove|rotate-secret|test` (P7.1), `data export|import` (P7.2), `site list|create|backup|restore` (P5.2, with TLS to PostgreSQL: `sslmode=require` and `sslrootcert` in the database URL), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command (`customize`, `user permission`) parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
+> Go port status: every command of the Rust command line is in the Go binary: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend|transition`, `user create|set-password|add-role|remove-role|disable|enable` and `user permission add|list|remove` (P7.3), `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5.1), `webhook add|list|disable|enable|remove|rotate-secret|test` (P7.1), `data export|import` (P7.2), `customize field add|list|disable|enable` (P7.3), `site list|create|backup|restore` (P5.2, with TLS to PostgreSQL: `sslmode=require` and `sslrootcert` in the database URL), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). `bin/sales ...` in the examples stands for the binary of the example app, built with `cd examples/sales && go build -o ../../bin/sales ./cmd/sales` (a binary of your own works the same, and so does `forgebase --doctypes DIR`). See [Parity with the Rust command line](#parity-with-the-rust-command-line).
 
 Walkthrough of the `forgebase` commands (or the binary of your app) for users and tokens, background jobs, webhooks and sites. The document commands (`doc`) are in [Getting started](getting-started.md#quick-start). Run `forgebase --help` for every option.
 
@@ -10,16 +10,16 @@ Passwords are read from the first line of **standard input**, never from an argu
 
 ```sh
 # Create a user with two roles (usernames: 1-140 ASCII letters, digits and _ . @ -; passwords: 8-1024 bytes)
-printf '%s\n' 'a long password' | cargo run -p sales -- user create ann --role Sales --role Accounts
-# Without echo on a terminal: read -s -r PW && printf '%s\n' "$PW" | cargo run -p sales -- user create ann
-cargo run -p sales -- user add-role ann Admin
-cargo run -p sales -- user remove-role ann Admin
-printf '%s\n' 'another password' | cargo run -p sales -- user set-password ann   # also ends all sessions
-cargo run -p sales -- user disable ann    # sessions and tokens stop working; `user enable` undoes it
+printf '%s\n' 'a long password' | bin/sales user create ann --role Sales --role Accounts
+# Without echo on a terminal: read -s -r PW && printf '%s\n' "$PW" | bin/sales user create ann
+bin/sales user add-role ann Admin
+bin/sales user remove-role ann Admin
+printf '%s\n' 'another password' | bin/sales user set-password ann   # also ends all sessions
+bin/sales user disable ann    # sessions and tokens stop working; `user enable` undoes it
 
 # An API token for a machine client: prints key:secret once
-cargo run -p sales -- token create ann
-cargo run -p sales -- token revoke <key>
+bin/sales token create ann
+bin/sales token revoke <key>
 ```
 
 Five consecutive failed logins for a username (each within 15 minutes of the previous one) lock it for 15 minutes; see [ADR 0010](../adr/0010-authentication-and-sessions.md) and the [security model](../blueprint/security-model.md).
@@ -33,15 +33,15 @@ Walkthrough: [Customizing and restricting data](customizing.md#user-permissions)
 
 ```sh
 # Ann (role Sales) may see only the customer group Retail, and so only the customers and orders of that group
-cargo run -p sales -- user permission add --user ann --doctype customer_group --value Retail --site main
+bin/sales user permission add --user ann --doctype customer_group --value Retail --site main
 # restricted user ann to customer_group Retail; it applies on the user's next request (at most 1000 per DocType)
-cargo run -p sales -- user permission add --user ann --doctype customer_group --value Online --site main   # allow a second group
-cargo run -p sales -- user permission list --site main                      # every row, sorted by user, DocType and value
-cargo run -p sales -- user permission list --user ann --doctype customer_group --site main
+bin/sales user permission add --user ann --doctype customer_group --value Online --site main   # allow a second group
+bin/sales user permission list --site main                      # every row, sorted by user, DocType and value
+bin/sales user permission list --user ann --doctype customer_group --site main
 # USER  DOCTYPE         VALUE   ADDED
 # ann   customer_group  Online  2026-11-01T09:30:12.123456Z
 # ann   customer_group  Retail  2026-11-01T09:30:05.654321Z
-cargo run -p sales -- user permission remove --user ann --doctype customer_group --value Online --site main
+bin/sales user permission remove --user ann --doctype customer_group --value Online --site main
 ```
 
 - **`add`** needs the user, the DocType (one of the site's, custom fields included; not a child DocType: restrict the parent) and the document to exist when it is added (it is looked up as the system context). Adding a row that exists succeeds and says `already`. At most **1000** documents per user and DocType: the 1001st is refused with a message that says so. `--doctypes DIR` is accepted like for `webhook add`.
@@ -173,16 +173,16 @@ name = "custom_vip"
 label = "VIP"
 type = "check"
 EOF2
-cargo run -p sales -- customize field add --doctype customer --field vip.toml --site main
+bin/sales customize field add --doctype customer --field vip.toml --site main
 # added custom field customer.custom_vip (check); its column exists now, and a running server or worker uses it within 10 seconds
-printf 'name = "custom_rank"\ntype = "int"\nunique = true\n' | cargo run -p sales -- customize field add --doctype customer --field - --site main
+printf 'name = "custom_rank"\ntype = "int"\nunique = true\n' | bin/sales customize field add --doctype customer --field - --site main
 
-cargo run -p sales -- customize field list --site main                      # every custom field
-cargo run -p sales -- customize field list --doctype customer --site main   # one DocType's
+bin/sales customize field list --site main                      # every custom field
+bin/sales customize field list --doctype customer --site main   # one DocType's
 # DOCTYPE   NAME         TYPE   LABEL        ENABLED  MODIFIED                     BY
 # customer  custom_vip   check  VIP          yes      2026-11-01T09:30:12.123456Z  cli
-cargo run -p sales -- customize field disable --doctype customer custom_vip --site main
-cargo run -p sales -- customize field enable --doctype customer custom_vip --site main
+bin/sales customize field disable --doctype customer custom_vip --site main
+bin/sales customize field enable --doctype customer custom_vip --site main
 ```
 
 - **Rules.** The name starts with `custom_`. Any type except `table`. `required` and `read_only` are refused (the documents that exist have no value for a new field, and nothing could write a read-only site field); `unique`, `allow_on_submit` (on a submittable DocType) and `perm_level` (0 to 9, M10.2: callers without a `[[permissions]]` rule of that `level` on the DocType do not see the field; see [field permission levels](getting-started.md#field-permission-levels)) are allowed; `required` stays refused with a level too. The DocType must exist, must not be a child DocType and must have been migrated; a Link must target a DocType that exists. A name that the DocType, an app overlay or an earlier custom field has (**a disabled one too**: use `enable`) is refused. Every refusal prints the reason and exits with code 1, and changes nothing.
