@@ -68,8 +68,13 @@ func (r *runner) siteCreate(ctx context.Context, site *site) error {
 	if err != nil {
 		return err
 	}
-	maintenance, _ := r.m.opt("maintenance_db")
-	created, err := db.CreateDatabase(ctx, url, maintenance)
+	// The flag has the default `postgres`; an explicit empty value is passed on as it is (Rust).
+	maintenance, given := r.m.opt("maintenance_db")
+	var maintenanceDB *string
+	if given {
+		maintenanceDB = &maintenance
+	}
+	created, err := db.CreateDatabase(ctx, url, maintenanceDB)
 	if err != nil {
 		return errSite(name, err)
 	}

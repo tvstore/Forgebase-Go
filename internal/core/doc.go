@@ -19,6 +19,11 @@
 // afterwards; they are shared by pointer between goroutines and must not be changed once added (a
 // change makes a copy: DocType.Clone, Registry.Clone).
 //
+// What is public. The root package forgebase re-exports several types of this package (the hook types,
+// Document, Row, Value, HookContext, TransitionInfo, EnqueuedJobs) as type aliases. An alias exposes the whole
+// type: every exported field and method of an aliased type is public API (the list is in ADR 0028), so code
+// that only the framework needs must be a free function or unexported, never an exported method of such a type.
+//
 // Import direction: core imports only the standard library, github.com/BurntSushi/toml and
 // internal/decimal (a leaf package without I/O), and never another Forgebase package (ADR 0026, ADR
 // 0027).

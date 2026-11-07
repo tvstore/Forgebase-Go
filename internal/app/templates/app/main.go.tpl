@@ -6,14 +6,14 @@ import (
 
 	"github.com/tvstore/forgebase-go"
 
-	"{{name}}"
+	apppkg "{{name}}"
 )
 
-// binary is the whole wiring: the apps of this binary, in dependency order.
-func binary() *forgebase.Binary {
-	return forgebase.New().App({{name}}.App())
+// apps is the whole wiring: the apps of this binary, in dependency order.
+func apps() *forgebase.Binary {
+	return forgebase.New().App(apppkg.App())
 }
 
 func main() {
-	os.Exit(binary().Run())
+	os.Exit(apps().Run())
 }
