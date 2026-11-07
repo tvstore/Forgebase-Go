@@ -191,12 +191,13 @@ func TestAPanicInAHandlerIsAGeneric500(t *testing.T) {
 	}
 }
 
-// The routing as axum does it: the raw path is matched, a parameter is a whole non-empty segment, a
-// trailing slash or an empty segment is an unknown path and the Allow header lists the methods.
+// The routing as axum does it: the raw path is matched, a parameter is a whole segment (it may be empty
+// when a "/" follows it, as in matchit, but not as the last segment), a trailing slash is an unknown path
+// and the Allow header lists the methods.
 func TestRoutingAsAxumDoesIt(t *testing.T) {
 	h := ImplicitSites(lazyState(t))
 	for _, path := range []string{
-		"/api/v1/resource/x/", "/api/v1/resource//x", "/api/v1/resource/x//", "/api/v1/resource/x/y/z/submit/",
+		"/api/v1/resource/x/", "/api/v1/resource/", "/api/v1/resource//", "/api/v1/resource/x/y/z/submit/",
 		"/api/v1/resource/x/y/unknown", "/API/v1/login", "/api/v1/login/", "//api/v1/login", "/api/v1/%6Cogin",
 	} {
 		rep := sendTo(t, h, get(path))
@@ -210,6 +211,10 @@ func TestRoutingAsAxumDoesIt(t *testing.T) {
 		"/api/v1/resource/note/x/amend": "POST",
 		// A percent-encoded slash stays inside the segment.
 		"/api/v1/resource/a%2Fb": "GET,HEAD,POST",
+		// An empty parameter followed by "/" is a parameter (matchit): the route of the name.
+		"/api/v1/resource//x":        "GET,HEAD,PATCH,DELETE",
+		"/api/v1/resource/x//submit": "POST",
+		"/api/v1/resource//x/amend":  "POST",
 	} {
 		rep := sendTo(t, h, reqOf(http.MethodPut, path))
 		assertEnvelope(t, rep, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -254,8 +259,11 @@ func TestPercentDecode(t *testing.T) {
 
 // Rust: (axum Query over serde_urlencoded) pairs in order, "+" is a space, bad UTF-8 becomes U+FFFD.
 func TestQueryPairs(t *testing.T) {
-	got := queryPairs("a=1&b=x+y&c&&d=%41%2b&e=%FF&a=2&=v")
-	want := [][2]string{{"a", "1"}, {"b", "x y"}, {"c", ""}, {"d", "A+"}, {"e", "�"}, {"a", "2"}, {"", "v"}}
+	// Invalid UTF-8 is one U+FFFD per maximal invalid subpart, as String::from_utf8_lossy: a cut sequence is one.
+	fffd := string(rune(0xFFFD))
+	got := queryPairs("a=1&b=x+y&c&&d=%41%2b&e=%FF&a=2&=v&f=%E2%82x&g=%FF%FF")
+	want := [][2]string{{"a", "1"}, {"b", "x y"}, {"c", ""}, {"d", "A+"}, {"e", fffd}, {"a", "2"}, {"", "v"},
+		{"f", fffd + "x"}, {"g", fffd + fffd}}
 	if len(got) != len(want) {
 		t.Fatalf("%v", got)
 	}
@@ -347,4 +355,41 @@ func TestMarshalIsSerdeLike(t *testing.T) {
 	if got := string(b); got != want {
 		t.Errorf("got %s, want %s", got, want)
 	}
+}
+
+// An empty parameter followed by "/" reaches the handler: authentication first (401), then the unknown
+// DocType of the empty name (404 unknown doctype), and x//submit reaches submit.
+func TestAnEmptyParameterReachesTheHandler(t *testing.T) {
+	h := ImplicitSites(lazyState(t))
+	assertEnvelope(t, sendTo(t, h, get("/api/v1/resource//x")), http.StatusUnauthorized, "unauthenticated")
+	assertEnvelope(t, sendTo(t, h, post("/api/v1/resource/x//submit").json(J{"version": 1})), http.StatusUnauthorized, "unauthenticated")
+}
+
+// A panic after the answer has started cannot be answered with the 500 envelope: the connection is
+// dropped (http.ErrAbortHandler), the answer is not finished with a second body.
+func TestAPanicAfterTheAnswerStartedDropsTheConnection(t *testing.T) {
+	state := lazyState(t)
+	state.routes = append(state.routes, &route{
+		segments: pattern("/half"), allow: "GET,HEAD",
+		methods: map[string]handlerFunc{"GET": func(_ *State, w http.ResponseWriter, _ *request) error {
+			w.WriteHeader(http.StatusOK)
+			panic("late")
+		}},
+	})
+	logMu.Lock()
+	old := logWriter
+	logWriter = &strings.Builder{}
+	logMu.Unlock()
+	defer func() {
+		logMu.Lock()
+		logWriter = old
+		logMu.Unlock()
+	}()
+	defer func() {
+		if p := recover(); p != http.ErrAbortHandler {
+			t.Errorf("recovered %v, want http.ErrAbortHandler", p)
+		}
+	}()
+	sendTo(t, ImplicitSites(state), get("/half"))
+	t.Error("no panic")
 }

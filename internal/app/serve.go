@@ -44,6 +44,8 @@ func (r *runner) getenvOr(name, def string) string {
 // serve runs the server. The sites are opened after the registry is composed, so that a problem with the
 // DocType files is reported without touching a database.
 func (r *runner) serve(ctx context.Context, cfg *config) error {
+	// First thing, so that no announcement or warning below can end the process over a closed pipe.
+	ignoreBrokenPipe()
 	siteName, named := r.m.opt("site")
 	sites, err := cfg.serveSet(siteName, named)
 	if err != nil {

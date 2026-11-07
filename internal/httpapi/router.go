@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tvstore/forgebase-go/internal/core"
 )
 
 // The routes of one site and their matching. The router is written for this project instead of using
 // http.ServeMux because the API must route like the Rust axum router: the raw request path is matched
 // (a "%2F" in a segment stays inside the segment, "/a//b" and "/a/b/" are not cleaned or redirected),
-// a parameter is a whole, non-empty segment that is percent-decoded only when a handler reads it
+// a parameter is a whole segment (empty unless it is the last one) that is percent-decoded only when a handler reads it
 // (a decoded value that is not UTF-8 is 400 bad_request "invalid path", after authentication), an
 // unknown path is 404 and a known path with another method is 405 with the Allow header.
 
@@ -55,7 +57,9 @@ func (r *request) pathParams(n int) ([]string, error) {
 }
 
 // percentDecode decodes %XX sequences ("+" stays); a "%" that is not followed by two hex digits stays
-// as it is. ok is false when the result is not valid UTF-8.
+// as it is (as in axum). ok is false when the result is not valid UTF-8. A target whose "%" is not
+// followed by two hex digits (such as /a/%zz) never reaches the router of a real server: net/http's
+// parser refuses it first (see the CHANGELOG, "Differences from Rust"); handlers called directly get it.
 func percentDecode(s string) (string, bool) {
 	if !strings.Contains(s, "%") {
 		return s, true
@@ -125,7 +129,9 @@ routes:
 		for i, want := range rt.segments {
 			switch {
 			case want == "{}":
-				if segments[i] == "" {
+				// matchit (tree.rs, the Param branch) takes an empty parameter when a "/" follows it; only
+				// an empty last segment finds no route.
+				if segments[i] == "" && i == len(segments)-1 {
 					continue routes
 				}
 				params = append(params, segments[i])
@@ -278,8 +284,5 @@ func formDecode(s string) string {
 		}
 		out = append(out, s[i])
 	}
-	if utf8.Valid(out) {
-		return string(out)
-	}
-	return string([]rune(string(out)))
+	return core.LossyUTF8(string(out))
 }

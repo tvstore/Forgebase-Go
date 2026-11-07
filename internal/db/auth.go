@@ -6,9 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -222,7 +224,10 @@ func (u AuthUser) Caller() core.Caller {
 }
 
 // LoginSession is the result of a successful Login. The tokens are returned only here and cannot be
-// read back later: the database holds their digests only. fmt prints them as <redacted>.
+// read back later: the database holds their digests only. fmt prints them as <redacted>. (Format works on
+// a value that fmt reaches directly: a struct that holds a LoginSession or an APITokenSecret in an unexported
+// field is printed field by field by %v and bypasses Format, so never put one in such a struct that is
+// logged.)
 type LoginSession struct {
 	// Token is the session token: send it to the client (the HTTP API puts it in a cookie), never
 	// log it.
@@ -240,6 +245,25 @@ func (s LoginSession) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "LoginSession{Token: <redacted>, CSRFToken: <redacted>, User: %+v, ExpiresAt: %v}", s.User, s.ExpiresAt)
 }
 
+// MarshalJSON keeps the tokens out of encoding/json: they are written as "[redacted]".
+func (s LoginSession) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Token     string    `json:"token"`
+		CSRFToken string    `json:"csrf_token"`
+		User      AuthUser  `json:"user"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}{redacted, redacted, s.User, s.ExpiresAt})
+}
+
+// LogValue keeps the tokens out of log/slog.
+func (s LoginSession) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("token", redacted), slog.String("csrf_token", redacted),
+		slog.String("user", s.User.Username), slog.Time("expires_at", s.ExpiresAt))
+}
+
+// redacted is what a secret is written as by MarshalJSON and LogValue.
+const redacted = "[redacted]"
+
 // APITokenSecret is a new API token. The secret is returned only here. fmt prints it as <redacted>.
 type APITokenSecret struct {
 	// Key is the public identifier of the token.
@@ -251,6 +275,19 @@ type APITokenSecret struct {
 // Format keeps the secret out of every fmt verb.
 func (t APITokenSecret) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "APITokenSecret{Key: %s, Secret: <redacted>}", t.Key)
+}
+
+// MarshalJSON keeps the secret out of encoding/json: it is written as "[redacted]".
+func (t APITokenSecret) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Key    string `json:"key"`
+		Secret string `json:"secret"`
+	}{t.Key, redacted})
+}
+
+// LogValue keeps the secret out of log/slog.
+func (t APITokenSecret) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("key", t.Key), slog.String("secret", redacted))
 }
 
 // ---- rules ----------------------------------------------------------------------------------------

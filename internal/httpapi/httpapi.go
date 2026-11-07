@@ -272,9 +272,11 @@ func (s *Sites) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				panic(p)
 			}
 			e := errInternal(fmt.Sprintf("panic: %v", p))
-			if !tw.wrote {
-				e.write(tw)
+			if tw.wrote {
+				// The answer has started: it cannot be replaced, so drop the connection.
+				panic(http.ErrAbortHandler)
 			}
+			e.write(tw)
 		}
 	}()
 	state, err := s.pick(r)
