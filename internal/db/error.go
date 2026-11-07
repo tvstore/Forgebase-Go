@@ -153,6 +153,18 @@ const (
 	// all rolled back, unless the message says the outcome of the commit is unknown (App, File, Record,
 	// Message).
 	ErrFixtureFailed
+	// ErrCustomField: a site custom field cannot be added (M10.1, ADR 0023): the field breaks a rule (the
+	// prefix, required, a Table type, a name the DocType has, ...) or the DocType is unknown or a child. Nothing
+	// was written (Overlay).
+	ErrCustomField
+	// ErrCustomFieldExists: a custom field with this name exists on the DocType already, enabled or disabled
+	// (DocType, Name).
+	ErrCustomFieldExists
+	// ErrCustomFieldNotFound: no custom field has this name on this DocType (DocType, Name).
+	ErrCustomFieldNotFound
+	// ErrDocTypeNotMigrated: the table of the DocType does not exist yet, so a column cannot be added to it
+	// (DocType).
+	ErrDocTypeNotMigrated
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -210,6 +222,8 @@ type Error struct {
 	Count, Limit uint64
 	// File and Record are the fixture file and the record (its position and name) of ErrFixtureFailed.
 	File, Record string
+	// Overlay is the rule that ErrCustomField is about.
+	Overlay core.OverlayError
 	// Hook is the failed hook of ErrHook: before_insert, validate, before_delete, before_submit,
 	// before_cancel or before_transition.
 	Hook string
@@ -334,6 +348,14 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("the export would have %d rows, over the limit of %d; narrow the filters", e.Count, e.Limit)
 	case ErrFixtureFailed:
 		return fmt.Sprintf("fixtures of app `%s` were not applied: %s: %s: %s", e.App, e.File, e.Record, e.Message)
+	case ErrCustomField:
+		return "custom field: " + e.Overlay.Error()
+	case ErrCustomFieldExists:
+		return fmt.Sprintf("custom field `%s` already exists on DocType `%s` (a disabled field is brought back with `enable`)", e.Name, e.DocType)
+	case ErrCustomFieldNotFound:
+		return fmt.Sprintf("custom field `%s` of DocType `%s` not found", e.Name, e.DocType)
+	case ErrDocTypeNotMigrated:
+		return fmt.Sprintf("the table of DocType `%s` does not exist; run `forgebase migrate` first", e.DocType)
 	case ErrHook:
 		return fmt.Sprintf("%s hook of DocType `%s` rejected the operation: %s", e.Hook, e.DocType, e.Message)
 	}

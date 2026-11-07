@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,10 +21,8 @@ import (
 //
 // Ported in P4 (the app model): the hooks, the apps together (hook order, the cross-app Link, the owner of
 // each DocType, permissions). Ported in P5 (jobs) and P6 (workflow transitions): the job tests, with the submit
-// by the approval workflow of sales. Deferred, with the phase whose feature the Rust test uses:
-//
-//   - P7 (overlays): the_overlay_field_is_a_field_of_customer,
-//     the_overlay_field_exists_only_where_the_extension_app_is_installed.
+// by the approval workflow of sales. Ported in P7.3 (overlays): the_overlay_field_is_a_field_of_customer and
+// the_overlay_field_exists_only_where_the_extension_app_is_installed.
 
 // binary is the same apps, in the same order, as cmd/sales_extension.
 func binary() *forgebase.Binary {
@@ -272,6 +271,82 @@ func TestTheMetadataNamesTheAppOfEveryDocType(t *testing.T) {
 	}
 	if appOf("customer_visit") != "sales_extension" || appOf("sales_order") != "sales" || appOf("customer") != "sales" {
 		t.Errorf("%s", meta.Text)
+	}
+}
+
+// Rust: extension.rs::the_overlay_field_is_a_field_of_customer
+func TestTheOverlayFieldIsAFieldOfCustomer(t *testing.T) {
+	e := newEnv(t)
+	// The column exists, added by migrate from the overlay.
+	want := [][]string{{"text"}}
+	if got := e.db.Rows("SELECT data_type FROM information_schema.columns WHERE table_name = 'doc_customer' AND column_name = 'loyalty_tier'"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v", got)
+	}
+	// The metadata of customer lists it after the fields of sales; customer still belongs to sales.
+	meta := e.user.Get("/api/v1/meta/customer")
+	if meta.Status != 200 || at(meta.Data(), "app") != "sales" {
+		t.Fatalf("%d %s", meta.Status, meta.Text)
+	}
+	var fields []string
+	for _, f := range at(meta.Data(), "fields").([]any) {
+		fields = append(fields, f.(map[string]any)["name"].(string))
+	}
+	if fields[len(fields)-1] != "loyalty_tier" {
+		t.Errorf("%v", fields)
+	}
+	if !slices.Contains(fields, "tier") {
+		t.Errorf("the field of sales is still there: %v", fields)
+	}
+
+	// The rules of customer apply: a Sales Manager writes it, a Sales User only reads it, and the select
+	// options are checked.
+	updated := e.manager.Patch("/api/v1/resource/customer/ada@example.com", map[string]any{"version": 1, "data": map[string]any{"loyalty_tier": "Gold"}})
+	if updated.Status != 200 {
+		t.Fatalf("%d %s", updated.Status, updated.Text)
+	}
+	read := e.user.Get("/api/v1/resource/customer/ada@example.com")
+	if at(read.Data(), "loyalty_tier") != "Gold" {
+		t.Errorf("%s", read.Text)
+	}
+	denied := e.user.Patch("/api/v1/resource/customer/ada@example.com", map[string]any{"version": 2, "data": map[string]any{"loyalty_tier": "Silver"}})
+	if denied.Status != 403 {
+		t.Errorf("%d %s", denied.Status, denied.Text)
+	}
+	bad := e.manager.Patch("/api/v1/resource/customer/ada@example.com", map[string]any{"version": 2, "data": map[string]any{"loyalty_tier": "Platinum"}})
+	if bad.Status != 422 {
+		t.Errorf("%d %s", bad.Status, bad.Text)
+	}
+}
+
+// Rust: extension.rs::the_overlay_field_exists_only_where_the_extension_app_is_installed
+func TestTheOverlayFieldExistsOnlyWhereTheExtensionAppIsInstalled(t *testing.T) {
+	// sales alone (what the site shop of examples/sites installs): no column, no field in the metadata, and a
+	// document has no such value.
+	salesOnly := forgebase.New().App(sales.App())
+	db := fbtest.NewDB(t)
+	if _, err := db.Migrate(salesOnly, false); err != nil {
+		t.Fatal(err)
+	}
+	db.CreateUser("max", "Sales Manager")
+	manager := db.Client(salesOnly).Login("max")
+	created := manager.Post("/api/v1/resource/customer", map[string]any{"email": "ada@example.com", "full_name": "Ada Lovelace"})
+	if created.Status != 201 {
+		t.Fatalf("%d %s", created.Status, created.Text)
+	}
+	if _, there := created.DataObject()["loyalty_tier"]; there {
+		t.Errorf("%s", created.Text)
+	}
+	meta := manager.Get("/api/v1/meta/customer")
+	if meta.Status != 200 || strings.Contains(meta.Text, "loyalty_tier") {
+		t.Fatalf("%d %s", meta.Status, meta.Text)
+	}
+	if rows := db.Rows("SELECT 1 FROM information_schema.columns WHERE table_name = 'doc_customer' AND column_name = 'loyalty_tier'"); len(rows) != 0 {
+		t.Errorf("%v", rows)
+	}
+	// Sending the field is an unknown field, not a stored value.
+	refused := manager.Patch("/api/v1/resource/customer/ada@example.com", map[string]any{"version": 1, "data": map[string]any{"loyalty_tier": "Gold"}})
+	if refused.Status != 422 {
+		t.Errorf("%d %s", refused.Status, refused.Text)
 	}
 }
 

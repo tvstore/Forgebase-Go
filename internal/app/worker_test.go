@@ -113,7 +113,7 @@ func setupWith(t *testing.T, grace time.Duration, schedule *Schedule) *labWorld 
 	t.Cleanup(pool.Close)
 	log := &logBuffer{}
 	return &labWorld{t: t, d: d, pool: pool, lab: l, log: log,
-		worker: newWorker(pool, composed.registry, composed, workerConfigFor(grace), log)}
+		worker: newWorker(pool, db.NewRegistryHolder("default", composed.registry, composed.registry, nil), composed, workerConfigFor(grace), log)}
 }
 
 func setupLab(t *testing.T, grace time.Duration) *labWorld {

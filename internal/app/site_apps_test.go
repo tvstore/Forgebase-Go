@@ -23,8 +23,8 @@ import (
 // are part of them since P5.1 (the worker of a site is in site_workers_test.go of the root package, which runs
 // the apps as a real process). The site list, site create and follow_ups scenarios are in site_cmd_test.go
 // (P5.2). The fixtures of extra (M9.4) are part of migrate_per_site and of the removed-app test since P7.2.
-// Deferred, with the phase that brings what they use: the HTTP view of a site's apps (cmd/forgebase tests, with
-// the sales example in P4 and the methods in P7).
+// The HTTP view of a site's apps (http_per_site) and the serve step of removed_app run the real binary: they are in
+// site_http_test.go of the root package (P7.3).
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +

@@ -1,6 +1,6 @@
 # Customizing and restricting data
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: ported in P7.3. The commands are those of the Go binary of the example (`bin/sales_extension` below), and the app code is Go; the behaviour, the messages and the HTTP API are those of the Rust implementation.
 
 A walkthrough of M10 on the [`sales`](../../examples/sales/README.md) example: add a field to a DocType you do not own, add a field to one site, keep a field away from most users, and show a user only some of the documents. It links the reference pages instead of repeating them; every command and request below was run against a scratch database with the composed binary of [`sales_extension`](../../examples/sales_extension/README.md) (single-site mode, so no `--site`; with a [config file](cli.md#sites) add `--site NAME`).
 
@@ -8,7 +8,7 @@ The pieces and where each one is decided:
 
 | What | Who changes it | When it applies | Decision |
 |---|---|---|---|
-| A field an app adds to another app's DocType (an **overlay**) | the app's author, in Rust and TOML | with the next build and `migrate` | [ADR 0023](../adr/0023-metadata-overlays.md) |
+| A field an app adds to another app's DocType (an **overlay**) | the app's author, in Go and TOML | with the next build and `migrate` | [ADR 0023](../adr/0023-metadata-overlays.md) |
 | A **site custom field** | an Administrator of the server (command line or API) | within 10 seconds, no restart | [ADR 0023](../adr/0023-metadata-overlays.md) |
 | A **field permission level** | the app's author, in the DocType file | with the next build | [ADR 0024](../adr/0024-field-permission-levels.md) |
 | A **user permission** | an Administrator (command line or API) | on the user's next request | [ADR 0025](../adr/0025-user-permissions.md) |
@@ -16,16 +16,17 @@ The pieces and where each one is decided:
 The setup of the examples below: `sales` has the DocTypes `customer` and `customer_group` (the groups `Retail`, `Wholesale` and `Online` come from [fixtures](first-app.md#9-fixtures)), and the users `ann` (role `Sales User`) and `max` (`Sales Manager`).
 
 ```sh
+(cd examples/sales_extension && go build -o ../../bin/sales_extension ./cmd/sales_extension)
 export FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/sales_ext   # an empty database
-cargo run -p sales_extension -- migrate
-echo 'a long password' | cargo run -p sales_extension -- user create ann --role "Sales User"
-echo 'a long password' | cargo run -p sales_extension -- user create max --role "Sales Manager"
-cargo run -p sales_extension -- doc insert customer \
+bin/sales_extension migrate
+echo 'a long password' | bin/sales_extension user create ann --role "Sales User"
+echo 'a long password' | bin/sales_extension user create max --role "Sales Manager"
+bin/sales_extension doc insert customer \
   --data '{"email": "ada@example.com", "full_name": "Ada", "credit_limit": "1250.50", "customer_group": "Retail"}'
-cargo run -p sales_extension -- doc insert customer \
+bin/sales_extension doc insert customer \
   --data '{"email": "bob@example.com", "full_name": "Bob", "credit_limit": "99.00", "customer_group": "Wholesale"}'
-cargo run -p sales_extension -- doc insert customer --data '{"email": "cy@example.com", "full_name": "Cy"}'
-FORGEBASE_DEV_INSECURE_COOKIES=1 cargo run -p sales_extension -- serve
+bin/sales_extension doc insert customer --data '{"email": "cy@example.com", "full_name": "Cy"}'
+FORGEBASE_DEV_INSECURE_COOKIES=1 bin/sales_extension serve
 ```
 
 The `doc` commands run as the trusted system context, which sees and writes everything (see [what is not covered](#what-is-not-covered)). The HTTP examples log in with `POST /api/v1/login` first, as in the [HTTP API guide](http-api.md).
@@ -42,15 +43,18 @@ type = "select"
 options = ["None", "Silver", "Gold"]
 ```
 
-and the app registers it in [`src/lib.rs`](../../examples/sales_extension/src/lib.rs):
+and the app embeds it and registers it in [`sales_extension.go`](../../examples/sales_extension/sales_extension.go):
 
-```rust
-App::new("sales_extension")
-    .depends_on(&["sales"])
-    .extend_doctype("customer", forgebase::overlays!["overlays/customer.toml"])
+```go
+//go:embed overlays/customer.toml
+var customerOverlays embed.FS
+
+forgebase.NewApp("sales_extension").
+	DependsOn("sales").
+	ExtendDocType("customer", customerOverlays)
 ```
 
-What you get: `migrate` adds the column; `GET /api/v1/meta/customer` lists `loyalty_tier` after the fields of `sales` (and `"app": "sales"` still, the DocType is owned by `sales`); filters, sort, export, import, hooks and the desk see it; and the `[[permissions]]` of `customer` apply to it, so a Sales Manager writes it and a Sales User only reads it. It exists **only where the app is installed**: on a site that installs `sales` alone (the site `shop` of [examples/sites](../../examples/sites/README.md)) there is no column and the metadata does not list it. Tests: `the_overlay_field_is_a_field_of_customer` and `the_overlay_field_exists_only_where_the_extension_app_is_installed`.
+What you get: `migrate` adds the column; `GET /api/v1/meta/customer` lists `loyalty_tier` after the fields of `sales` (and `"app": "sales"` still, the DocType is owned by `sales`); filters, sort, export, import, hooks and the desk see it; and the `[[permissions]]` of `customer` apply to it, so a Sales Manager writes it and a Sales User only reads it. It exists **only where the app is installed**: on a site that installs `sales` alone (the site `shop` of [examples/sites](../../examples/sites/README.md)) there is no column and the metadata does not list it. Tests (in [`sales_extension_test.go`](../../examples/sales_extension/sales_extension_test.go)): `TestTheOverlayFieldIsAFieldOfCustomer` and `TestTheOverlayFieldExistsOnlyWhereTheExtensionAppIsInstalled`.
 
 Rules and limits (an overlay on an unknown DocType, on one of the app's own or of a non-dependency, on a child DocType, with a `table` field, a name that is taken, or one that starts with `custom_` stops the binary at startup, naming the app and file): [first-app guide](first-app.md#add-a-field-to-another-apps-doctype-overlays) and [ADR 0023](../adr/0023-metadata-overlays.md#app-overlays). Only fields can be added: no property setters, so a field's label, options or rights cannot be changed from outside.
 
@@ -60,9 +64,9 @@ An overlay is code. A **site custom field** is data: one site adds a field to a 
 
 ```sh
 printf 'name = "custom_region"\nlabel = "Region"\ntype = "data"\n' \
-  | cargo run -p sales_extension -- customize field add --doctype customer --field -
+  | bin/sales_extension customize field add --doctype customer --field -
 # added custom field customer.custom_region (data); its column exists now, and a running server or worker uses it within 10 seconds
-cargo run -p sales_extension -- customize field list --doctype customer
+bin/sales_extension customize field list --doctype customer
 ```
 
 The running server picks it up within 10 seconds (it checks a per-site version; a request in progress finishes with the metadata it started with). Then `GET /api/v1/meta/customer` lists it, and it takes values like any field:
@@ -116,16 +120,16 @@ curl -s -b max.jar http://localhost:8000/api/v1/resource/customer/ada@example.co
 - **An update by someone who cannot see the field keeps its value.** Hooks see the whole document. The Administrator role and the system context see and write every level.
 - A field at a level that no rule names is visible to Administrators only.
 
-The syntax, the definition errors (no level on the naming field, a `title_field`, a `list_fields` column, a `required` field or a child field) and the leak review are in [getting started](getting-started.md#field-permission-levels) and [ADR 0024](../adr/0024-field-permission-levels.md). Tests: `a_sales_user_does_not_see_the_credit_limit_anywhere` and the four tests after it in [`examples/sales/tests/sales.rs`](../../examples/sales/tests/sales.rs), the field-level suites of `forgebase-http` and `forgebase`, and the Playwright specs.
+The syntax, the definition errors (no level on the naming field, a `title_field`, a `list_fields` column, a `required` field or a child field) and the leak review are in [getting started](getting-started.md#field-permission-levels) and [ADR 0024](../adr/0024-field-permission-levels.md). Tests: `TestASalesUserDoesNotSeeTheCreditLimitAnywhere` and the four tests after it in [`examples/sales/sales_test.go`](../../examples/sales/sales_test.go), the field-level suites of `internal/httpapi` and of the root package (`field_levels_test.go`), and the Playwright specs.
 
 ## User permissions
 
 Roles say what a user may do; user permissions say **which documents**. Restrict Ann to the customer group `Retail`:
 
 ```sh
-cargo run -p sales_extension -- user permission add --user ann --doctype customer_group --value Retail
+bin/sales_extension user permission add --user ann --doctype customer_group --value Retail
 # restricted user ann to customer_group Retail; it applies on the user's next request (at most 1000 per DocType)
-cargo run -p sales_extension -- user permission list --user ann
+bin/sales_extension user permission list --user ann
 # USER  DOCTYPE         VALUE   ADDED
 # ann   customer_group  Retail  2026-11-01T09:31:13.533168Z
 ```

@@ -97,8 +97,12 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 			sc.close()
 		}
 	}()
+	// The background version check of every site (custom fields, ADR 0023) stops when serve ends, before the
+	// pools are closed.
+	reloadCtx, stopReload := context.WithCancel(ctx)
+	defer stopReload()
 	for i, site := range sites {
-		sc, err := site.open(ctx, r.o.Getenv, registries[i], 0)
+		sc, err := site.open(ctx, r.o, registries[i], 0)
 		if err != nil {
 			return err
 		}
@@ -111,7 +115,8 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 		appConfig.AllowedHosts = hosts
 		appConfig.SecureCookies = !insecure
 		appConfig.DeskDir = deskDir
-		state := httpapi.NewState(sc.pool, sc.registry, appConfig).WithMethods(dispatchers[i])
+		state := httpapi.NewStateWithHolder(sc.pool, sc.holder, appConfig).WithMethods(dispatchers[i])
+		state.StartMetaReload(reloadCtx, r.o.Stderr)
 		if cfg.configured {
 			if err := routing.AddSite(site.hosts, state); err != nil {
 				return errf("%s", err)

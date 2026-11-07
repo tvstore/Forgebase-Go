@@ -1,0 +1,9 @@
+# Fields that `sales_extension` adds to the `customer` DocType of `sales` (ADR 0023). An overlay
+# file holds only `[[fields]]` entries, written exactly like those of a DocType file, and the
+# DocType must belong to an app this app depends on. The field gets its column at `migrate`, and
+# the permission rules of `customer` apply to it like to the fields of `sales` itself.
+[[fields]]
+name = "loyalty_tier"
+label = "Loyalty Tier"
+type = "select"
+options = ["None", "Silver", "Gold"]

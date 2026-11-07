@@ -824,7 +824,7 @@ func TestDisplayTexts(t *testing.T) {
 	wantEqual(t, other.describe(), `REFERENCES "other"."doc_x" ("id") ON DELETE SET NULL`, "qualified table")
 }
 
-// Not in Rust: the rendering of a field added by hand (custom fields, P7) is the sync's own.
+// Not in Rust: the rendering of a field added by hand (custom fields, M10.1) is the sync's own.
 func TestFieldSteps(t *testing.T) {
 	registry := registryOf(t, "name = \"o\"\nlabel = \"O\"\n[[fields]]\nname = \"p\"\ntype = \"link\"\ntarget = \"o\"\n"+
 		"[[fields]]\nname = \"q\"\ntype = \"data\"\nunique = true\n")

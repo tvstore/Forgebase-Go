@@ -1,16 +1,16 @@
 # HTTP API
 
-> Go port status: from P3.2 (and, with P6, the workflow routes `transition`, `transitions` and `history`, and `views`, `summary` and `report`) `forgebase serve --doctypes DIR` serves the API with the Rust behaviour: the routes `login`, `logout`, `session`, `meta`, `meta/{doctype}`, `resource/{doctype}` (list with `filters`, `sort`, `limit`, `offset`, `link_titles=1`, and create), `resource/{doctype}/{name}` (get, patch, delete) and `submit`, `cancel` and `amend`, with the same paths, JSON, error envelope, status codes, headers, cookies and CSRF rules. The route `method` is ported (P7.1: `POST /api/v1/method/{app}.{method}`), and so are `export` and `import` (P7.2: `GET /api/v1/export/{doctype}`, `POST /api/v1/import/{doctype}` and `POST /api/v1/report/{app}.{name}/export`). The routes of later phases answer **404** like any unknown path until they are ported: `customize` and `user-permissions` (P7). The few differences that remain (requests that Go's `net/http` refuses before the API sees them, header name case, timeouts) are listed under "Differences from Rust" in the P3.2 entry of the [changelog](../../CHANGELOG.md). The rest of the behaviour is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API (`cargo run -p sales -- ...`) until the phase that ports them: use `forgebase` with `--doctypes DIR` in their place.
+> Go port status: `forgebase serve` (with `--doctypes DIR` or the apps of your binary) serves the whole API with the Rust behaviour: the routes `login`, `logout`, `session`, `meta`, `meta/{doctype}`, `resource/{doctype}` (list with `filters`, `sort`, `limit`, `offset`, `link_titles=1`, and create), `resource/{doctype}/{name}` (get, patch, delete), `submit`, `cancel` and `amend` (P3.2), the workflow routes `transition`, `transitions` and `history`, and `views`, `summary` and `report` (P6), `method` (`POST /api/v1/method/{app}.{method}`, P7.1), `export` and `import` (`GET /api/v1/export/{doctype}`, `POST /api/v1/import/{doctype}` and `POST /api/v1/report/{app}.{name}/export`, P7.2), and, for the Administrator role only, `customize` and `user-permissions` (P7.3), with the same paths, JSON, error envelope, status codes, headers, cookies and CSRF rules. The few differences that remain (requests that Go's `net/http` refuses before the API sees them, header name case, timeouts) are listed under "Differences from Rust" in the P3.2 entry of the [changelog](../../CHANGELOG.md). `bin/sales ...` in the examples stands for the binary of the example app, built with `cd examples/sales && go build -o ../../bin/sales ./cmd/sales`.
 
-`serve` (here `cargo run -p sales -- serve`) runs the API on `FORGEBASE_LISTEN` (default `127.0.0.1:8000`). It serves the same DocTypes as `migrate` (the app's, or the `--doctypes` directory in the stock binary) but **does not run migrations**: run `migrate` first. Requests need a `Host` header from `FORGEBASE_ALLOWED_HOSTS` (comma separated host names without ports, default `localhost,127.0.0.1`; an entry with a port is refused at startup). Ctrl-C or SIGTERM stops accepting connections and lets running requests finish for up to 10 seconds; a second signal, or the end of that period, exits at once (exit code 0; open database transactions are rolled back by PostgreSQL when the connection closes). The session cookie is `Secure`, so browsers send it over HTTPS only: put a TLS-terminating reverse proxy in front (the application has no TLS). For local development over plain HTTP, `FORGEBASE_DEV_INSECURE_COOKIES=1` omits `Secure` (and prints a warning); never use it in production. There is no CORS: serve the front-end from the same origin.
+`serve` (here `bin/sales serve`) runs the API on `FORGEBASE_LISTEN` (default `127.0.0.1:8000`). It serves the same DocTypes as `migrate` (the app's, or the `--doctypes` directory in the stock binary) but **does not run migrations**: run `migrate` first. Requests need a `Host` header from `FORGEBASE_ALLOWED_HOSTS` (comma separated host names without ports, default `localhost,127.0.0.1`; an entry with a port is refused at startup). Ctrl-C or SIGTERM stops accepting connections and lets running requests finish for up to 10 seconds; a second signal, or the end of that period, exits at once (exit code 0; open database transactions are rolled back by PostgreSQL when the connection closes). The session cookie is `Secure`, so browsers send it over HTTPS only: put a TLS-terminating reverse proxy in front (the application has no TLS). For local development over plain HTTP, `FORGEBASE_DEV_INSECURE_COOKIES=1` omits `Secure` (and prints a warning); never use it in production. There is no CORS: serve the front-end from the same origin.
 
 ```sh
 # Prepare: tables, a user with the Administrator role (the example DocTypes name other roles; Administrator may do everything)
-cargo run -p sales -- migrate
-printf '%s\n' 'a long password' | cargo run -p sales -- user create root --role Administrator
+bin/sales migrate
+printf '%s\n' 'a long password' | bin/sales user create root --role Administrator
 
 # Terminal 1: serve (development mode)
-FORGEBASE_DEV_INSECURE_COOKIES=1 cargo run -p sales -- serve
+FORGEBASE_DEV_INSECURE_COOKIES=1 bin/sales serve
 
 # Terminal 2: log in. The response has the one-time CSRF token; the session cookie is saved in jar.txt.
 CSRF=$(curl -s -c jar.txt -H 'Content-Type: application/json' \
@@ -52,7 +52,7 @@ curl -s -b jar.txt -X DELETE -H "X-Forgebase-CSRF: $CSRF" \
 curl -s -b jar.txt -X POST -H "X-Forgebase-CSRF: $CSRF" http://localhost:8000/api/v1/logout
 
 # A machine client uses an API token instead: no cookie, no CSRF header. The token header wins over any cookie.
-TOKEN=$(cargo run -q -p sales -- token create root)    # prints key:secret once
+TOKEN=$(bin/sales token create root)    # prints key:secret once
 curl -s -H "Authorization: token $TOKEN" http://localhost:8000/api/v1/resource/customer
 ```
 

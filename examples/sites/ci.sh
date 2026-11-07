@@ -18,16 +18,16 @@
 #      was approved, a forged signature is refused, and `webhook test` succeeds;
 #   6. (P7.2, M9.4) the fixture of the sales app: the first `migrate` of a site kept the two customer
 #      groups of the SQL migration and inserted the third, and a second `migrate` finds all three
-#      unchanged.
-#
-# The Rust script (examples/sites/ci.sh of the reference implementation) has two more parts. They
-# arrive in the Go port with the phase that ports what they use, and are added here then:
-#
-#   - (P7) a site custom field, added by `customize field add` with the server running: it appears in
-#     that site's metadata within 15 s without a restart, not in `shop`'s, takes a value over the API,
-#     disappears with `customize field disable` (the data is kept) and returns with `enable`;
-#   - (P7) user permissions: `user permission add` restricts the Sales User bob on `shop` to the
-#     customer group Retail, `user permission list` shows the row and `remove` lifts it.
+#      unchanged;
+#   7. (P7.3, M10.1) a site custom field, added to `customer` of the site `field` by `customize field
+#      add` with the server running: it appears in that site's metadata within 15 s without a restart,
+#      not in `shop`'s, takes a value over the API, disappears with `customize field disable` (the data
+#      is kept) and returns with it after `enable`;
+#   8. (P7.3, M10.3) user permissions: `user permission add` restricts the Sales User bob on `shop` to
+#      the customer group Retail, so that the list shows the Retail and the no-group customers and not
+#      the Wholesale one (404 by name), only one group is listed and `customer_group` offers no create
+#      (also to a manager); `user permission list` shows the row and `remove` makes the Wholesale
+#      customer visible again.
 #
 # Needs: the binary built (cd examples/sales_extension && go build -o ../../bin/sales_extension
 # ./cmd/sales_extension), PostgreSQL 16 with a role that has CREATEDB, the PostgreSQL client tools
@@ -286,6 +286,134 @@ echo "ok: the worker delivered exactly one verified submit of $order, signed wit
 kill "$receiver" 2>/dev/null || true
 wait "$receiver" || true
 receiver=""
+
+echo "== a site custom field on field, live and per site (M10.1, ADR 0023)"
+# The server is running: the field is added by the command line, stored in the database of the
+# site `field` only, and the server picks it up by itself (a live reload, at most every 10 s).
+# `field` installs sales_extension, `shop` does not; both have `customer` of the sales app.
+field_token="$("$bin" token create ann --site field)"
+# meta_has HOST TOKEN DOCTYPE FIELD: succeeds when the metadata of DOCTYPE lists FIELD. The reply
+# is captured first so that a failing request is an error and not "no such field".
+meta_has() {
+  local names
+  names="$(curl -fsS --max-time 5 -H "Host: $1" -H "Authorization: token $2" "$base/api/v1/meta/$3" | jq -r '.data.fields[].name')" \
+    || fail "reading the metadata of $3 on $1"
+  printf '%s\n' "$names" | grep -qx "$4"
+}
+# wait_meta HOST TOKEN DOCTYPE FIELD present|absent: waits at most 15 s (the reload interval is
+# 10 s) for the metadata to list, or not list, the field.
+wait_meta() {
+  for _ in $(seq 1 15); do
+    if meta_has "$1" "$2" "$3" "$4"; then [ "$5" = present ] && return 0; else [ "$5" = absent ] && return 0; fi
+    sleep 1
+  done
+  fail "the metadata of $3 on $1 does not have $4 $5 after 15 s"
+}
+# callf TOKEN METHOD PATH [JSON]: one request to field; the body of the reply goes to
+# $work/reply.json and the HTTP status is printed.
+callf() {
+  local args=(-s --max-time 5 -o "$work/reply.json" -w '%{http_code}' -X "$2" -H "Host: field.localhost" \
+    -H "Authorization: token $1")
+  if [ -n "${4:-}" ]; then args+=(-H 'Content-Type: application/json' -d "$4"); fi
+  curl "${args[@]}" "$base$3"
+}
+meta_has field.localhost "$field_token" customer custom_region && fail "field has custom_region before it was added"
+"$bin" doc insert customer --site field \
+  --data '{"email":"ada@field.example","full_name":"Ada Lovelace"}' > /dev/null
+# The definition is one TOML table body, read from standard input.
+printf 'name = "custom_region"\nlabel = "Region"\ntype = "data"\n' \
+  | "$bin" customize field add --site field --doctype customer --field - > "$work/field-add.out"
+grep -q 'custom_region' "$work/field-add.out" || fail "customize field add did not name the field"
+"$bin" customize field list --site field --doctype customer | grep -q 'custom_region' \
+  || fail "customize field list does not show the field"
+wait_meta field.localhost "$field_token" customer custom_region present
+# Isolation: the other site's metadata, checked now (well after the reload interval of the server
+# for the field site) does not have it, and its list of custom fields is empty.
+sleep 1
+meta_has shop.localhost "$admin_token" customer custom_region && fail "shop has the custom field of field"
+shop_fields="$("$bin" customize field list --site shop)" || fail "customize field list on shop"
+if printf '%s\n' "$shop_fields" | grep -q custom_region; then fail "shop lists the custom field of field"; fi
+# Write a value through the API and read it back.
+[ "$(callf "$field_token" PATCH /api/v1/resource/customer/ada@field.example \
+  '{"version":1,"data":{"custom_region":"North"}}')" = 200 ] || { cat "$work/reply.json" >&2; fail "writing the custom field"; }
+[ "$(callf "$field_token" GET /api/v1/resource/customer/ada@field.example)" = 200 ] || fail "reading the customer on field"
+[ "$(jq -r .data.custom_region "$work/reply.json")" = North ] || fail "the custom field did not read back"
+# Disable: gone from the metadata and the document (and refused as input), but the column and its
+# data are kept, so enabling brings the value back.
+"$bin" customize field disable --site field --doctype customer custom_region > /dev/null
+wait_meta field.localhost "$field_token" customer custom_region absent
+[ "$(callf "$field_token" GET /api/v1/resource/customer/ada@field.example)" = 200 ] || fail "reading the customer after disable"
+[ "$(jq -r '.data | has("custom_region")' "$work/reply.json")" = false ] || fail "a disabled custom field is still in the document"
+[ "$(callf "$field_token" PATCH /api/v1/resource/customer/ada@field.example \
+  '{"version":2,"data":{"custom_region":"South"}}')" = 422 ] || fail "input for a disabled custom field was not refused"
+"$bin" customize field enable --site field --doctype customer custom_region > /dev/null
+wait_meta field.localhost "$field_token" customer custom_region present
+[ "$(callf "$field_token" GET /api/v1/resource/customer/ada@field.example)" = 200 ] || fail "reading the customer after enable"
+[ "$(jq -r .data.custom_region "$work/reply.json")" = North ] || fail "the data of the custom field was not kept"
+echo "ok: custom_region was added on field, live within 15 s, absent on shop, written and read back, hidden by disable and back with its data after enable"
+
+echo "== a Sales User restricted to the customer group Retail (M10.3, ADR 0025)"
+# Customers in Retail, in Wholesale and in no group, and an order for each. bob (a Sales User, made
+# above) is restricted to the group Retail; mia (a Sales Manager, who may create groups) shows what
+# the desk and the API offer a restricted user.
+printf '%s\n' "the password of mia" | "$bin" user create mia --site shop --role "Sales Manager"
+mia_token="$("$bin" token create mia --site shop)"
+"$bin" doc insert customer --site shop \
+  --data '{"email":"retail@example.com","full_name":"Retail Customer","customer_group":"Retail"}' > /dev/null
+"$bin" doc insert customer --site shop \
+  --data '{"email":"wholesale@example.com","full_name":"Wholesale Customer","customer_group":"Wholesale"}' > /dev/null
+for customer in retail@example.com wholesale@example.com c3@example.com; do
+  "$bin" doc insert sales_order --site shop --data \
+    "{\"customer\":\"$customer\",\"order_date\":\"2026-10-05\",\"items\":[{\"description\":\"Pen\",\"qty\":1,\"rate\":\"1.25\"}]}" > /dev/null
+done
+# customers_of TOKEN: the customer names a user sees, sorted, one per line.
+customers_of() {
+  [ "$(call "$1" GET "/api/v1/resource/customer?limit=100")" = 200 ] || fail "listing customers"
+  jq -r '.data[].name' "$work/reply.json" | sort
+}
+before="$(customers_of "$bob_token")"
+printf '%s\n' "$before" | grep -qx wholesale@example.com || fail "bob does not see the Wholesale customer before the restriction"
+[ "$(call "$mia_token" GET /api/v1/meta/customer_group)" = 200 ] || fail "mia could not read the customer group meta"
+[ "$(jq -r .data.rights.create "$work/reply.json")" = all ] || fail "mia cannot create customer groups before the restriction"
+
+"$bin" user permission add --site shop --user bob --doctype customer_group --value Retail
+"$bin" user permission add --site shop --user mia --doctype customer_group --value Retail > /dev/null
+"$bin" user permission list --site shop --user bob | grep -q 'customer_group.*Retail' || fail "user permission list does not show bob's row"
+# It applies on the next request, no restart.
+after="$(customers_of "$bob_token")"
+printf '%s\n' "$after" | grep -qx retail@example.com || fail "bob does not see the Retail customer"
+printf '%s\n' "$after" | grep -qx c3@example.com || fail "bob does not see a customer with no group"
+if printf '%s\n' "$after" | grep -qx wholesale@example.com; then fail "bob sees the Wholesale customer"; fi
+[ "$(call "$bob_token" GET /api/v1/resource/customer/wholesale@example.com)" = 404 ] || fail "bob got the Wholesale customer by name"
+[ "$(call "$bob_token" GET /api/v1/resource/customer/retail@example.com)" = 200 ] || fail "bob cannot get the Retail customer"
+# Groups: bob sees Retail only; the manager restricted to Retail may not create a group any more.
+[ "$(call "$bob_token" GET "/api/v1/resource/customer_group?limit=100")" = 200 ] || fail "bob could not list the groups"
+[ "$(jq -r '[.data[].name] | join(",")' "$work/reply.json")" = Retail ] || fail "bob sees more than the Retail group"
+[ "$(call "$bob_token" GET /api/v1/meta/customer_group)" = 200 ] || fail "bob could not read the customer group meta"
+[ "$(jq -r .data.rights.create "$work/reply.json")" = none ] || fail "the meta of customer_group offers bob create"
+[ "$(call "$mia_token" GET /api/v1/meta/customer_group)" = 200 ] || fail "mia could not read the customer group meta"
+[ "$(jq -r .data.rights.create "$work/reply.json")" = none ] || fail "the meta of customer_group offers mia create"
+[ "$(call "$mia_token" POST /api/v1/resource/customer_group '{"title":"Partner"}')" = 403 ] \
+  || fail "a manager restricted to Retail created a customer group"
+# An order is not hidden because its customer is: only the customer's own group restricts (the
+# orders have no Link to the group), but a new order cannot link to the hidden customer.
+[ "$(call "$bob_token" GET "/api/v1/resource/sales_order?limit=100")" = 200 ] || fail "bob could not list orders"
+[ "$(jq -r '.data | length' "$work/reply.json")" = "$("$bin" doc list sales_order --site shop --limit 500 | jq length)" ] \
+  || fail "bob does not see every order"
+[ "$(call "$bob_token" POST /api/v1/resource/sales_order \
+  '{"customer":"wholesale@example.com","items":[{"description":"Pen","qty":1,"rate":"1.25"}]}')" = 422 ] \
+  || fail "bob created an order for a customer he cannot see"
+# The refusal is the one of a Link to a name that does not exist, not another validation error.
+jq -e '.error.details | map(select(contains("customer") and contains("does not exist"))) | length > 0' "$work/reply.json" > /dev/null \
+  || { cat "$work/reply.json" >&2; fail "the refusal does not say that the customer does not exist"; }
+# Remove the restriction: the Wholesale customer is visible on the next request.
+"$bin" user permission remove --site shop --user bob --doctype customer_group --value Retail
+"$bin" user permission remove --site shop --user mia --doctype customer_group --value Retail > /dev/null
+left="$("$bin" user permission list --site shop)" || fail "user permission list"
+if printf '%s\n' "$left" | grep -q customer_group; then fail "a permission row is left"; fi
+customers_of "$bob_token" | grep -qx wholesale@example.com || fail "bob does not see the Wholesale customer after the restriction was removed"
+[ "$(call "$bob_token" GET /api/v1/resource/customer/wholesale@example.com)" = 200 ] || fail "bob cannot get the Wholesale customer after the removal"
+echo "ok: bob, restricted to Retail, saw Retail and no-group customers, 404 for Wholesale, one group and no create; the removal showed Wholesale again"
 
 echo "== stop the server"
 kill "$server" 2>/dev/null || true

@@ -5,8 +5,8 @@
 // argument parser and the help (cli.go, cli_help.go and the command tree in cli_commands.go, which
 // reproduce clap 4), the config file and the sites (config.go), the DocType directory and its
 // composition (doctypes.go, compose.go), `migrate` and its report (report.go), the `doc` commands
-// (run.go) and the error type (error.go). Run is the entry point of cmd/forgebase. The commands that
-// are not ported yet are parsed completely and fail with the phase that brings them (run.go, notYet).
+// (run.go) and the error type (error.go). Run is the entry point of cmd/forgebase. Every command of
+// the Rust command line exists (the last ones, customize and user permission, came with P7.3).
 //
 // Added in P3.1: `doc list` (run.go), and the `user` and `token` commands (cli_auth.go).
 //

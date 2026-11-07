@@ -51,6 +51,9 @@ const (
 	// abortWait is how long the worker waits for an aborted handler to return before it records the outcome
 	// without it. The handler cannot commit after the abort whenever it returns.
 	abortWait = 5 * time.Second
+	// metaReloadInterval is how often a worker checks the metadata version of its site (custom fields,
+	// ADR 0023).
+	metaReloadInterval = 10 * time.Second
 )
 
 // workerConfig are the times a worker uses. The defaults are the constants above; a test sets shorter ones.
@@ -58,10 +61,13 @@ type workerConfig struct {
 	poll   time.Duration
 	grace  time.Duration
 	margin time.Duration
+	// metaReload is how often the worker checks fb_meta_version and rebuilds its registry when the site's
+	// custom fields changed (ADR 0023). 0 turns the check off.
+	metaReload time.Duration
 }
 
 func defaultWorkerConfig() workerConfig {
-	return workerConfig{poll: pollInterval, grace: workerGrace, margin: leaseMargin}
+	return workerConfig{poll: pollInterval, grace: workerGrace, margin: leaseMargin, metaReload: metaReloadInterval}
 }
 
 // outcome is what became of one claimed job.
@@ -104,9 +110,9 @@ const (
 // worker is the jobs of the binary and what it needs to run them.
 type worker struct {
 	pool *pgxpool.Pool
-	// registry is the registry of the site. Live reload of custom fields is P7: this is the seam, an
-	// attempt takes one snapshot when it starts and keeps it to its end, like a request.
-	registry  *core.Registry
+	// holder has the registry of the site, replaced when its custom fields change. A job attempt takes one
+	// snapshot when it starts and keeps it to its end, like a request.
+	holder    *db.RegistryHolder
 	jobs      map[string]*jobDef
 	schedules map[string]db.Spec
 	config    workerConfig
@@ -115,14 +121,39 @@ type worker struct {
 
 	tickMu   sync.Mutex
 	lastTick time.Time
+	// lastMeta is when this worker last checked the metadata version.
+	lastMeta time.Time
 }
 
-func newWorker(pool *pgxpool.Pool, registry *core.Registry, c *Composed, config workerConfig, out io.Writer) *worker {
-	return &worker{pool: pool, registry: registry, jobs: c.jobs, schedules: c.schedules, config: config, out: out}
+func newWorker(pool *pgxpool.Pool, holder *db.RegistryHolder, c *Composed, config workerConfig, out io.Writer) *worker {
+	return &worker{pool: pool, holder: holder, jobs: c.jobs, schedules: c.schedules, config: config, out: out}
 }
 
 // snapshot is the registry an attempt uses.
-func (w *worker) snapshot() *core.Registry { return w.registry }
+func (w *worker) snapshot() *core.Registry { return w.holder.Snapshot() }
+
+// metaDue is true for the first caller in each metaReload interval (and records it).
+func (w *worker) metaDue() bool {
+	if w.config.metaReload <= 0 {
+		return false
+	}
+	w.tickMu.Lock()
+	defer w.tickMu.Unlock()
+	now := time.Now()
+	if !w.lastMeta.IsZero() && now.Sub(w.lastMeta) < w.config.metaReload {
+		return false
+	}
+	w.lastMeta = now
+	return true
+}
+
+// pollMeta checks the metadata version and rebuilds the registry if it changed. A failure (the database is
+// down) is logged and the current registry is kept.
+func (w *worker) pollMeta(ctx context.Context) {
+	if _, err := w.holder.Poll(ctx, w.pool); err != nil && ctx.Err() == nil {
+		w.log("warning: cannot check the metadata version, keeping the current registry: " + describeError(err))
+	}
+}
 
 // log writes one plain line on standard error, like the other commands of the binary.
 func (w *worker) log(message string) {
@@ -417,6 +448,9 @@ func (w *worker) runSlot(ctx context.Context, id string, stop <-chan struct{}) {
 		}
 	}
 	for !stopped() {
+		if w.metaDue() {
+			w.pollMeta(ctx)
+		}
 		// The tick comes before the claim, so a job that is due now is claimed at once. Only one slot ticks
 		// per poll interval, so ticks do not grow with the concurrency.
 		if w.tickDue() {
@@ -525,7 +559,12 @@ const runJobsLimit = 10_000
 // call. Jobs of names the binary does not know are left alone. After runJobsLimit jobs it fails (a job that
 // enqueues itself without end).
 func RunJobs(ctx context.Context, c *Composed, pool *pgxpool.Pool) (JobRun, error) {
-	w := newWorker(pool, c.registry, c, defaultWorkerConfig(), os.Stderr)
+	// The registry of the apps with the custom fields the database has now, like a worker's.
+	holder, err := db.LoadRegistryHolder(ctx, "default", c.registry, pool, os.Stderr)
+	if err != nil {
+		return JobRun{}, err
+	}
+	w := newWorker(pool, holder, c, defaultWorkerConfig(), os.Stderr)
 	var run JobRun
 	for range runJobsLimit {
 		got, err := w.runOne(ctx, "test", nil)
@@ -550,5 +589,10 @@ func RunJobs(ctx context.Context, c *Composed, pool *pgxpool.Pool) (JobRun, erro
 // is not after at) and returns how many jobs it enqueued: the worker's own tick with at in place of the
 // database's now(). It is the function behind forgebase/testing.RunSchedulesAt.
 func RunSchedulesAt(ctx context.Context, c *Composed, pool *pgxpool.Pool, at time.Time) (int, error) {
-	return newWorker(pool, c.registry, c, defaultWorkerConfig(), os.Stderr).tick(ctx, &at)
+	// The same registry as RunJobs: the apps' with the database's custom fields.
+	holder, err := db.LoadRegistryHolder(ctx, "default", c.registry, pool, os.Stderr)
+	if err != nil {
+		return 0, err
+	}
+	return newWorker(pool, holder, c, defaultWorkerConfig(), os.Stderr).tick(ctx, &at)
 }

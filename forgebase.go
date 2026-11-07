@@ -60,6 +60,11 @@
 //     pipeline as the system caller `fixture:<app>`: a record is inserted if it is missing and updated only
 //     when the app changes it (a checksum per record in fb_fixture), a site's edit stands until then, and
 //     nothing is ever deleted (ADR 0022).
+//   - Overlays. An app may add fields to a DocType of an app it depends on ([App.ExtendDocType], TOML files
+//     with only `[[fields]]`, embedded like the DocTypes): the fields are appended after those of the DocType,
+//     in app order and then file order, and get a column at `migrate` (ADR 0023). A site adds fields of its
+//     own, named `custom_...`, with `forgebase customize field` or the Administrator-only API, without a
+//     rebuild: servers and workers see them within 10 seconds.
 //   - Startup errors. All of the above is checked before anything runs; every problem is reported
 //     together ([StartupError], exit code 1).
 //
@@ -146,7 +151,7 @@ const Version = app.Version
 // ---- apps and the binary ----------------------------------------------------------------------
 
 // App is a named unit of an application: DocTypes, hooks and data migrations. Build one with
-// [NewApp]; the methods are DependsOn, DocTypes, Fixtures, Hooks, Migrations, Version and Name (and the ones of
+// [NewApp]; the methods are DependsOn, DocTypes, ExtendDocType, Fixtures, Hooks, Migrations, Version and Name (and the ones of
 // jobs, schedules, reports and methods), and each returns the App so that calls chain.
 type App = app.App
 

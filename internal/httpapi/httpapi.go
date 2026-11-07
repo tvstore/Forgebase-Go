@@ -1,15 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tvstore/forgebase-go/internal/core"
+	"github.com/tvstore/forgebase-go/internal/db"
 )
 
 // The request pipeline of the HTTP API (the Rust module lib.rs; standard library net/http only, no
@@ -62,8 +66,7 @@ import (
 //	                                               summary in details), invalid_import, import_too_large; 415 for the
 //	                                               wrong Content-Type; 413 over ImportBodyLimitBytes (M9.3)
 //
-// Anything else is 404, a wrong method is 405 with Allow. The routes of later phases (customize and
-// user-permissions) answer 404 like any unknown path until the phase that ports them.
+// Anything else is 404, a wrong method is 405 with Allow.
 //
 // With Config.DeskDir set, GET /desk/, /desk/index.html and /desk/assets/{name} serve the built desk
 // from that directory (see desk.go for the allow-list and the headers). The Host routing applies to
@@ -101,6 +104,11 @@ type Config struct {
 	// DeskDir is the directory of the built desk (desk/dist) to serve under /desk/, or "" (the default)
 	// to serve no desk: /desk/* is then a 404.
 	DeskDir string
+	// MetaReloadInterval is how often a site checks fb_meta_version and rebuilds its registry when a custom
+	// field was added, disabled or enabled by another process (M10.1, ADR 0023); State.StartMetaReload runs the
+	// check. 0 turns it off (the registry then changes only through the customize routes of this server, which
+	// reload it after a change).
+	MetaReloadInterval time.Duration
 }
 
 // DefaultConfig is the Rust AppConfig::default() of the settings that exist so far.
@@ -114,6 +122,7 @@ func DefaultConfig() Config {
 		ImportMaxRows:        10_000,
 		ExportSendTimeout:    30 * time.Second,
 		ImportBodyLimitBytes: 16 * 1024 * 1024,
+		MetaReloadInterval:   10 * time.Second,
 	}
 }
 
@@ -121,36 +130,83 @@ func DefaultConfig() Config {
 // routes of a State can only reach that site's database.
 type State struct {
 	pool *pgxpool.Pool
-	// snapshot gives the registry of the site as it is now. A request calls it once, at its start, and
-	// uses the result to the end, so it never sees two registries. P7 replaces the constant by the
-	// holder that rebuilds the registry when a custom field changes (ADR 0023).
-	snapshot func() *core.Registry
-	config   Config
-	logins   chan struct{}
-	name     string
-	routes   []*route
+	// holder has the registry of the site, replaced while the server runs (custom fields, ADR 0023). A
+	// request takes one snapshot of it (State.snapshot) and keeps it.
+	holder *db.RegistryHolder
+	config Config
+	logins chan struct{}
+	routes []*route
 	// methods runs the app methods (M9.1); nil when the binary has none (every method call is a 404).
 	methods MethodDispatch
 }
 
 // NewState creates the state of a site. The registry must be the one the database schema was synced
-// with.
+// with. It is also the base the registry is rebuilt from when the site's custom fields change; use
+// NewStateWithHolder to start from a registry that has them already.
 func NewState(pool *pgxpool.Pool, registry *core.Registry, config Config) *State {
-	return NewStateFunc(pool, func() *core.Registry { return registry }, config)
+	return NewStateWithHolder(pool, db.NewRegistryHolder("default", registry, registry, nil), config)
 }
 
-// NewStateFunc is like NewState for a registry that changes while the server runs (the seam of the
-// live reload of custom fields, P7): snapshot is called once per request.
-func NewStateFunc(pool *pgxpool.Pool, snapshot func() *core.Registry, config Config) *State {
+// NewStateWithHolder is the state of a site whose registry lives in holder (M10.1): the registry of its apps
+// plus its custom fields. StartMetaReload rebuilds it in the background every Config.MetaReloadInterval when
+// the metadata version changed.
+func NewStateWithHolder(pool *pgxpool.Pool, holder *db.RegistryHolder, config Config) *State {
 	s := &State{
-		pool:     pool,
-		snapshot: snapshot,
-		config:   config,
-		logins:   make(chan struct{}, loginPermits(config.MaxConcurrentLogins, int(pool.Config().MaxConns))),
-		name:     "default",
+		pool:   pool,
+		holder: holder,
+		config: config,
+		logins: make(chan struct{}, loginPermits(config.MaxConcurrentLogins, int(pool.Config().MaxConns))),
 	}
 	s.routes = s.buildRoutes()
 	return s
+}
+
+// snapshot is the site's registry as it is now: one snapshot. A request calls it once, at its start, and uses
+// the result to the end, so it never sees a half-built registry or two different ones (ADR 0023).
+func (s *State) snapshot() *core.Registry { return s.holder.Snapshot() }
+
+// baseRegistry is the registry of the site's apps without its custom fields, which a change of a custom field
+// is validated against.
+func (s *State) baseRegistry() *core.Registry { return s.holder.Base() }
+
+// siteName is the site's name, for messages.
+func (s *State) siteName() string { return s.holder.Site() }
+
+// reloadRegistry rebuilds this site's registry from the database now (after a custom field changed through
+// this server), so that the next request sees the change.
+func (s *State) reloadRegistry(ctx context.Context) error {
+	_, err := s.holder.Reload(ctx, s.pool)
+	return err
+}
+
+// StartMetaReload runs the background version check of this site in a goroutine: every
+// Config.MetaReloadInterval it reads fb_meta_version and rebuilds the registry when another process changed a
+// custom field. It does nothing when the interval is not positive. The goroutine ends when ctx is done (the
+// Rust task ends when the last clone of the state is dropped, which Go cannot see). A failed check (the
+// database is down) is logged on log and the current registry is kept; a nil log is standard error.
+func (s *State) StartMetaReload(ctx context.Context, log io.Writer) {
+	interval := s.config.MetaReloadInterval
+	if interval <= 0 {
+		return
+	}
+	if log == nil {
+		log = os.Stderr
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			if _, err := s.holder.Poll(ctx, s.pool); err != nil && ctx.Err() == nil {
+				_, _ = fmt.Fprintf(log, "warning: site `%s`: cannot check the metadata version, keeping the current registry: %s\n",
+					s.holder.Site(), err)
+			}
+		}
+	}()
 }
 
 // loginPermits is the number of concurrent logins: configured, but at most half of the pool's maximum

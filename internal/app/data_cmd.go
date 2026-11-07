@@ -45,7 +45,7 @@ func (r *runner) data(ctx context.Context, site *site) error {
 			return errf("cannot read %s: %s", file, ioErrorText(err))
 		}
 	}
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
+	sc, err := site.open(ctx, r.o, composed.registry, 0)
 	if err != nil {
 		return err
 	}

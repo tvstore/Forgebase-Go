@@ -16,7 +16,7 @@ import (
 // operation's transaction, so a job exists if and only if the operation committed. This file has
 // the two ways in: the jobs that hooks enqueued (Rust jobs.rs enqueue and enqueue_collected) and
 // the webhook deliveries (webhooks.rs enqueue). The rest of the job queue (claim, complete, ...) is in
-// jobs.go and the rest of the webhooks (add, list, ...) is P7.
+// jobs.go and the rest of the webhooks (add, list, ...) is webhooks.go.
 
 // Enqueue inserts a job and returns its id. name must be a job of registry, and the payload (any
 // value encoding/json can marshal) must pass core.CheckJobPayload (64 KiB of JSON); otherwise
@@ -71,7 +71,7 @@ func writeJobs(ctx context.Context, c Queryer, registry *core.Registry, jobs *co
 	return nil
 }
 
-// DeliverWebhookJob is the full name of the job that delivers a webhook (P7).
+// DeliverWebhookJob is the full name of the job that delivers a webhook (M9.2).
 const DeliverWebhookJob = "forgebase.deliver_webhook"
 
 // writeWebhooks enqueues the webhook deliveries of the operation (M9.2, ADR 0020) in its

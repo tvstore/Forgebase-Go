@@ -22,6 +22,7 @@ import (
 
 	"github.com/tvstore/forgebase-go"
 	"github.com/tvstore/forgebase-go/internal/app"
+	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/db"
 	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
@@ -354,14 +355,64 @@ func (d *DB) CreateToken(username string) string {
 
 // Client is an HTTP client for the API of b on this database, not logged in. The database must have
 // been migrated. It fails the test when the apps of b do not fit together ([forgebase.Binary.Check]).
+//
+// The server behind the client checks the metadata version every 10 seconds, like a real one
+// ([DB.ClientPolling]).
 func (d *DB) Client(b *forgebase.Binary) *Client {
+	d.t.Helper()
+	return d.ClientPolling(b, httpapi.DefaultConfig().MetaReloadInterval)
+}
+
+// ClientPolling is like [DB.Client], with the interval at which the server checks the metadata version and
+// rebuilds its registry after a custom field changed (10 seconds by default; ADR 0023). A test of live reload
+// passes a short one. The client starts from the registry of the apps: call [Client.ReloadMetadata] to pick up
+// custom fields that exist already. The check stops when the test ends.
+func (d *DB) ClientPolling(b *forgebase.Binary, interval time.Duration) *Client {
 	d.t.Helper()
 	composed, err := app.ComposeBinary(b)
 	if err != nil {
 		d.t.Fatalf("the apps do not fit together: %v", err)
 	}
-	state := httpapi.NewState(d.pool, composed.Registry(), httpapi.DefaultConfig()).WithMethods(composed.MethodDispatch())
-	return &Client{t: d.t, handler: httpapi.ImplicitSites(state)}
+	holder := db.NewRegistryHolder("default", composed.Registry(), composed.Registry(), nil)
+	config := httpapi.DefaultConfig()
+	config.MetaReloadInterval = interval
+	state := httpapi.NewStateWithHolder(d.pool, holder, config).WithMethods(composed.MethodDispatch())
+	ctx, cancel := context.WithCancel(context.Background())
+	d.t.Cleanup(cancel)
+	state.StartMetaReload(ctx, os.Stderr)
+	return &Client{t: d.t, handler: httpapi.ImplicitSites(state), holder: holder, pool: d.pool}
+}
+
+// AddCustomField adds a site custom field to doctype as the command `forgebase customize field add` does (ADR
+// 0023): fieldTOML is the body of one [[fields]] table, for example name = "custom_vip" and type = "check" on
+// two lines. The column is created at once. Servers that run on this database see the field within their
+// reload interval ([DB.ClientPolling]), and [Client.ReloadMetadata] at once.
+//
+// It fails the test when the apps do not fit together, the field is refused (the message says why) or the
+// database fails.
+func (d *DB) AddCustomField(b *forgebase.Binary, doctype, fieldTOML string) {
+	d.t.Helper()
+	composed, err := app.ComposeBinary(b)
+	if err != nil {
+		d.t.Fatalf("the apps do not fit together: %v", err)
+	}
+	field, err := core.ParseFieldTOML(fieldTOML)
+	if err != nil {
+		d.t.Fatalf("AddCustomField: %v", err)
+	}
+	if _, err := db.AddCustomField(context.Background(), d.pool, composed.Registry(), "test", doctype, field, "test", 5*time.Second); err != nil {
+		d.t.Fatalf("AddCustomField: %v", err)
+	}
+}
+
+// SetCustomFieldEnabled disables (false) or enables (true) a site custom field, as the commands `forgebase
+// customize field disable` and `enable` do: the field is hidden or shown everywhere, and its column and data
+// are kept either way. It fails the test when there is no such field or the database fails.
+func (d *DB) SetCustomFieldEnabled(doctype, name string, enabled bool) {
+	d.t.Helper()
+	if _, err := db.SetCustomFieldEnabled(context.Background(), d.pool, doctype, name, enabled, "test", 5*time.Second); err != nil {
+		d.t.Fatalf("SetCustomFieldEnabled: %v", err)
+	}
 }
 
 // Reply is what a request got back.
@@ -427,6 +478,8 @@ type session struct {
 type Client struct {
 	t       stdtesting.TB
 	handler http.Handler
+	holder  *db.RegistryHolder
+	pool    *pgxpool.Pool
 	session *session
 	// token is key:secret of an API token: sent as "Authorization: token ..." instead of the cookie.
 	token string
@@ -448,13 +501,23 @@ func (c *Client) Login(username string) *Client {
 	if csrf == "" {
 		c.t.Fatalf("the login of %s did not return a CSRF token", username)
 	}
-	return &Client{t: c.t, handler: c.handler, session: &session{cookie: cookie, csrf: csrf}}
+	return &Client{t: c.t, handler: c.handler, holder: c.holder, pool: c.pool, session: &session{cookie: cookie, csrf: csrf}}
+}
+
+// ReloadMetadata rebuilds the registry of the server behind this client from the database now: use it after
+// [DB.AddCustomField] or [DB.SetCustomFieldEnabled] to see the change without waiting for the reload interval.
+// It fails the test on a database error.
+func (c *Client) ReloadMetadata() {
+	c.t.Helper()
+	if _, err := c.holder.Reload(context.Background(), c.pool); err != nil {
+		c.t.Fatalf("ReloadMetadata: %v", err)
+	}
 }
 
 // WithToken is a client that authenticates with the API token keySecret (from [DB.CreateToken]) instead
 // of a session: no cookie and no CSRF header.
 func (c *Client) WithToken(keySecret string) *Client {
-	return &Client{t: c.t, handler: c.handler, token: keySecret}
+	return &Client{t: c.t, handler: c.handler, holder: c.holder, pool: c.pool, token: keySecret}
 }
 
 // WithoutCSRF is this client's session, but the requests leave out the CSRF header (to test that a cookie

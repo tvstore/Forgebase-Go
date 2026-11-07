@@ -39,11 +39,17 @@ func stampExtra(ctx context.Context, job *forgebase.JobContext) error {
 	return err
 }
 
+// siteHello is base.hello and extra.hello: it answers with its own name.
+func siteHello(_ context.Context, m *forgebase.MethodContext) (any, error) {
+	return map[string]any{"method": m.Name()}, nil
+}
+
 func siteBase() *forgebase.App {
 	return forgebase.NewApp("base").Version("1.0.0").
 		DocTypes(docTypes("doctypes/item.toml", siteWorkerItem)).
 		Job("tick", noJob).
-		Schedule("tick", forgebase.DailyAt(4, 0))
+		Schedule("tick", forgebase.DailyAt(4, 0)).
+		Method("hello", forgebase.NewMethod(siteHello).AnyUser())
 }
 
 func siteExtra() *forgebase.App {
@@ -51,7 +57,8 @@ func siteExtra() *forgebase.App {
 		DocTypes(docTypes("doctypes/extra_item.toml", siteWorkerExtraItem)).
 		Job("stamp", stampExtra).
 		Job("mark", noJob).
-		Schedule("mark", forgebase.EveryMinutes(60))
+		Schedule("mark", forgebase.EveryMinutes(60)).
+		Method("hello", forgebase.NewMethod(siteHello).AnyUser())
 }
 
 type siteWorld struct {

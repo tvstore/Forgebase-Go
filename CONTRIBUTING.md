@@ -53,15 +53,15 @@ npm audit --audit-level=high
 The `e2e` job runs Playwright against a real `forgebase serve` with the built desk. To run it locally (Playwright and a Chromium must be installed: `cd desk && npx playwright install chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium binary), with a scratch database that nothing else uses:
 
 ```sh
-go build -o bin/forgebase ./cmd/forgebase
+go build -o bin/e2e_app ./examples/e2e_app               # the stock command plus the app of the report
 (cd desk && npm ci && npm run build)
 export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/forgebase_e2e   # an EMPTY database
-.github/ci/e2e-seed.sh                                   # the temporary P3 seed; writes bin/e2e/doctypes, migrates, creates the users
-FORGEBASE_DESK_DIR=desk/dist FORGEBASE_DEV_INSECURE_COOKIES=1 bin/forgebase serve --doctypes bin/e2e/doctypes &
-(cd desk && E2E_BASE_URL=http://127.0.0.1:8000 npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts e2e/transfer.spec.ts --grep "<E2E_GREP of the e2e job in ci.yml>")
+FORGEBASE_BIN=bin/e2e_app E2E_DIR=bin/e2e desk/e2e/seed.sh   # writes bin/e2e/doctypes, migrates, creates the users, the restrictions and the custom field
+FORGEBASE_DESK_DIR=desk/dist FORGEBASE_DEV_INSECURE_COOKIES=1 bin/e2e_app serve --doctypes bin/e2e/doctypes &
+(cd desk && E2E_BASE_URL=http://127.0.0.1:8000 npx playwright test)
 ```
 
-The seed runs against an empty database each time (drop and create it again for a second run). The tests of the specs that need routes of later phases are not selected yet; the pattern in `ci.yml` grows with the phases.
+The seed runs against an empty database each time (drop and create it again for a second run). Every spec runs, as in the end-to-end job of the Rust implementation (`screenshots.spec.ts` skips itself unless `SCREENSHOTS=1`).
 
 The example apps (P4) are modules of their own (`examples/*/go.mod`, a `replace` to this checkout), so `./...` at the root does not enter them; CI runs the same checks in each (the step "Example modules" of the job `check`). Run them with the same database:
 

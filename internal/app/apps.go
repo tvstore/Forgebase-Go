@@ -54,6 +54,13 @@ type namedReport struct {
 	report *Report
 }
 
+// overlayDef is one overlay file of an app and the DocType it extends.
+type overlayDef struct {
+	target string
+	path   string
+	toml   string
+}
+
 type hookSet struct {
 	doctype string
 	hooks   core.DocTypeHooks
@@ -85,6 +92,7 @@ type hookSet struct {
 //   - register hooks (DocTypeHooks) for its own DocTypes and for DocTypes of the apps it depends on.
 //     Hooks run in app order, then in registration order within the app: the hooks of an app that
 //     extends another run after the hooks of the app it extends;
+//   - add fields to DocTypes of the apps it depends on (ExtendDocType);
 //   - declare SQL data migrations;
 //   - ship fixtures: records that migrate inserts, and updates when the app changes them (Fixtures);
 //   - register background jobs (Job), which hooks, other jobs and the command line can enqueue, and run them on
@@ -92,14 +100,15 @@ type hookSet struct {
 //   - define query reports (Report): SQL compiled into the binary, run read-only for the roles it names;
 //   - define methods (Method): functions a client calls over HTTP, as the caller.
 //
-// What it may not do: change the definition of another app's DocType, run code outside the binary, or
-// reach the database from a hook.
+// What it may not do: change the definition of another app's DocType (apart from adding fields with
+// ExtendDocType), run code outside the binary, or reach the database from a hook.
 type App struct {
 	name       string
 	version    string
 	dependsOn  []string
 	doctypes   []DocTypeFile
 	hooks      []hookSet
+	overlays   []overlayDef
 	migrations []MigrationFile
 	fixtures   []FixtureFile
 	jobs       []jobDef

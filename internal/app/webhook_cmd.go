@@ -47,7 +47,7 @@ func (r *runner) webhook(ctx context.Context, site *site) (err error) {
 			return errf("invalid URL: %s", err)
 		}
 	}
-	sc, err := site.open(ctx, r.o.Getenv, composed.registry, 0)
+	sc, err := site.open(ctx, r.o, composed.registry, 0)
 	if err != nil {
 		return err
 	}
@@ -66,7 +66,7 @@ func (r *runner) webhook(ctx context.Context, site *site) (err error) {
 			InsecureHTTP: insecure,
 		}
 		given := secret != nil
-		text, err := db.AddWebhook(ctx, sc.pool, composed.registry, new, secret)
+		text, err := db.AddWebhook(ctx, sc.pool, sc.registry, new, secret)
 		if err != nil {
 			return err
 		}

@@ -576,23 +576,7 @@ func TestIntegerErrorsReadLikeRusts(t *testing.T) {
 	}
 }
 
-func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
-	for _, c := range []struct {
-		args  []string
-		phase string
-		name  string
-	}{
-		{[]string{"customize", "field", "list"}, "P7", "customize field list"},
-		{[]string{"user", "permission", "list"}, "P7", "user permission list"},
-	} {
-		var out, errOut strings.Builder
-		code := Run(Options{Version: "1", Args: c.args, Getenv: func(string) string { return "" }, Stdout: &out, Stderr: &errOut})
-		want := "error: " + c.name + " is not available yet in the Go port (arrives in phase " + c.phase + ")\n"
-		if code != 1 || errOut.String() != want || out.Len() != 0 {
-			t.Errorf("%v: code %d stderr %q", c.args, code, errOut.String())
-		}
-	}
-	// A mistake in their arguments is still a usage error with the right usage.
+func TestAMistakeInTheArgumentsOfACommandIsAUsageErrorBeforeAnythingRuns(t *testing.T) {
 	var errOut strings.Builder
 	code := Run(Options{Version: "1", Args: []string{"worker", "--concurrency", "0", "--doctypes", "d"}, Getenv: func(string) string { return "" }, Stdout: &strings.Builder{}, Stderr: &errOut})
 	if code != 2 {

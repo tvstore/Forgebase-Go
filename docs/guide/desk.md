@@ -1,6 +1,6 @@
 # Desk
 
-> Go port status: from P3.2 the Go binary serves the desk: `FORGEBASE_DESK_DIR=desk/dist forgebase serve --doctypes DIR` (see the [README](../../README.md#quick-start)). The desk in `desk/` is the Rust desk, unchanged except for the path of the icon list in `desk/src/icons.test.ts`. Export and Import work since P7.2, and the workflow actions, saved views, the Summary panel and reports since P6. The parts of it that call routes of later phases (the user permissions and the custom fields, P7) show their errors until those routes are ported: the API answers 404 for them. The rest of the behaviour is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: from P3.2 the Go binary serves the desk: `FORGEBASE_DESK_DIR=desk/dist forgebase serve --doctypes DIR` (see the [README](../../README.md#quick-start)). The desk in `desk/` is the Rust desk, unchanged except for the path of the icon list in `desk/src/icons.test.ts`. Export and Import work since P7.2, and the workflow actions, saved views, the Summary panel and reports since P6. The user permissions and the site custom fields (P7.3) need no change in the desk: it reads the metadata API, so a custom field is on the form and in the Columns menu as soon as the server has it, and a user restricted to some documents is shown only those. The full Playwright suite runs against the Go server (see below). `bin/sales ...` in the examples stands for the binary of the example app, built with `cd examples/sales && go build -o ../../bin/sales ./cmd/sales`.
 
 The desk is a React + TypeScript app in `desk/` (no UI component library; at runtime only `react`, `react-dom` and the self-hosted Inter font). `forgebase serve` serves the **built** desk on the same origin when `FORGEBASE_DESK_DIR` is set (unset: no desk, `/desk/*` is a 404). It has a login page, a home of cards per app, a sidebar of the DocTypes the user can read grouped by app, breadcrumbs, a **list view** per DocType (the title of each document, the columns the DocType file chooses, a status badge, a quick search, filters that apply as you change them, paging, sorting) and a **form view** generated from the DocType metadata: native controls per field type (a Link field suggests names as you type, a Table field is a grid of rows), Save (only the changed fields are sent), and for a submittable DocType the **Submit**, **Cancel**, **Amend** and **Delete** buttons, shown only when the user has the right and the document's status allows it (the API enforces every right again). Field errors of the server are shown on the fields, a version conflict offers a Reload and keeps your edits, and leaving a form with unsaved changes asks first. Save is the main action (Ctrl/Cmd+S works too), Submit is the main action of a saved draft, and Cancel, Amend and Delete are in a More menu and ask first; a toast confirms what was done. The look is a navy corporate theme (the colour of the logo banner) built with Tailwind CSS v4 at build time (a development tool: the shipped desk is one static CSS file and the build is unchanged, `npm ci && npm run build`; [ADR 0017](../adr/0017-desk-styling-tailwind.md)); the layout works from 320 px up.
 
@@ -22,7 +22,7 @@ cd desk && npm ci && npm run build && cd ..
 
 # Run it with the API from the [HTTP API guide](http-api.md) (a user and the tables must exist), then open http://localhost:8000/desk/
 # FORGEBASE_DEV_INSECURE_COOKIES=1 is for plain HTTP on localhost only; behind HTTPS leave it out.
-FORGEBASE_DEV_INSECURE_COOKIES=1 FORGEBASE_DESK_DIR=desk/dist cargo run -p sales -- serve
+FORGEBASE_DEV_INSECURE_COOKIES=1 FORGEBASE_DESK_DIR=desk/dist bin/sales serve
 
 # Develop the desk with hot reload (proxies /api to a running `forgebase serve` on port 8000): http://localhost:5173/desk/
 cd desk && npm run dev
@@ -34,9 +34,9 @@ The desk keeps no secret in the browser except the HttpOnly session cookie: the 
 
 ```sh
 export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/fb_e2e   # an empty scratch database
-cargo build -p forgebase --example e2e_app && (cd desk && npm ci && npm run build)
-desk/e2e/seed.sh                                   # migrates, creates the users e2e_manager and e2e_clerk, a customer and the e2e-only DocType purchase_request (with a workflow) (the example binary `e2e_app`, which has one app with a query report, and `--doctypes`: it adds a role that only the e2e test uses)
-FORGEBASE_DEV_INSECURE_COOKIES=1 FORGEBASE_DESK_DIR=desk/dist target/debug/examples/e2e_app serve --doctypes target/e2e/doctypes &
+go build -o bin/e2e_app ./examples/e2e_app && (cd desk && npm ci && npm run build)
+FORGEBASE_BIN=bin/e2e_app E2E_DIR=bin/e2e desk/e2e/seed.sh   # migrates, creates the users e2e_manager and e2e_clerk, a customer and the e2e-only DocType purchase_request (with a workflow) (the example binary `e2e_app`, which has one app with a query report, and `--doctypes`: it adds a role that only the e2e test uses)
+FORGEBASE_DEV_INSECURE_COOKIES=1 FORGEBASE_DESK_DIR=desk/dist bin/e2e_app serve --doctypes bin/e2e/doctypes &
 cd desk && npx playwright install chromium && npx playwright test   # or set PLAYWRIGHT_CHROMIUM_EXECUTABLE to an installed Chromium
 ```
 
