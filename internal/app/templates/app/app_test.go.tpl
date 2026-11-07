@@ -8,24 +8,24 @@ import (
 	"github.com/tvstore/forgebase-go"
 	fbtest "github.com/tvstore/forgebase-go/testing"
 
-	"{{name}}"
+	apppkg "{{name}}"
 )
 
-const doctype = "{{name}}_note"
+const noteDocType = "{{name}}_note"
 
 func TestEveryDocTypeFileIsEmbedded(t *testing.T) {
-	fbtest.AssertDocTypesListed(t, {{name}}.App(), "doctypes")
+	fbtest.AssertDocTypesListed(t, apppkg.App(), "doctypes")
 }
 
 func TestTheAppFitsTogether(t *testing.T) {
-	if err := forgebase.New().App({{name}}.App()).Check(); err != nil {
+	if err := forgebase.New().App(apppkg.App()).Check(); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestTheTitleIsTrimmedAndMayNotBeBlank(t *testing.T) {
-	rules := {{name}}.NoteRules{}
-	ctx := forgebase.NewHookContext(doctype, "ann", forgebase.OpInsert)
+	rules := apppkg.NoteRules{}
+	ctx := forgebase.NewHookContext(noteDocType, "ann", forgebase.OpInsert)
 	doc := &forgebase.Document{Values: map[string]forgebase.Value{"title": forgebase.Text("  Hello  ")}}
 	if err := rules.Validate(ctx, doc); err != nil {
 		t.Fatal(err)
@@ -41,15 +41,15 @@ func TestTheTitleIsTrimmedAndMayNotBeBlank(t *testing.T) {
 }
 
 func TestAUserCanCreateAndReadANote(t *testing.T) {
-	binary := forgebase.New().App({{name}}.App())
+	apps := forgebase.New().App(apppkg.App())
 	testDB := fbtest.NewDB(t)
-	if _, err := testDB.Migrate(binary, false); err != nil {
+	if _, err := testDB.Migrate(apps, false); err != nil {
 		t.Fatal(err)
 	}
 	testDB.CreateUser("ann", "{{title}} User")
-	ann := testDB.Client(binary).Login("ann")
+	ann := testDB.Client(apps).Login("ann")
 
-	path := "/api/v1/resource/" + doctype
+	path := "/api/v1/resource/" + noteDocType
 	created := ann.Post(path, map[string]any{"title": "  Hello  "})
 	if created.Status != 201 {
 		t.Fatalf("%d %s", created.Status, created.Text)

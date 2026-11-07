@@ -543,11 +543,24 @@ func (r *runner) worker(ctx context.Context, site *site) error {
 	if err != nil {
 		return err
 	}
-	defer sc.close()
 	signals, stopSignals := stopSignals()
 	defer stopSignals()
 	w := newWorker(sc.pool, sc.registry, composed, defaultWorkerConfig(), r.o.Stderr)
-	if w.runWorker(ctx, concurrency, workerID(), signals) {
+	ok := w.runWorker(ctx, concurrency, workerID(), signals)
+	// pgxpool's Close waits for every acquired connection. After a second signal, or when a handler that
+	// ignores its context was abandoned, a connection is still held by a goroutine that cannot be stopped, so
+	// the pool is closed with a short bound: the process is exiting and PostgreSQL ends the sessions with it.
+	closed := make(chan struct{})
+	go func() { sc.close(); close(closed) }()
+	if w.leftBehind() {
+		select {
+		case <-closed:
+		case <-time.After(300 * time.Millisecond):
+		}
+	} else {
+		<-closed
+	}
+	if ok {
 		return nil
 	}
 	return errf("a worker slot panicked (see the log above)")

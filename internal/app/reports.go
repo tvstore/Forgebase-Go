@@ -56,6 +56,8 @@ type Report struct {
 	columns []*Column
 	timeout time.Duration
 	maxRows uint32
+	// problems are the nil arguments of Param and Column, reported at startup by App.Report.
+	problems []string
 }
 
 // NewReport is a report that runs this SQL, usually an embedded file. Add the roles, params and columns
@@ -79,12 +81,20 @@ func (r *Report) Roles(roles ...string) *Report {
 
 // Param adds a parameter. The order of the calls is the order of $1..$n.
 func (r *Report) Param(p *Param) *Report {
+	if p == nil {
+		r.problems = append(r.problems, "Param is given nil")
+		return r
+	}
 	r.params = append(r.params, p)
 	return r
 }
 
 // Column adds a result column. The order of the calls is the order of the statement's columns.
 func (r *Report) Column(c *Column) *Report {
+	if c == nil {
+		r.problems = append(r.problems, "Column is given nil")
+		return r
+	}
 	r.columns = append(r.columns, c)
 	return r
 }

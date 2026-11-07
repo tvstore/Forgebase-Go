@@ -22,7 +22,8 @@ const maxNameBytes = 63
 const sqlStateDuplicateDatabase = "42P04"
 
 // CreateDatabase creates the database that databaseURL names, connecting to the maintenance database
-// maintenanceDB ("" means DefaultMaintenanceDB) of the same server with the same user and password. It
+// maintenanceDB (nil means DefaultMaintenanceDB; an explicit "" is sent as it is, and the server then uses the
+// user name as the database name, as with tokio-postgres) of the same server with the same user and password. It
 // returns true when it created the database and false when it already existed (nothing is changed
 // then).
 //
@@ -32,7 +33,7 @@ const sqlStateDuplicateDatabase = "42P04"
 // CREATEDB privilege.
 //
 // No error contains the URL: an unusable URL is reported without its text.
-func CreateDatabase(ctx context.Context, databaseURL, maintenanceDB string) (bool, error) {
+func CreateDatabase(ctx context.Context, databaseURL string, maintenanceDB *string) (bool, error) {
 	cfg, err := prepareURL(databaseURL)
 	if err != nil {
 		return false, urlProblem(err, ErrCreateDatabase)
@@ -44,10 +45,11 @@ func CreateDatabase(ctx context.Context, databaseURL, maintenanceDB string) (boo
 	if problem := nameProblem(name); problem != "" {
 		return false, &Error{Kind: ErrCreateDatabase, Message: fmt.Sprintf("the database name %s of the URL %s", quote(name), problem)}
 	}
-	if maintenanceDB == "" {
-		maintenanceDB = DefaultMaintenanceDB
+	maintenance := DefaultMaintenanceDB
+	if maintenanceDB != nil {
+		maintenance = *maintenanceDB
 	}
-	cfg.dbname = &maintenanceDB
+	cfg.dbname = &maintenance
 	conn, err := connectOnce(ctx, cfg)
 	if err != nil {
 		return false, err
