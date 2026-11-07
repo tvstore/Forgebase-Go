@@ -61,6 +61,9 @@ func (s DocStatus) String() string {
 type Document struct {
 	// Name is the document name, once assigned; "" before that (Rust: Option<String>).
 	Name string
+	// NameGiven says that a name was given even though it is the empty text (Rust: Some("")), which no naming
+	// rule accepts; with a non-empty Name it changes nothing. Only an import of a JSON row `"name": ""` sets it.
+	NameGiven bool
 	// Values are the field values. A Table field has no value here; its rows are in Tables.
 	Values map[string]Value
 	// Tables are the rows of each Table field, keyed by field name. A row's position in the list

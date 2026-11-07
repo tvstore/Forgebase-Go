@@ -1,6 +1,6 @@
 # Getting started
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. Ported: the [Apps](#apps) section (the Go API of the app model, [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)) and the build and run commands, which now are `go` commands: `bin/sales ...` stands for the binary of the example app, built with `cd examples/sales && go build -o ../../bin/sales ./cmd/sales`. The quick start still uses commands that arrive in later phases (export and import, P7; `doc transition` and the report are ported in P6, the worker in P5).
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. Ported: the [Apps](#apps) section (the Go API of the app model, [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)) and the build and run commands, which now are `go` commands: `bin/sales ...` stands for the binary of the example app, built with `cd examples/sales && go build -o ../../bin/sales ./cmd/sales`. The quick start uses `data export` and `data import` (ported in P7.2), `doc transition` and the report (P6) and the worker (P5).
 
 Install Forgebase and try it end to end with the example app: the full quick start, the document commands, permissions and workflow, and how apps are built. The short version is in the [README](../../README.md#quick-start).
 

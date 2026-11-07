@@ -86,6 +86,7 @@ type hookSet struct {
 //     Hooks run in app order, then in registration order within the app: the hooks of an app that
 //     extends another run after the hooks of the app it extends;
 //   - declare SQL data migrations;
+//   - ship fixtures: records that migrate inserts, and updates when the app changes them (Fixtures);
 //   - register background jobs (Job), which hooks, other jobs and the command line can enqueue, and run them on
 //     a Schedule;
 //   - define query reports (Report): SQL compiled into the binary, run read-only for the roles it names;
@@ -100,6 +101,7 @@ type App struct {
 	doctypes   []DocTypeFile
 	hooks      []hookSet
 	migrations []MigrationFile
+	fixtures   []FixtureFile
 	jobs       []jobDef
 	schedules  []scheduleDef
 	reports    []namedReport

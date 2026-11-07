@@ -1,6 +1,6 @@
 # The command-line tool
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend|transition`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5.1), `webhook add|list|disable|enable|remove|rotate-secret|test` (P7.1), `site list|create|backup|restore` (P5.2, with TLS to PostgreSQL: `sslmode=require` and `sslrootcert` in the database URL), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command (`data`, `customize`, `user permission`) parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend|transition`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5.1), `webhook add|list|disable|enable|remove|rotate-secret|test` (P7.1), `data export|import` (P7.2), `site list|create|backup|restore` (P5.2, with TLS to PostgreSQL: `sslmode=require` and `sslrootcert` in the database URL), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command (`customize`, `user permission`) parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
 
 Walkthrough of the `forgebase` commands (or the binary of your app) for users and tokens, background jobs, webhooks and sites. The document commands (`doc`) are in [Getting started](getting-started.md#quick-start). Run `forgebase --help` for every option.
 
@@ -141,15 +141,15 @@ To see what happened to deliveries use the job commands: `forgebase job list --n
 `data export` writes the documents of a DocType to a CSV or JSON file, and `data import` reads such a file into documents ([ADR 0021](../adr/0021-import-and-export.md); the HTTP routes and the desk pages are in the [HTTP API](http-api.md#import-and-export-m93) and [desk](desk.md) guides). Like the `doc` commands they run as the trusted system context: no permission rules apply, and `--actor` names who is recorded as owner on import.
 
 ```sh
-# Export the gold customers, newest first, as CSV to standard input of another tool or to a new file
-cargo run -p sales -- data export customer --format csv \
+# Export the gold customers, newest first, as CSV to standard output (for another tool) or to a new file
+go run ./cmd/sales data export customer --format csv \
   --filter '[{"field":"tier","op":"=","value":"gold"}]' --sort modified_at:desc \
   --fields name,full_name,tier --out gold-customers.csv
 # wrote 12 row(s) to gold-customers.csv
 
 # Check a file without keeping anything, then import it
-cargo run -p sales -- data import customer new-customers.csv --format csv --dry-run
-cargo run -p sales -- data import customer new-customers.csv --format csv --actor jane
+go run ./cmd/sales data import customer new-customers.csv --format csv --dry-run
+go run ./cmd/sales data import customer new-customers.csv --format csv --actor jane
 # {"dry_run": false, "error_count": 0, "errors": [], "inserted": 250, "mode": "insert", "rows": 250, "updated": 0}
 ```
 

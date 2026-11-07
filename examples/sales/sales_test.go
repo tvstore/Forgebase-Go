@@ -24,10 +24,8 @@ import (
 // total over HTTP and the level 1 field credit_limit. Ported in P5 (jobs): the job tests. Ported in P6 (workflow
 // and reports): the workflow tests over HTTP (the transitions of the job tests included) and the report tests.
 // Ported in P7.1 (methods): the six order_summary tests (the_summary_*) and the_summary_states_are_the_workflow_states.
-// Deferred, with the phase whose feature the Rust test uses:
-//
-//   - P7 (fixtures): the_fixture_adopts_the_migrated_groups_and_inserts_online and
-//     the_fixture_groups_are_usable_by_customers.
+// Ported in P7.2 (fixtures): the_fixture_adopts_the_migrated_groups_and_inserts_online and
+// the_fixture_groups_are_usable_by_customers; the two tests of the groups count the fixture's Online too.
 
 const orders = "/api/v1/resource/sales_order"
 
@@ -402,8 +400,7 @@ func twoItems() []any {
 	}
 }
 
-// Rust: sales.rs::the_migration_creates_the_groups_once (without the fixture, which arrives in P7: the
-// Rust test also sees Online, owned by fixture:sales)
+// Rust: sales.rs::the_migration_creates_the_groups_once
 func TestTheMigrationCreatesTheGroupsOnce(t *testing.T) {
 	binary := forgebase.New().App(sales.App())
 	db := fbtest.NewDB(t)
@@ -415,7 +412,8 @@ func TestTheMigrationCreatesTheGroupsOnce(t *testing.T) {
 		t.Errorf("%+v", first.AppMigrations)
 	}
 	groups := db.Rows(`SELECT name, title, owner, version::text FROM doc_customer_group ORDER BY name COLLATE "C"`)
-	if want := [][]string{{"Retail", "Retail", "system", "1"}, {"Wholesale", "Wholesale", "system", "1"}}; !reflect.DeepEqual(groups, want) {
+	// The migration made Retail and Wholesale; the fixture added Online.
+	if want := [][]string{{"Online", "Online", "fixture:sales", "1"}, {"Retail", "Retail", "system", "1"}, {"Wholesale", "Wholesale", "system", "1"}}; !reflect.DeepEqual(groups, want) {
 		t.Errorf("%v", groups)
 	}
 
@@ -427,12 +425,74 @@ func TestTheMigrationCreatesTheGroupsOnce(t *testing.T) {
 	if got, want := db.Rows("SELECT app, version::text, name FROM fb_app_migration"), [][]string{{"sales", "1", "default_customer_groups"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("%v", got)
 	}
+	if got := db.Rows("SELECT count(*)::text FROM doc_customer_group"); got[0][0] != "3" {
+		t.Errorf("%v", got)
+	}
+}
+
+// Rust: sales.rs::the_fixture_adopts_the_migrated_groups_and_inserts_online
+func TestTheFixtureAdoptsTheMigratedGroupsAndInsertsOnline(t *testing.T) {
+	binary := forgebase.New().App(sales.App())
+	db := fbtest.NewDB(t)
+	counts := func(m *fbtest.Migrated) string {
+		if len(m.Fixtures) != 1 || m.Fixtures[0].App != "sales" {
+			t.Fatalf("%+v", m.Fixtures)
+		}
+		f := m.Fixtures[0]
+		return fmt.Sprint(f.Inserted, f.Updated, f.Kept, f.Unchanged)
+	}
+	migrate := func() *fbtest.Migrated {
+		m, err := db.Migrate(binary, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	// The first migrate: the SQL migration made Retail and Wholesale, so the fixture finds them and keeps them
+	// as they are (adoption), and inserts Online.
+	if got := counts(migrate()); got != "1 0 2 0" {
+		t.Errorf("inserted, updated, kept, unchanged: %s", got)
+	}
+	if got := db.Rows(`SELECT name FROM doc_customer_group ORDER BY name COLLATE "C"`); !reflect.DeepEqual(got, [][]string{{"Online"}, {"Retail"}, {"Wholesale"}}) {
+		t.Errorf("%v", got)
+	}
+	// Every record is tracked from now on, the adopted ones too.
+	if got := db.Rows(`SELECT doctype, name FROM fb_fixture ORDER BY name COLLATE "C"`); !reflect.DeepEqual(got,
+		[][]string{{"customer_group", "Online"}, {"customer_group", "Retail"}, {"customer_group", "Wholesale"}}) {
+		t.Errorf("%v", got)
+	}
+	// The adopted groups were not written: they are still the migration's rows (owner system, version 1); Online
+	// is the fixture's.
+	if got := db.Rows(`SELECT name, owner, version::text FROM doc_customer_group ORDER BY name COLLATE "C"`); !reflect.DeepEqual(got,
+		[][]string{{"Online", "fixture:sales", "1"}, {"Retail", "system", "1"}, {"Wholesale", "system", "1"}}) {
+		t.Errorf("%v", got)
+	}
+	// The second migrate finds all three unchanged and writes nothing.
+	if got := counts(migrate()); got != "0 0 0 3" {
+		t.Errorf("%s", got)
+	}
+	// A site that deletes a group keeps it deleted: the record did not change.
+	db.Exec("DELETE FROM doc_customer_group WHERE name = 'Online'")
+	if third := migrate(); third.Fixtures[0].Unchanged != 3 {
+		t.Errorf("%+v", third.Fixtures)
+	}
 	if got := db.Rows("SELECT count(*)::text FROM doc_customer_group"); got[0][0] != "2" {
 		t.Errorf("%v", got)
 	}
 }
 
-// Rust: sales.rs::the_groups_are_usable_and_the_sql_is_idempotent (two groups here, three with the fixture)
+// Rust: sales.rs::the_fixture_groups_are_usable_by_customers
+func TestTheFixtureGroupsAreUsableByCustomers(t *testing.T) {
+	e := newEnv(t)
+	reply := e.manager.Post("/api/v1/resource/customer", map[string]any{"email": "web@example.com", "full_name": "Web Shopper", "customer_group": "Online"})
+	expectStatus(t, reply, 201)
+	if at(reply.Data(), "customer_group") != "Online" {
+		t.Errorf("%s", reply.Text)
+	}
+}
+
+// Rust: sales.rs::the_groups_are_usable_and_the_sql_is_idempotent
 func TestTheGroupsAreUsableAndTheSQLIsIdempotent(t *testing.T) {
 	e := newEnv(t)
 	// The statement tolerates a group that exists (here: run again by hand).
@@ -441,7 +501,7 @@ func TestTheGroupsAreUsableAndTheSQLIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.db.Exec(string(sql))
-	if got := e.db.Rows("SELECT count(*)::text FROM doc_customer_group"); got[0][0] != "2" {
+	if got := e.db.Rows("SELECT count(*)::text FROM doc_customer_group"); got[0][0] != "3" {
 		t.Errorf("%v", got)
 	}
 

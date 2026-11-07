@@ -40,17 +40,17 @@ func newName(ctx context.Context, c Queryer, doctype *core.DocType, doc *core.Do
 		if v.Kind != core.KindText {
 			return "", naming("field `%s` must hold the document name", field)
 		}
-		if doc.Name != "" && doc.Name != v.Text {
+		if (doc.Name != "" || doc.NameGiven) && doc.Name != v.Text {
 			return "", naming("the given name differs from the value of naming field `%s`", field)
 		}
 		return v.Text, nil
 	case core.NamingSeries:
-		if doc.Name != "" {
+		if doc.Name != "" || doc.NameGiven {
 			return "", naming("DocType `%s` uses a naming series: the name is generated and cannot be given", doctype.Name)
 		}
 		return nextSeriesName(ctx, c, doctype.Naming.Series)
 	}
-	if doc.Name != "" {
+	if doc.Name != "" || doc.NameGiven {
 		return "", naming("DocType `%s` uses random naming: the name is generated and cannot be given", doctype.Name)
 	}
 	return id.String(), nil

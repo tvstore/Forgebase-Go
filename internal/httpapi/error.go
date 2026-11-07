@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"unicode/utf8"
@@ -47,9 +48,16 @@ import (
 //	method_error                          400 or 422  an app method refused the call; the message is the app's, written
 //	                                              for users (M9.1)
 //
-// Codes of later phases (export_too_large, import_failed, ...) arrive with their routes.
+//	export_too_large, import_too_large   422  an export would have more rows than the limit (details: count, limit); an
+//	                                     import file has more rows than the limit (details: limit) (M9.3)
+//	invalid_import                        422  the import file cannot be used at all: not UTF-8, bad syntax, an unknown,
+//	                                     duplicate or table column; details lists the problems (M9.3)
+//	import_failed                         422  at least one row of an import has an error, so nothing was imported;
+//	                                     details is the summary with the per-row errors (M9.3)
 //
-// Every error body is bounded where it is built: the message and the details share a budget of
+// Codes of later phases (customize, user permissions) arrive with their routes.
+//
+// Every error body, and every import summary, is bounded where it is built: the message and the details share a budget of
 // maxErrorBodyBytes (64 KiB of JSON-escaped bytes), each string is cut to maxMessageChars characters
 // and a list has at most maxReportedErrors entries and an "and N more" entry.
 //
@@ -58,11 +66,13 @@ import (
 
 // apiError is an error response.
 type apiError struct {
-	status     int
-	code       string
-	message    string
-	details    []string
-	retryAfter int
+	status  int
+	code    string
+	message string
+	details []string
+	// detailsJSON is structured details (an object), instead of the list of strings.
+	detailsJSON any
+	retryAfter  int
 }
 
 func newError(status int, code, message string) *apiError {
@@ -99,6 +109,36 @@ func errInvalidHost() *apiError {
 func errTooManyLogins() *apiError {
 	e := newError(http.StatusServiceUnavailable, "too_many_logins", "too many logins at the moment; retry shortly")
 	e.retryAfter = 1
+	return e
+}
+
+// errExportTooLarge is the 422 of an export whose filters match more rows than the limit.
+func errExportTooLarge(count, limit uint64) *apiError {
+	e := newError(http.StatusUnprocessableEntity, "export_too_large",
+		fmt.Sprintf("the export would have %d rows, over the limit of %d; narrow the filters", count, limit))
+	e.detailsJSON = map[string]any{"count": count, "limit": limit}
+	return e
+}
+
+// errImportTooLarge is the 422 of an import file with more rows than the limit; nothing ran.
+func errImportTooLarge(limit int) *apiError {
+	e := newError(http.StatusUnprocessableEntity, "import_too_large", fmt.Sprintf("the file has more than %d rows; split it", limit))
+	e.detailsJSON = map[string]any{"limit": limit}
+	return e
+}
+
+// errInvalidImport is the 422 of a file that cannot be imported at all (unknown column, bad syntax).
+func errInvalidImport(problems []string) *apiError {
+	e := newError(http.StatusUnprocessableEntity, "invalid_import", "the file cannot be imported")
+	e.details = problems
+	return e
+}
+
+// errImportFailed is the 422 of an import in which at least one row has an error, so nothing was imported.
+// summary is the summary of the import, as in the success answer.
+func errImportFailed(summary map[string]any, count uint64) *apiError {
+	e := newError(http.StatusUnprocessableEntity, "import_failed", fmt.Sprintf("%d row(s) have errors; nothing was imported", count))
+	e.detailsJSON = summary
 	return e
 }
 
@@ -216,12 +256,89 @@ func capped(problems []string, b *budget) []string {
 	return out
 }
 
+// freshBudget is a budget of its own, for what a source builds before it is answered.
+func freshBudget() *budget { b := budget(maxErrorBodyBytes); return &b }
+
+// cutText is a string cut to maxMessageChars (for the text of a report row and the like).
+func cutText(text string) string { return cut(text, freshBudget()) }
+
+// more is the "and N more" entry of an array that stops early.
+func more(n int, b *budget) string {
+	text := fmt.Sprintf("and %d more", n)
+	b.spend(len(text) + 3)
+	return text
+}
+
+// room says whether an array or object may take another entry: fewer than maxReportedErrors so far and some
+// budget left.
+func room(taken int, b *budget) bool { return taken < maxReportedErrors && *b >= 8 }
+
+// boundIn is value within the budget. The budget is exact up to the last entry admitted: it is charged the
+// strings and keys as escaped with their quotes, the numbers, booleans and null as written, 2 bytes per
+// container (the brackets), 1 per array entry and 2 per object entry (the comma, and the colon). Strings and
+// keys are cut, arrays take entries in order while the count and the budget last and end with "and N more".
+// An object is walked with its keys sorted, in three groups: numbers, booleans and null first (the counts of a
+// summary), then strings (each at most maxMessageChars characters, so mode, code and message survive), then
+// arrays and objects; an entry that finds no room is left out. What is dropped is only counted.
+func boundIn(value any, b *budget) any {
+	switch v := value.(type) {
+	case string:
+		return cut(v, b)
+	case []any:
+		b.spend(2)
+		out := make([]any, 0, min(len(v), maxReportedErrors+1))
+		for _, item := range v {
+			if !room(len(out), b) {
+				break
+			}
+			out = append(out, boundIn(item, b))
+			b.spend(1)
+		}
+		if len(out) < len(v) {
+			out = append(out, more(len(v)-len(out), b))
+		}
+		return out
+	case map[string]any:
+		b.spend(2)
+		group := func(x any) int {
+			switch x.(type) {
+			case string:
+				return 1
+			case []any, map[string]any:
+				return 2
+			}
+			return 0
+		}
+		keys := sortedKeys(v)
+		sort.SliceStable(keys, func(i, j int) bool { return group(v[keys[i]]) < group(v[keys[j]]) })
+		out := map[string]any{}
+		for _, key := range keys {
+			if !room(len(out), b) {
+				break
+			}
+			cutKey := cut(key, b)
+			b.spend(2)
+			out[cutKey] = boundIn(v[key], b)
+		}
+		return out
+	}
+	text, _ := marshal(value)
+	b.spend(len(text))
+	return value
+}
+
+// boundedJSON is boundIn with a budget of its own: the bound of an import summary that is answered as a
+// success (a dry run lists the errors of its rows too).
+func boundedJSON(value any) any { return boundIn(value, freshBudget()) }
+
 // body is the JSON value of the envelope, bounded.
 func (e *apiError) body() map[string]any {
 	b := budget(maxErrorBodyBytes)
 	message := cut(e.message, &b)
 	inner := map[string]any{"code": e.code, "message": message}
-	if len(e.details) > 0 {
+	if e.detailsJSON != nil {
+		inner["details"] = boundIn(e.detailsJSON, &b)
+	} else if len(e.details) > 0 {
 		inner["details"] = capped(e.details, &b)
 	}
 	return map[string]any{"error": inner}
@@ -282,6 +399,8 @@ func fromDB(e *db.Error) *apiError {
 		return api
 	case db.ErrNaming:
 		return errValidation([]string{e.Message})
+	case db.ErrExportTooLarge:
+		return errExportTooLarge(e.Count, e.Limit)
 	case db.ErrNotFound:
 		return errNotFound(text)
 	case db.ErrLockTimeout:

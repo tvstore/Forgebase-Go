@@ -452,16 +452,17 @@ jobs:
       # The service's own database, empty and used by this job only.
       FORGEBASE_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/forgebase_e2e
       E2E_BASE_URL: http://127.0.0.1:8000
-      # The tests that run (a regular expression on the test titles, over desk/e2e/smoke.spec.ts and
-      # desk/e2e/restrict.spec.ts). P3: login, list, create, edit and submit; the command bar; the recent
-      # documents; the filter chip with the Link title; prefers-reduced-motion; the Columns menu; the keyboard
-      # focus (UX.5); and the two tests of the level 1 field (credit_limit) that need only the field levels.
+      # The tests that run (a regular expression on the test titles, over desk/e2e/smoke.spec.ts,
+      # desk/e2e/restrict.spec.ts and desk/e2e/transfer.spec.ts). P3: login, list, create, edit and submit;
+      # the command bar; the recent documents; the filter chip with the Link title; prefers-reduced-motion;
+      # the Columns menu; the keyboard focus (UX.5); and the two tests of the level 1 field (credit_limit)
+      # that need only the field levels.
       # P6: the workflow (a clerk sends a purchase request, the stale version), the saved views (private,
-      # shared, a stale one), the summary and the report. The others need routes of P7: export and import
-      # (desk/e2e/transfer.spec.ts); the user permissions and the custom field (the rest of
-      # desk/e2e/restrict.spec.ts). The phase that ports those routes adds the titles (CHANGELOG, "P3.2"); in
-      # P7 the pattern and the seed go.
-      E2E_GREP: "login, list, create, edit and submit|command bar opens|recent documents of one user|clerk without create rights|filter shows as a chip|prefers-reduced-motion|Columns menu hides a column|focus indicator check reads|keyboard focus is visible|Sales Manager sees credit_limit|reads level 1 but not writes it|clerk sends a purchase request|workflow action on a stale version|private view survives|administrator shares a view|view that names a field|Summary panel counts|manager runs a report, sorts it"
+      # shared, a stale one), the summary and the report. P7.2: export and import (the four tests of
+      # desk/e2e/transfer.spec.ts). The others need routes of a later phase of P7: the user permissions and the
+      # custom field (the rest of desk/e2e/restrict.spec.ts). The phase that ports those routes adds the
+      # titles (CHANGELOG, "P3.2"); in P7 the pattern and the seed go.
+      E2E_GREP: "login, list, create, edit and submit|command bar opens|recent documents of one user|clerk without create rights|filter shows as a chip|prefers-reduced-motion|Columns menu hides a column|focus indicator check reads|keyboard focus is visible|Sales Manager sees credit_limit|reads level 1 but not writes it|clerk sends a purchase request|workflow action on a stale version|private view survives|administrator shares a view|view that names a field|Summary panel counts|manager runs a report, sorts it|manager exports the filtered list as CSV|import with a bad row shows the row error|valid import creates the documents|manager exports the result of a report"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -513,7 +514,7 @@ jobs:
           exit 1
       - name: Run the end-to-end tests
         working-directory: desk
-        run: npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts --grep "$E2E_GREP"
+        run: npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts e2e/transfer.spec.ts --grep "$E2E_GREP"
       - name: Show the server log
         if: failure()
         run: tail -n 100 server.log

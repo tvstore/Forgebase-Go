@@ -1,10 +1,10 @@
 # Integrating with other systems
 
-> Go port status: sections 1 (app methods) and 2 (webhooks) are ported (P7.1) and run against the Go `sales` binary. Sections 3 (import and export) and 4 (fixtures) arrive with their phases (P7); their commands and snippets still show the Rust command line until then.
+> Go port status: all four sections are ported (sections 1 and 2 in P7.1, sections 3 and 4 in P7.2) and run against the Go `sales` binary.
 
 For the person who connects Forgebase to other systems: a warehouse tool that reads order totals, an accounting system that wants every approved order, a spreadsheet full of customers. This page is a walkthrough on the [`sales` example app](../../examples/sales/README.md) with four tools: an **app method** (another system asks a question), a **webhook** (Forgebase tells another system something happened), **import and export** (files in and out) and **fixtures** (records the app ships). It links the reference pages instead of repeating them.
 
-Every command and snippet of sections 1 and 2 was run against the Go `sales` binary (`go run ./cmd/sales ...`, in `examples/sales`) on a scratch PostgreSQL database (each section on its own; the sample outputs are illustrative, as the setup creates no orders). Set it up like this; the examples assume a Sales Manager `max` and a Sales User `ann`:
+Every command and snippet of sections 1 to 4 was run against the Go `sales` binary (`go run ./cmd/sales ...`, in `examples/sales`) on a scratch PostgreSQL database (each section on its own; the sample outputs are illustrative, as the setup creates no orders). Set it up like this; the examples assume a Sales Manager `max` and a Sales User `ann`:
 
 ```sh
 cd examples/sales
@@ -155,7 +155,7 @@ The details (the JSON format, `mode=upsert`, the CSV cell rules, the protection 
 
 ## 4. Fixtures: records the app ships
 
-Some records should exist on every site that installs the app. `sales` ships its customer groups as a fixture, [`examples/sales/fixtures/customer_group.json`](../../examples/sales/fixtures/customer_group.json), listed in `src/lib.rs` with `.fixtures(forgebase::fixtures!["fixtures/customer_group.json"])`:
+Some records should exist on every site that installs the app. `sales` ships its customer groups as a fixture, [`examples/sales/fixtures/customer_group.json`](../../examples/sales/fixtures/customer_group.json), embedded with `//go:embed fixtures/*.json` and added in `sales.go` with `.Fixtures(fixtures)`:
 
 ```json
 {

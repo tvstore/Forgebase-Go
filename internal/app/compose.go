@@ -26,7 +26,8 @@ import (
 //
 // Reports (P6) are checked and registered after the hooks. Jobs (P5) and methods (P7.1) are checked after that,
 // then the schedules (they do not depend on the DocType files, so their problems are reported with the
-// others). Overlays (P7) and fixtures (P7) are added to this order by the phases that bring them.
+// others). The fixtures (P7.2) are checked after the reports: they need the DocTypes, the apps they may use and
+// the registry as it is. Overlays (P7) are added to this order by the phase that brings them.
 
 // localApp is the name of the app that the --doctypes directory forms.
 const localApp = "local"
@@ -101,6 +102,7 @@ type appInfo struct {
 	name       string
 	version    string
 	migrations []MigrationFile
+	fixtures   []db.FixtureRecord
 }
 
 // Registry is the registry of all DocTypes, with their owners and hooks.
@@ -121,11 +123,11 @@ func (c *Composed) hasApp(name string) bool {
 
 // Migrate runs the framework migrations, the schema sync, the app migrations in app order and the sync of the
 // declared schedules and the workflow backfill (db.MigrateAll). The check of the reports (CheckReports) is
-// the caller's, after the report; the fixtures are added here in P7.
+// the caller's, after the report; the fixtures of the apps are applied by db.MigrateAll, last (ADR 0022).
 func (c *Composed) Migrate(ctx context.Context, pool *pgxpool.Pool, options db.SyncOptions) (*db.MigrateReport, error) {
 	specs := make([]db.AppSpec, len(c.apps))
 	for i, a := range c.apps {
-		specs[i] = db.AppSpec{Name: a.name, Version: a.version}
+		specs[i] = db.AppSpec{Name: a.name, Version: a.version, Fixtures: a.fixtures}
 		for _, m := range a.migrations {
 			specs[i].Migrations = append(specs[i].Migrations, db.AppMigration{Version: m.Version, Name: m.Name, SQL: m.SQL})
 		}
@@ -221,10 +223,12 @@ func compose(apps []*App, local string) (*Composed, *StartupError) {
 	}
 	// Only when everything loaded: a Link to a DocType from a broken file would be reported twice,
 	// and a hook on one as an unknown DocType.
+	fixtures := make([][]db.FixtureRecord, len(apps))
 	if len(errs.files) == 0 {
 		checkReferences(registry, definedIn, reach, localReach, errs)
 		checkHooks(apps, reach, registry, errs)
 		checkReports(apps, reach, registry, errs)
+		fixtures = checkFixtures(apps, reach, registry, errs)
 	}
 	jobs := checkJobs(apps, registry, errs)
 	handlers := checkMethods(apps, registry, errs)
@@ -233,8 +237,8 @@ func compose(apps []*App, local string) (*Composed, *StartupError) {
 		return nil, errs
 	}
 	c := &Composed{registry: registry, jobs: jobs, schedules: schedules, methods: &methods{handlers: handlers}}
-	for _, a := range apps {
-		c.apps = append(c.apps, appInfo{name: a.name, version: a.version, migrations: a.migrations})
+	for i, a := range apps {
+		c.apps = append(c.apps, appInfo{name: a.name, version: a.version, migrations: a.migrations, fixtures: fixtures[i]})
 	}
 	return c, nil
 }

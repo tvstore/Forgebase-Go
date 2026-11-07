@@ -23,10 +23,10 @@ import (
 //
 // Deferred Rust tests, with their phase (the tests that mix them with get and the like are ported
 // without them; the visible names, the Rust env.names, are those get finds, one document at a time):
-//   - an_import_applies_the_rules_to_every_row: P7 (import)
 //   - two_sites_keep_their_own_permissions: P5 (sites)
-// The export part of every_read_shows_only_what_the_restriction_allows: P7 (export). The summary part and the
-// transition test are ported (P6). The list parts, link titles and the auth and management tests are here (P3).
+// The export part of every_read_shows_only_what_the_restriction_allows and an_import_applies_the_rules_to_every_row
+// are ported in P7.2. The summary part and the transition test are ported (P6). The list parts, link titles and
+// the auth and management tests are here (P3).
 
 const upCustomerGroup = `
 name = "customer_group"
@@ -321,8 +321,7 @@ func strs(items ...string) []string { return items }
 
 // Rust: user_permissions.rs::every_read_shows_only_what_the_restriction_allows
 //
-// The get part, the names, the filter, sort and paging of a list and the summary; the export (P7) is not ported
-// yet.
+// The get part, the names, the filter, sort and paging of a list, the summary and the export (and its count).
 func TestEveryReadShowsOnlyWhatTheRestrictionAllows(t *testing.T) {
 	env := newUpEnv(t)
 	env.seed()
@@ -382,6 +381,58 @@ func TestEveryReadShowsOnlyWhatTheRestrictionAllows(t *testing.T) {
 	if all != 5 {
 		t.Errorf("summary pat counts %d", all)
 	}
+
+	// Export (and its count): the same documents as the list.
+	for _, c := range []struct {
+		doctype string
+		who     core.Caller
+		want    []string
+	}{
+		{"customer_group", a, strs("Retail")},
+		{"customer", a, strs("c_billing_retail", "c_none", "c_retail")},
+		{"sales_order", a, strs("o_none", "o_retail")},
+	} {
+		got, err := env.exported(c.doctype, c.who)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want(t, got, c.want, "export "+c.doctype)
+	}
+	if got, err := env.exported("customer", p); err != nil || len(got) != 5 {
+		t.Errorf("export pat: %v %v", got, err)
+	}
+}
+
+// exported is the labels an export gives, sorted; its count is the count of the list.
+func (e *upEnv) exported(doctype string, who core.Caller) ([]string, error) {
+	e.t.Helper()
+	tx, err := db.BeginExport(bg, e.d.Pool)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(bg) }()
+	export, err := db.StartExport(bg, tx, e.reg, who, db.ExportQuery{DocType: doctype, Limit: 1000, WithTables: true})
+	if err != nil {
+		return nil, err
+	}
+	if n := len(e.names(doctype, who)); export.Count() != uint64(n) {
+		e.t.Errorf("the count of the export is %d, the count of the list %d", export.Count(), n)
+	}
+	names := []string{}
+	for {
+		page, err := export.NextPage(bg)
+		if err != nil {
+			return nil, err
+		}
+		if page == nil {
+			break
+		}
+		for _, d := range page {
+			names = append(names, label(d))
+		}
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
 // Rust: user_permissions.rs::a_hidden_document_is_not_found_by_a_transition_and_a_visible_one_moves
@@ -779,6 +830,45 @@ func TestARestrictedUserCannotCreateOrAmendADocumentOfTheRestrictedDoctype(t *te
 
 // ---- bypass, combinations ------------------------------------------------------------------------
 
+// Rust: user_permissions.rs::an_import_applies_the_rules_to_every_row
+func TestAnImportAppliesTheRulesToEveryRow(t *testing.T) {
+	env := newUpEnv(t)
+	env.seed()
+	row := func(n int, title, group string) db.ImportRow {
+		return db.ImportRow{Row: n, Values: pairs("title", text(title), "customer_group", text(group))}
+	}
+	rows := []db.ImportRow{row(1, "i_ok", "Retail"), row(2, "i_hidden", "Wholesale"), row(3, "i_missing", "Nowhere")}
+	outcome, err := db.Import(bg, env.d.Pool, env.reg, "customer", ann(), rows, db.ImportInsert, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Inserted != 1 || outcome.ErrorCount != 2 {
+		t.Fatalf("%d inserted, %d errors", outcome.Inserted, outcome.ErrorCount)
+	}
+	m0, m1 := outcome.Errors[0].Err.Error(), outcome.Errors[1].Err.Error()
+	if strings.ReplaceAll(m0, "Wholesale", "N") != strings.ReplaceAll(m1, "Nowhere", "N") {
+		t.Errorf("a hidden target is not reported as a missing one:\n%s\n%s", m0, m1)
+	}
+	// An upsert of a hidden document is not found, so it would be an insert that collides (the known limit: a
+	// unique name tells that the document exists), and never an update.
+	upsert := []db.ImportRow{{Row: 1, Name: "c_wholesale", Values: pairs("title", text("c_wholesale"))}}
+	outcome, err = db.Import(bg, env.d.Pool, env.reg, "customer", ann(), upsert, db.ImportUpsert, false)
+	if err != nil || outcome.Updated != 0 || outcome.ErrorCount != 1 {
+		t.Fatalf("%+v %v", outcome, err)
+	}
+	// Importing the restricted DocType itself is refused row by row (creating is refused).
+	groups := []db.ImportRow{{Row: 1, Values: pairs("title", text("New"))}}
+	outcome, err = db.Import(bg, env.d.Pool, env.reg, "customer_group", ann(), groups, db.ImportInsert, false)
+	switch {
+	case err != nil:
+		if !isDeniedRight(err, core.RightCreate) {
+			t.Errorf("%v", err)
+		}
+	case outcome.Inserted != 0 || outcome.ErrorCount != 1 || !isDeniedRight(outcome.Errors[0].Err, core.RightCreate):
+		t.Errorf("%+v", outcome)
+	}
+}
+
 // Rust: user_permissions.rs::administrator_and_system_see_everything_whatever_rows_exist
 func TestAdministratorAndSystemSeeEverythingWhateverRowsExist(t *testing.T) {
 	env := newUpEnv(t)
@@ -792,6 +882,9 @@ func TestAdministratorAndSystemSeeEverythingWhateverRowsExist(t *testing.T) {
 		}
 		if env.get("customer", "c_wholesale", who) == nil {
 			t.Error("c_wholesale")
+		}
+		if got, err := env.exported("customer", adminC); err != nil || len(got) != 5 {
+			t.Errorf("export: %v %v", got, err)
 		}
 	}
 	mustInsert(t, env.d, env.reg, "customer_group", doc("title", text("Admin made")), adminC)

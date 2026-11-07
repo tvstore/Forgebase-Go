@@ -30,6 +30,8 @@ type AppSpec struct {
 	Version string
 	// Migrations are in the order they run (strictly increasing versions).
 	Migrations []AppMigration
+	// Fixtures are the fixture records of the app, in the order they are applied (M9.4, ADR 0022).
+	Fixtures []FixtureRecord
 }
 
 // pendingAppMigration is a declared migration that is not applied yet.

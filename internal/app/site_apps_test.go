@@ -27,10 +27,10 @@ import (
 // config validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules
 // of the apps are part of them since P5 (the worker of a site is in site_workers_test.go of the root
 // package, which runs the apps as a real process). The site list, site create and follow_ups scenarios are in
-// site_cmd_test.go (P5.2). Deferred, with the phase that brings what it uses: the removed-app scenario with
-// fixtures (P7). http_per_site is ported below, the method assertions (P7.1) included; it builds the server's
-// per-site states in the test (what serve does with siteComposeds and routeSites) and sends requests into the
-// routing handler, with no socket.
+// site_cmd_test.go (P5.2). The fixtures of extra (M9.4) are part of migrate_per_site and of
+// the removed-app test since P7.2. http_per_site is ported below, the method assertions (P7.1)
+// included; it builds the server's per-site states in the test (what serve does with siteComposeds and
+// routeSites) and sends requests into the routing handler, with no socket.
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +
@@ -70,6 +70,7 @@ func extraApp() *App {
 		DocTypes(files("doctypes/extra_item.toml", siteExtraItem)).
 		Method("hello", NewMethod(hello).AnyUser()).
 		Migrations(fstest.MapFS{"migrations/0001_seed.sql": {Data: []byte("CREATE TABLE extra_seed (entry text)")}}).
+		Fixtures(fstest.MapFS{"fixtures/extra_item.json": {Data: []byte(`{"doctype": "extra_item", "records": [{"code": "fixture-1"}]}`)}}).
 		Job("stamp", stamp).
 		Job("mark", noop).
 		Schedule("mark", EveryMinutes(60))
@@ -147,6 +148,9 @@ func TestMigrateInstallsOnlyTheAppsOfTheSite(t *testing.T) {
 	expectCode(t, r, 0, "migrate a")
 	// Site a has no app migrations to run: it installs base only, which has none.
 	expectContains(t, r.stdout, "app migrations: up to date\n")
+	if strings.Contains(r.stdout, "fixtures:") {
+		t.Errorf("site a: %s", r.stdout)
+	}
 	if scalar(t, p.a, "SELECT string_agg(name, ',' ORDER BY name) FROM fb_doctype") != "item" {
 		t.Errorf("site a has %v", p.a.Rows("SELECT name FROM fb_doctype"))
 	}
@@ -168,6 +172,15 @@ func TestMigrateInstallsOnlyTheAppsOfTheSite(t *testing.T) {
 	}
 	if got := p.b.Rows("SELECT name FROM fb_app ORDER BY name"); len(got) != 2 {
 		t.Errorf("site b records %v", got)
+	}
+	// Fixtures (M9.4): an app that is not installed on a site gets none there.
+	expectContains(t, r.stdout, "fixtures: extra: 1 inserted, 0 updated, 0 kept, 0 unchanged\n")
+	if scalar(t, p.b, "SELECT name FROM doc_extra_item") != "fixture-1" {
+		t.Error("the fixture of extra was not applied on site b")
+	}
+	if scalar(t, p.a, "SELECT to_regclass('fb_fixture')::text") != "fb_fixture" ||
+		scalar(t, p.a, "SELECT count(*)::text FROM fb_fixture") != "0" || scalar(t, p.b, "SELECT count(*)::text FROM fb_fixture") != "1" {
+		t.Error("fb_fixture")
 	}
 	// The schedules are those of the apps the site installs, and the built-in ones.
 	if got := names(p.a, siteSchedules); !reflect.DeepEqual(got, withBuiltin("base.tick")) {
@@ -212,6 +225,50 @@ func TestMigrateWarnsAboutAnAppRecordedButNotInstalled(t *testing.T) {
 	if got := names(p.a, siteSchedules); !reflect.DeepEqual(got, withBuiltin("base.tick")) {
 		t.Errorf("site a schedules %v", got)
 	}
+}
+
+// Rust: site_apps.rs::removed_app (the scenario with the fixture: the document and the record of the fixture of
+// an app that is no longer installed stay, and installing the app again finds the data where it was left)
+func TestARemovedAppKeepsItsFixtureAndFindsItAgain(t *testing.T) {
+	p := newAppPair(t, `apps = ["base"]`)
+	expectCode(t, p.run("migrate", "--site", "b"), 0, "migrate b")
+	expectCode(t, p.run("doc", "insert", "extra_item", "--site", "b", "--data", `{"code":"kept"}`), 0, "insert kept")
+
+	// Site b narrows to base: rewrite its apps line.
+	text := fmt.Sprintf("[[sites]]\nname = \"a\"\nhosts = [\"a.localhost\"]\ndatabase_url_env = \"%s\"\napps = [\"base\"]\n\n"+
+		"[[sites]]\nname = \"b\"\nhosts = [\"b.localhost\"]\ndatabase_url_env = \"%s\"\napps = [\"base\"]\n", aURL, bURL)
+	if err := os.WriteFile(filepath.Join(p.dir, "forgebase.toml"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := p.run("migrate", "--site", "b")
+	expectCode(t, r, 0, "migrate b with base only")
+	if strings.Contains(r.stdout, "fixtures:") {
+		t.Errorf("an app that is not installed got its fixtures: %s", r.stdout)
+	}
+	// `kept` and the document of the fixture stay, and so does the record of the fixture.
+	if scalar(t, p.b, "SELECT count(*)::text FROM doc_extra_item") != "2" || scalar(t, p.b, "SELECT count(*)::text FROM fb_fixture") != "1" {
+		t.Error("the data of the app that is not installed was removed")
+	}
+	// The DocType is gone from the site.
+	gone := p.run("doc", "get", "extra_item", "kept", "--site", "b")
+	expectCode(t, gone, 1, "doc get on an app that is not installed")
+	expectContains(t, gone.stderr, "unknown DocType `extra_item`")
+
+	// Installing it again finds the data where it was left, and the fixture unchanged.
+	text = fmt.Sprintf("[[sites]]\nname = \"a\"\nhosts = [\"a.localhost\"]\ndatabase_url_env = \"%s\"\napps = [\"base\"]\n\n"+
+		"[[sites]]\nname = \"b\"\nhosts = [\"b.localhost\"]\ndatabase_url_env = \"%s\"\napps = [\"base\", \"extra\"]\n", aURL, bURL)
+	if err := os.WriteFile(filepath.Join(p.dir, "forgebase.toml"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = p.run("migrate", "--site", "b")
+	expectCode(t, r, 0, "migrate b with extra again")
+	expectContains(t, r.stdout, "fixtures: extra: 0 inserted, 0 updated, 0 kept, 1 unchanged\n")
+	if r.stderr != "" {
+		t.Errorf("stderr %q", r.stderr)
+	}
+	out := p.run("doc", "get", "extra_item", "kept", "--site", "b")
+	expectCode(t, out, 0, "doc get kept")
+	expectContains(t, out.stdout, `"name": "kept"`)
 }
 
 // Rust: site_apps.rs::cli_per_site

@@ -41,7 +41,6 @@ type Options struct {
 // notYet maps the commands that are not ported yet to the phase that brings them. The commands are
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
-	"data":            "P7",
 	"customize":       "P7",
 	"user permission": "P7",
 }
@@ -167,6 +166,8 @@ func (r *runner) run(ctx context.Context) error {
 		return err
 	case "doc":
 		return r.doc(ctx, site)
+	case "data":
+		return r.data(ctx, site)
 	case "user":
 		return r.user(ctx, site)
 	case "token":
