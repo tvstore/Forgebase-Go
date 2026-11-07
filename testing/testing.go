@@ -450,8 +450,10 @@ func (c *Client) send(method, target, contentType string, body []byte, s *sessio
 //	//go:embed doctypes/*.toml
 //	var files embed.FS
 //
-//	forgebase.NewApp("sales").DocTypes(files)                        // fbtest.AssertDocTypesListed(t, app, "doctypes")
-//	forgebase.NewApp("sales").DocTypes(fs.Sub(files, "doctypes"))    // only: AssertDocTypesListed(t, app, ".") inside doctypes/
+//	forgebase.NewApp("sales").DocTypes(files)   // fbtest.AssertDocTypesListed(t, app, "doctypes")
+//
+//	sub, _ := fs.Sub(files, "doctypes")
+//	forgebase.NewApp("sales").DocTypes(sub)     // only: AssertDocTypesListed(t, app, ".") from inside doctypes/
 func AssertDocTypesListed(t stdtesting.TB, a *forgebase.App, dir string) {
 	t.Helper()
 	clean := path.Clean(filepath.ToSlash(dir))

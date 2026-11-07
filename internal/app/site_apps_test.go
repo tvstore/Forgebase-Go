@@ -194,7 +194,7 @@ func TestAProblemOfOnlyOneSitesAppsNamesTheSite(t *testing.T) {
 }
 
 // siteRequest sends a request to the routing handler for host, with an optional session cookie.
-func siteRequest(t *testing.T, h http.Handler, method, path, host, cookie, body string) (int, string, http.Header) {
+func siteRequest(t *testing.T, h http.Handler, method, path, host string, session siteSession, body string) (int, string, http.Header) {
 	t.Helper()
 	var reader *bytes.Reader
 	if body != "" {
@@ -207,21 +207,21 @@ func siteRequest(t *testing.T, h http.Handler, method, path, host, cookie, body 
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if cookie != "" {
-		req.Header.Set("Cookie", "fb_session="+cookie)
-		req.Header.Set("X-Forgebase-CSRF", csrfOf[cookie])
+	if session.cookie != "" {
+		req.Header.Set("Cookie", "fb_session="+session.cookie)
+		req.Header.Set("X-Forgebase-CSRF", session.csrf)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String(), rec.Result().Header
 }
 
-// csrfOf remembers the CSRF token of each session cookie of this test run.
-var csrfOf = map[string]string{}
+// siteSession is a login: the session cookie and its CSRF token.
+type siteSession struct{ cookie, csrf string }
 
-func siteLogin(t *testing.T, h http.Handler, host string) string {
+func siteLogin(t *testing.T, h http.Handler, host string) siteSession {
 	t.Helper()
-	code, text, header := siteRequest(t, h, "POST", "/api/v1/login", host, "", `{"username":"root","password":"a long password"}`)
+	code, text, header := siteRequest(t, h, "POST", "/api/v1/login", host, siteSession{}, `{"username":"root","password":"a long password"}`)
 	if code != 200 {
 		t.Fatalf("login on %s: %d %s", host, code, text)
 	}
@@ -236,12 +236,11 @@ func siteLogin(t *testing.T, h http.Handler, host string) string {
 	for _, set := range header.Values("Set-Cookie") {
 		if rest, ok := strings.CutPrefix(set, "fb_session="); ok {
 			value, _, _ := strings.Cut(rest, ";")
-			csrfOf[value] = reply.Data.CSRF
-			return value
+			return siteSession{cookie: value, csrf: reply.Data.CSRF}
 		}
 	}
 	t.Fatal("no session cookie")
-	return ""
+	return siteSession{}
 }
 
 // Rust: site_apps.rs::http_per_site (the DocType part; the method assertions are P7)
@@ -254,25 +253,32 @@ func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// What serve does: one State per site, composed from the apps installed on it, behind one Host router.
+	// serve's own per-site wiring: its composition of each site (siteRegistries) and its routing (routeSites),
+	// on the pools of the two test databases, without a socket.
 	cfg, err := loadConfig(filepath.Join(p.dir, "forgebase.toml"), func(string) string { return "" }, binaryApps(siteApps()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	routing := httpapi.ConfiguredSites()
-	for i, s := range cfg.sites {
-		c, startup := compose(s.installed(siteApps()), "")
-		if startup != nil {
-			t.Fatal(startup)
-		}
-		pool := []*dbtest.DB{p.a, p.b}[i].Pool
-		if err := routing.AddSite(s.hosts, httpapi.NewState(pool, c.registry, httpapi.DefaultConfig())); err != nil {
-			t.Fatal(err)
-		}
+	r := &runner{o: Options{Apps: siteApps()}}
+	sites := cfg.sites
+	registries, err := r.siteRegistries(sites, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	cookieA, cookieB := siteLogin(t, routing, "a.localhost"), siteLogin(t, routing, "b.localhost")
-	doctypes := func(host, cookie string) string {
-		code, text, _ := siteRequest(t, routing, "GET", "/api/v1/meta", host, cookie, "")
+	contexts := []*siteContext{
+		{site: sites[0], pool: p.a.Pool, registry: registries[0]},
+		{site: sites[1], pool: p.b.Pool, registry: registries[1]},
+	}
+	routing, lines, err := routeSites(true, contexts, nil, httpapi.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "site a: a.localhost\n" {
+		t.Errorf("announcement %q", lines)
+	}
+	sessionA, sessionB := siteLogin(t, routing, "a.localhost"), siteLogin(t, routing, "b.localhost")
+	doctypes := func(host string, session siteSession) string {
+		code, text, _ := siteRequest(t, routing, "GET", "/api/v1/meta", host, session, "")
 		if code != 200 {
 			t.Fatalf("%s: %d %s", host, code, text)
 		}
@@ -286,30 +292,30 @@ func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 		}
 		return strings.Join(names, ",")
 	}
-	if got := doctypes("a.localhost", cookieA); got != "item" {
+	if got := doctypes("a.localhost", sessionA); got != "item" {
 		t.Errorf("site a: %s", got)
 	}
-	if got := doctypes("b.localhost", cookieB); got != "extra_item,item" {
+	if got := doctypes("b.localhost", sessionB); got != "extra_item,item" {
 		t.Errorf("site b: %s", got)
 	}
-	status := func(host, cookie, method, path, body string) int {
-		code, _, _ := siteRequest(t, routing, method, path, host, cookie, body)
+	status := func(host string, session siteSession, method, path, body string) int {
+		code, _, _ := siteRequest(t, routing, method, path, host, session, body)
 		return code
 	}
 	// A DocType of an app that is not installed does not exist on A: meta, list and create.
 	for _, c := range [][3]string{{"GET", "/api/v1/meta/extra_item", ""}, {"GET", "/api/v1/resource/extra_item", ""}, {"POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`}} {
-		if got := status("a.localhost", cookieA, c[0], c[1], c[2]); got != 404 {
+		if got := status("a.localhost", sessionA, c[0], c[1], c[2]); got != 404 {
 			t.Errorf("a %v: %d", c[:2], got)
 		}
 	}
 	// On B it is served; on A the installed DocType still is.
-	if got := status("b.localhost", cookieB, "POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`); got != 201 {
+	if got := status("b.localhost", sessionB, "POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`); got != 201 {
 		t.Errorf("create on b: %d", got)
 	}
-	if got := status("b.localhost", cookieB, "GET", "/api/v1/resource/extra_item", ""); got != 200 {
+	if got := status("b.localhost", sessionB, "GET", "/api/v1/resource/extra_item", ""); got != 200 {
 		t.Errorf("list on b: %d", got)
 	}
-	if got := status("a.localhost", cookieA, "GET", "/api/v1/resource/item", ""); got != 200 {
+	if got := status("a.localhost", sessionA, "GET", "/api/v1/resource/item", ""); got != 200 {
 		t.Errorf("item on a: %d", got)
 	}
 	// Nothing was written to A.

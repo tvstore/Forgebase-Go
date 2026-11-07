@@ -20,14 +20,14 @@ go build -o bin/forgebase ./cmd/forgebase                     # in the Forgebase
 bin/forgebase new-app crm --forgebase-path . --dir ~/apps
 ```
 
-The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). Nothing else is refused: the generated files import the app package under the alias `apppkg` and name their own files `app.go` and `app_test.go`, so a name such as `t`, `binary`, `foo_test` or `x_linux` works (a test generates and vets a module for each of them). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
+The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). The go command treats some names specially, so these are refused as well: the package patterns `std`, `all`, `tool` and `work`, `toolchain` (not a module path), `mod`, `builtin` and `arena` (directories of the Go distribution), `cmd`, `internal`, `vendor`, and the device names Windows reserves (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`). Nothing else is: the generated files import the app package under the alias `apppkg` and name their own files `app.go` and `app_test.go`, so a name such as `t`, `binary`, `foo_test` or `x_linux` works (a test generates and vets a module for each of a list of such names, and one that every refused name is refused). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
 
 ```
 crm/
   go.mod                  module crm; requires forgebase-go with a replace to the checkout
   go.sum                  copied from the Forgebase checkout
   app.go                  func App() *forgebase.App, and the sample hook
-  cmd/crm/main.go         forgebase.New().App(crm.App()).Run()
+  cmd/crm/main.go         forgebase.New().App(apppkg.App()).Run()
   cmd/crm/main_test.go    the binary starts and refuses what it should
   doctypes/crm_note.toml  one sample DocType, with permissions for the role "Crm User"
   migrations/README.md    how to add SQL data migrations
@@ -70,7 +70,7 @@ func App() *forgebase.App {
 }
 ```
 
-`DocTypes` reads every `.toml` file of the file system, at any depth, in lexical order, and the path in it (`doctypes/crm_note.toml`) is the name of the file in messages. The files are read at **build time** (that is what `//go:embed` does), so the binary does not depend on the files at run time and a change to a file needs a rebuild. The embed pattern is the whole list, with nothing scanned at run time, so a file the pattern does not reach (a subdirectory, say) would silently be missing; the test `TestEveryDocTypeFileIsEmbedded` (it calls `fbtest.AssertDocTypesListed(t, crm.App(), "doctypes")`) fails instead. The file format is in [the architecture](../blueprint/architecture.md#doctype-file-format). Name every DocType with the app name as prefix: DocType names are global, and a name used by two apps is a startup error.
+`DocTypes` reads every `.toml` file of the file system, at any depth, in lexical order, and the path in it (`doctypes/crm_note.toml`) is the name of the file in messages. The files are read at **build time** (that is what `//go:embed` does), so the binary does not depend on the files at run time and a change to a file needs a rebuild. The embed pattern is the whole list, with nothing scanned at run time, so a file the pattern does not reach (a subdirectory, say) would silently be missing; the test `TestEveryDocTypeFileIsEmbedded` (it calls `fbtest.AssertDocTypesListed(t, apppkg.App(), "doctypes")`) fails instead. The file format is in [the architecture](../blueprint/architecture.md#doctype-file-format). Name every DocType with the app name as prefix: DocType names are global, and a name used by two apps is a startup error.
 
 Change DocTypes additively. Adding a field or a DocType is applied by `migrate`; changing a field's type or length is refused (nothing is changed); reshaping existing data is a job for a migration.
 

@@ -437,7 +437,8 @@ func TestEveryAcceptedNameGeneratesAModuleThatVets(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	names := []string{"t", "binary", "doctype", "apps", "apppkg", "rules", "ctx", "doc", "ann", "testdb", "doctypes", "app", "foo_test", "x_linux", "x_windows_amd64", "title", "forgebase_x", "migrations", "db"}
+	names := []string{"t", "binary", "doctype", "apps", "apppkg", "rules", "ctx", "doc", "ann", "testdb", "doctypes", "app", "foo_test", "x_linux", "x_windows_amd64", "title", "forgebase_x", "migrations", "db",
+		"fbtest", "com0", "conin", "testdata", "x_test", "ext", "test", "go1", "example", "vet", "modx", "sum", "bug", "env", "internal_", "a"}
 	for _, name := range names {
 		if r := runCLI(map[string]string{}, "", "new-app", name, "--forgebase-path", root, "--dir", dir); r.code != 0 {
 			t.Fatalf("%s: %+v", name, r)
@@ -446,6 +447,25 @@ func TestEveryAcceptedNameGeneratesAModuleThatVets(t *testing.T) {
 		cmd.Dir = filepath.Join(dir, name)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("go vet of the module generated for %q: %v\n%s", name, err, out)
+		}
+	}
+}
+
+// Not in Rust: the names the go command treats specially are refused, each verified once by generating a
+// module and running go build (the meta-packages std, all, tool and work are not importable, toolchain is not
+// a module path, builtin and arena are in $GOROOT/src but not in `go list std`, and Windows reserves
+// the device names as path elements).
+func TestNewAppRefusesTheNamesTheGoCommandTreatsSpecially(t *testing.T) {
+	s := newScratch(t)
+	checkout := s.checkout()
+	for _, name := range []string{"std", "all", "tool", "work", "toolchain", "mod", "builtin", "arena", "con", "prn", "aux", "nul",
+		"com1", "com9", "lpt1", "lpt9", "vendor", "cmd", "internal", "unsafe"} {
+		r := s.newAppCmd(s.root, name, "--forgebase-path", checkout)
+		if r.code != 1 || !strings.Contains(r.stderr, "cannot be used as a package name here") {
+			t.Errorf("name %q: %+v", name, r)
+		}
+		if _, err := os.Stat(filepath.Join(s.root, name)); !os.IsNotExist(err) {
+			t.Errorf("name %q: created", name)
 		}
 	}
 }
