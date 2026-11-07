@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,5 +307,29 @@ func TestFollowUpsOfTheSitesReview(t *testing.T) {
 	expectCode(t, r, 1, "serve dead site")
 	if !strings.HasPrefix(r.stderr, "error: site `b`: ") || strings.Contains(r.stderr, "s3cret") || r.stdout != "" {
 		t.Errorf("%+v", r)
+	}
+}
+
+// Rust: database.rs (create_database: `Some("")` is sent as it is). An explicit empty --maintenance-db is not the
+// default `postgres`: the server takes the user name as the database name. The outcome is therefore that of
+// naming the user's own database (it exists on some servers, as with the postgres image, and not on others).
+func TestAnExplicitEmptyMaintenanceDatabaseIsTheUsersOwn(t *testing.T) {
+	admin, err := neturl.Parse(os.Getenv("FORGEBASE_TEST_DATABASE_URL"))
+	if err != nil || admin.User == nil {
+		t.Fatalf("the test database URL has no user: %v", err)
+	}
+	user := admin.User.Username()
+	outcome := func(maintenance string) (int, bool) {
+		s := newScratchDB(t)
+		r := runCLI(map[string]string{"FORGEBASE_DATABASE_URL": s.url}, "", "site", "create", "default", "--empty", "--maintenance-db", maintenance)
+		if r.code != 0 && !strings.HasPrefix(r.stderr, "error: site `default`: ") {
+			t.Errorf("%q: %s", maintenance, r.stderr)
+		}
+		return r.code, s.exists()
+	}
+	code1, exists1 := outcome("")
+	code2, exists2 := outcome(user)
+	if code1 != code2 || exists1 != exists2 {
+		t.Errorf("empty: %d %v, the user's database: %d %v", code1, exists1, code2, exists2)
 	}
 }

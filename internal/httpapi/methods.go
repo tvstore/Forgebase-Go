@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -95,11 +96,12 @@ func handleMethodCall(s *State, w http.ResponseWriter, r *request) error {
 	if err != nil {
 		return err
 	}
-	path, err := r.pathParams(1)
+	// The order of the Rust extractors: the body is read (413, 415, 400) before the path is decoded.
+	body, err := s.readMethodBody(w, r)
 	if err != nil {
 		return err
 	}
-	body, err := s.readMethodBody(w, r)
+	path, err := r.pathParams(1)
 	if err != nil {
 		return err
 	}
@@ -131,5 +133,5 @@ func fromMethodFailure(e *MethodFailure) *apiError {
 	if e.Status >= 400 && e.Status < 500 {
 		return newError(e.Status, e.Code, e.Message)
 	}
-	return errInternal("method error with status " + http.StatusText(e.Status) + ": " + e.Message)
+	return errInternal("method error with status " + strconv.Itoa(e.Status) + ": " + e.Message)
 }

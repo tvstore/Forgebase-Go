@@ -20,18 +20,18 @@ go build -o bin/forgebase ./cmd/forgebase                     # in the Forgebase
 bin/forgebase new-app crm --forgebase-path . --dir ~/apps
 ```
 
-The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
+The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). The go command treats some names specially, so these are refused as well: the package patterns `std`, `all`, `tool` and `work`, `toolchain` (not a module path), `mod`, `builtin` and `arena` (directories of the Go distribution), `testdata` (the go tool skips such a directory), `main`, `cmd`, `internal`, `vendor`, and the device names Windows reserves (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`). Nothing else is: the generated files import the app package under the alias `apppkg` and name their own files `app.go` and `app_test.go`, so a name such as `t`, `binary`, `foo_test` or `x_linux` works (a test generates and vets a module for each of a list of such names, and one that every refused name is refused). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
 
 ```
 crm/
   go.mod                  module crm; requires forgebase-go with a replace to the checkout
   go.sum                  copied from the Forgebase checkout
-  crm.go                  func App() *forgebase.App, and the sample hook
-  cmd/crm/main.go         forgebase.New().App(crm.App()).Run()
+  app.go                  func App() *forgebase.App, and the sample hook
+  cmd/crm/main.go         forgebase.New().App(apppkg.App()).Run()
   cmd/crm/main_test.go    the binary starts and refuses what it should
   doctypes/crm_note.toml  one sample DocType, with permissions for the role "Crm User"
   migrations/README.md    how to add SQL data migrations
-  crm_test.go             guard test, startup check, a hook test, an end-to-end test
+  app_test.go             guard test, startup check, a hook test, an end-to-end test
   README.md  AGENTS.md  .gitignore
 ```
 
@@ -49,17 +49,17 @@ The tests that need PostgreSQL **fail** with a clear message when the variable i
 
 ```sh
 export FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/crm
-go build -o crm ./cmd/crm
-./crm migrate                                 # framework tables, schema sync, app migrations
-echo 'a long password' | ./crm user create ann --role "Crm User"
-FORGEBASE_DEV_INSECURE_COOKIES=1 ./crm serve  # http://127.0.0.1:8000/api/v1
+go build -o bin/crm ./cmd/crm
+bin/crm migrate                                 # framework tables, schema sync, app migrations
+echo 'a long password' | bin/crm user create ann --role "Crm User"
+FORGEBASE_DEV_INSECURE_COOKIES=1 bin/crm serve  # http://127.0.0.1:8000/api/v1
 ```
 
-Log in with `POST /api/v1/login` and `{"username": "ann", "password": "..."}`; the reply sets the session cookie. `GET /api/v1/meta/crm_note` then returns the DocType with `"app": "crm"`. `serve` does not migrate: run `migrate` after every change to DocTypes or migrations. `./crm --help` lists the other commands. The binary of an app has all the commands of the stock `forgebase` binary, and does not need `--doctypes`.
+Log in with `POST /api/v1/login` and `{"username": "ann", "password": "..."}`; the reply sets the session cookie. `GET /api/v1/meta/crm_note` then returns the DocType with `"app": "crm"`. `serve` does not migrate: run `migrate` after every change to DocTypes or migrations. `bin/crm --help` lists the other commands. The binary of an app has all the commands of the stock `forgebase` binary, and does not need `--doctypes`.
 
 ## 3. DocTypes are embedded
 
-`crm.go` embeds the directory:
+`app.go` embeds the directory:
 
 ```go
 //go:embed doctypes/*.toml
@@ -70,7 +70,7 @@ func App() *forgebase.App {
 }
 ```
 
-`DocTypes` reads every `.toml` file of the file system, at any depth, in lexical order, and the path in it (`doctypes/crm_note.toml`) is the name of the file in messages. The files are read at **build time** (that is what `//go:embed` does), so the binary does not depend on the files at run time and a change to a file needs a rebuild. The embed pattern is the whole list, with nothing scanned at run time, so a file the pattern does not reach (a subdirectory, say) would silently be missing; the test `TestEveryDocTypeFileIsEmbedded` (it calls `fbtest.AssertDocTypesListed(t, crm.App(), "doctypes")`) fails instead. The file format is in [the architecture](../blueprint/architecture.md#doctype-file-format). Name every DocType with the app name as prefix: DocType names are global, and a name used by two apps is a startup error.
+`DocTypes` reads every `.toml` file of the file system, at any depth, in lexical order, and the path in it (`doctypes/crm_note.toml`) is the name of the file in messages. The files are read at **build time** (that is what `//go:embed` does), so the binary does not depend on the files at run time and a change to a file needs a rebuild. The embed pattern is the whole list, with nothing scanned at run time, so a file the pattern does not reach (a subdirectory, say) would silently be missing; the test `TestEveryDocTypeFileIsEmbedded` (it calls `fbtest.AssertDocTypesListed(t, apppkg.App(), "doctypes")`) fails instead. The file format is in [the architecture](../blueprint/architecture.md#doctype-file-format). Name every DocType with the app name as prefix: DocType names are global, and a name used by two apps is a startup error.
 
 Change DocTypes additively. Adding a field or a DocType is applied by `migrate`; changing a field's type or length is refused (nothing is changed); reshaping existing data is a job for a migration.
 
@@ -140,7 +140,7 @@ write = true
 create = true
 ```
 
-`tasks.go` (replaces the sample, including its `NoteRules` hook):
+`app.go` (replaces the sample, including its `NoteRules` hook):
 
 ```go
 package tasks
@@ -196,7 +196,7 @@ func main() {
 }
 ```
 
-`tasks_test.go` (replaces the sample tests, which test the sample DocType and hook that are gone). It builds the same binary as `main.go`, checks the hook without a database, and runs both apps end to end with a user that has both roles:
+`app_test.go` (replaces the sample tests, which test the sample DocType and hook that are gone). It builds the same binary as `main.go`, checks the hook without a database, and runs both apps end to end with a user that has both roles:
 
 ```go
 package tasks_test
@@ -378,9 +378,9 @@ The job gets `{"scheduled_for": "<the tick, RFC 3339 UTC>"}`: the time that was 
 **Run it.** Jobs need a worker; schedules need a worker and `migrate`:
 
 ```sh
-./sales migrate
-./sales worker                  # until Ctrl-C or SIGTERM; --concurrency N
-./sales job list --status dead  # job show <id>, job retry <id>, job enqueue <name> --payload '{..}'
+bin/sales migrate
+bin/sales worker                  # until Ctrl-C or SIGTERM; --concurrency N
+bin/sales job list --status dead  # job show <id>, job retry <id>, job enqueue <name> --payload '{..}'
 ```
 
 **Test it.** `forgebase/testing` has `RunJobs` and `RunSchedulesAt`: `RunJobs(binary, db)` runs every due job with the worker's own code and returns how many ended done, retried or dead (`run.Done`, `run.Retried`, `run.Dead`); jobs that hooks and other jobs enqueue run too. `RunSchedulesAt(binary, db, at)` enqueues the schedules that are due at a given time (read `next_run_at` from `fb_schedule` with `DB.Rows`), and `RunJobs` then runs them. To test delivery twice, copy a job row with `DB.Exec` (`INSERT INTO fb_job ... SELECT ... FROM fb_job`) and run again. A job that is retried is queued again after its backoff, so `RunJobs` does not run it again in the same call.
@@ -500,7 +500,7 @@ Apps import the root package `github.com/tvstore/forgebase-go` and, in their tes
 
 The generated `go.mod` points at your checkout: `require github.com/tvstore/forgebase-go v0.0.0` and `replace github.com/tvstore/forgebase-go => <checkout>`. A relative `--forgebase-path` is written as an absolute path, because it is relative to where you ran the command, not to the new module. To depend on a released version instead, delete the `replace` line and run `go get github.com/tvstore/forgebase-go@<version>`.
 
-`new-app` copies the `go` and `toolchain` lines of the checkout's `go.mod`, its requirements (as `// indirect` lines) and its `go.sum` into the app, so your first build uses the dependency versions Forgebase is tested and license-checked with, not whatever is newest. `go mod tidy` leaves only what the app needs; commit `go.mod` and `go.sum`. Updating dependencies later is your decision (`go get -u`). The toolchain is the one the checkout pins; Go downloads it itself when your installed `go` is older (`GOTOOLCHAIN`, see <https://go.dev/doc/toolchain>).
+`new-app` copies the `go` and `toolchain` lines of the checkout's `go.mod`, its requirements (as `// indirect` lines) and its `go.sum` into the app, so your first build uses the dependency versions Forgebase is tested and license-checked with, not whatever is newest. `go mod tidy` is clean as created, and keeps it so as you add imports; commit `go.mod` and `go.sum`. Updating dependencies later is your decision (`go get -u`). The toolchain is the one the checkout pins; Go downloads it itself when your installed `go` is older (`GOTOOLCHAIN`, see <https://go.dev/doc/toolchain>).
 
 ## Common errors
 

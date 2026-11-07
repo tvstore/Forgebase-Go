@@ -236,3 +236,16 @@ func TestANilReportIsAStartupError(t *testing.T) {
 		t.Fatal(startup)
 	}
 }
+
+// Not in Rust: a nil Param or Column of a report is a startup error, like a nil report.
+func TestANilReportParamOrColumnIsAStartupError(t *testing.T) {
+	for want, report := range map[string]*Report{
+		"app `a`: report `r`: Param is given nil":  NewReport("SELECT 1").Roles("A").Param(nil),
+		"app `a`: report `r`: Column is given nil": NewReport("SELECT 1").Roles("A").Column(nil),
+	} {
+		_, startup := compose([]*App{NewApp("a").Report("r", report)}, "")
+		if startup == nil || !strings.Contains(startup.Error(), want) {
+			t.Fatal(want, startup)
+		}
+	}
+}

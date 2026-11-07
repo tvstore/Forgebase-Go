@@ -553,7 +553,7 @@ func TestMigrateRunsMigrationsThenSync(t *testing.T) {
 		t.Fatalf("a rerun changes nothing: %+v", report)
 	}
 	// The session-level lock was released with the connection: another run is not blocked.
-	if rows := d.Rows("SELECT count(*)::text FROM pg_locks WHERE locktype = 'advisory' AND granted"); rows[0][0] != "0" {
+	if rows := d.Rows(heldLocks); rows[0][0] != "0" {
 		t.Fatalf("advisory locks left behind: %v", rows)
 	}
 }

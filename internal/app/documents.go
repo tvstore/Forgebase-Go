@@ -275,8 +275,10 @@ func (d *Documents) Cancel(ctx context.Context, doctype, name string, version in
 }
 
 // Transition takes the workflow transition action of a document of a DocType with a workflow and returns the
-// document as stored. The document must be at version. As everywhere in a job, the roles of the transition
-// and the rights are not checked (the system context), but the BeforeTransition hooks and the validation run.
+// document as stored. The document must be at version. Like every call of the handle it acts as the handle's
+// caller: in a method the roles of the transition and the rights of the user are checked (permission_denied
+// when the user may not take it); only a job's handle is the system context, for which they are not. The
+// BeforeTransition hooks and the validation run in both.
 func (d *Documents) Transition(ctx context.Context, doctype, name, action string, version int64) (*StoredDocument, error) {
 	stored, err := db.Transition(ctx, d.tx, d.registry, doctype, name, action, version, d.caller)
 	return d.result(stored, err)

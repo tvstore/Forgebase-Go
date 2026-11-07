@@ -696,6 +696,20 @@ func TestTheBodyIsAJSONObjectAndAnEmptyOneIsAnEmptyObject(t *testing.T) {
 	if reply.Status != 413 || reply.ErrorCode() != "payload_too_large" {
 		t.Errorf("%d %v", reply.Status, reply.Body)
 	}
+	// The body is judged before the path (the order of the Rust extractors): a path that is not UTF-8 and a body
+	// without a JSON content type is the 415 of the body, and with a good body the 400 of the path.
+	reply = gus.PostRaw("/api/v1/method/shop.%FF", "text/plain", []byte("{}"))
+	if reply.Status != 415 || reply.ErrorCode() != "unsupported_media_type" {
+		t.Errorf("bad path and bad body: %d %v", reply.Status, reply.Body)
+	}
+	reply = gus.PostRaw("/api/v1/method/shop.%FF", "application/json", []byte("[1]"))
+	if reply.Status != 400 || reply.ErrorMessage() != "the body must be a JSON object" {
+		t.Errorf("bad path and body not an object: %d %v", reply.Status, reply.Body)
+	}
+	reply = gus.PostRaw("/api/v1/method/shop.%FF", "application/json", []byte("{}"))
+	if reply.Status != 400 || reply.ErrorMessage() != "invalid path" {
+		t.Errorf("bad path: %d %v", reply.Status, reply.Body)
+	}
 	// Query parameters are refused, as elsewhere.
 	reply = gus.Post(echo+"?x=1", map[string]any{})
 	if reply.Status != 400 || reply.ErrorCode() != "invalid_query" {

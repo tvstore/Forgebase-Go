@@ -222,6 +222,9 @@ func (a *App) Report(name string, report *Report) *App {
 		a.appProblems = append(a.appProblems, fmt.Sprintf("app `%s`: report `%s` is nil", a.name, name))
 		return a
 	}
+	for _, problem := range report.problems {
+		a.appProblems = append(a.appProblems, fmt.Sprintf("app `%s`: report `%s`: %s", a.name, name, problem))
+	}
 	a.reports = append(a.reports, namedReport{name: name, report: report})
 	return a
 }

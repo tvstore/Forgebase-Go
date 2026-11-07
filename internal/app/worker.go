@@ -58,10 +58,12 @@ type workerConfig struct {
 	poll   time.Duration
 	grace  time.Duration
 	margin time.Duration
+	// abortWait is how long the worker waits for an aborted handler to return.
+	abortWait time.Duration
 }
 
 func defaultWorkerConfig() workerConfig {
-	return workerConfig{poll: pollInterval, grace: workerGrace, margin: leaseMargin}
+	return workerConfig{poll: pollInterval, grace: workerGrace, margin: leaseMargin, abortWait: abortWait}
 }
 
 // outcome is what became of one claimed job.
@@ -115,7 +117,17 @@ type worker struct {
 
 	tickMu   sync.Mutex
 	lastTick time.Time
+
+	// abandoned is set when an aborted handler did not return within abortWait, and hardStopped by the second
+	// signal: in both cases a connection may stay acquired by a goroutine nobody can stop, so the caller must
+	// not wait for the pool to close (see leftBehind).
+	abandoned   atomic.Bool
+	hardStopped atomic.Bool
 }
+
+// leftBehind is true when an attempt may still hold a connection of the pool: pgxpool's Close waits for every
+// acquired connection, so the caller closes the pool with a bound (or not at all) before it exits.
+func (w *worker) leftBehind() bool { return w.abandoned.Load() || w.hardStopped.Load() }
 
 func newWorker(pool *pgxpool.Pool, registry *core.Registry, c *Composed, config workerConfig, out io.Writer) *worker {
 	return &worker{pool: pool, registry: registry, jobs: c.jobs, schedules: c.schedules, config: config, out: out}
@@ -184,7 +196,7 @@ func (a *attempt) beginCommit() bool {
 // abort stops the attempt and waits (a bounded time) for its goroutine, which closes the connection. It
 // returns the result when the attempt had finished for real before the abort took effect (the same
 // instant-before-the-abort rule as Rust: believe its result), and nil when it was aborted.
-func (a *attempt) abort() *finish {
+func (a *attempt) abort(wait time.Duration, abandoned *atomic.Bool) *finish {
 	a.mu.Lock()
 	if a.state == attemptRunning {
 		a.state = attemptAborted
@@ -197,7 +209,9 @@ func (a *attempt) abort() *finish {
 			return nil
 		}
 		return &f
-	case <-time.After(abortWait):
+	case <-time.After(wait):
+		// The handler ignores its context: its goroutine and connection stay with it.
+		abandoned.Store(true)
 		return nil
 	}
 }
@@ -239,7 +253,7 @@ func (w *worker) runOne(ctx context.Context, id string, stop <-chan struct{}) (o
 		case f := <-a.done:
 			return w.finished(ctx, claimed, id, def, label, f)
 		case <-timeout.C:
-			if f := a.abort(); f != nil {
+			if f := a.abort(w.config.abortWait, &w.abandoned); f != nil {
 				return w.finished(ctx, claimed, id, def, label, *f)
 			}
 			return w.record(ctx, claimed, id, def, label,
@@ -249,7 +263,7 @@ func (w *worker) runOne(ctx context.Context, id string, stop <-chan struct{}) (o
 			grace = time.After(w.config.grace)
 		case <-grace:
 			// The grace period is over: give the job back.
-			f := a.abort()
+			f := a.abort(w.config.abortWait, &w.abandoned)
 			if f != nil && f.kind == finishDone {
 				w.log(fmt.Sprintf("%s: the job had already completed (attempt %d)", label, claimed.Attempt))
 				return outcomeDone, nil
@@ -270,7 +284,7 @@ func (w *worker) runOne(ctx context.Context, id string, stop <-chan struct{}) (o
 			return outcomeLeaseLost, nil
 		case <-ctx.Done():
 			// Told to exit at once: the attempt is aborted, nothing is recorded, the lease recovers the job.
-			a.abort()
+			a.abort(w.config.abortWait, &w.abandoned)
 			return outcomeInterrupted, nil
 		}
 	}
@@ -333,9 +347,17 @@ func (w *worker) start(ctx context.Context, def *jobDef, claimed *db.ClaimedJob,
 
 // attemptJob is the body of one attempt.
 func (w *worker) attemptJob(hctx context.Context, a *attempt, registry *core.Registry, def *jobDef, claimed *db.ClaimedJob, id string) (result finish) {
+	// failed is a failure of this attempt; an attempt that was aborted has no failure of its own (the worker
+	// records the timeout, or gives the job back), whatever error the abort caused.
+	failed := func(err *JobError) finish {
+		if hctx.Err() != nil || a.aborted() {
+			return finish{kind: finishAborted}
+		}
+		return finish{kind: finishFailed, err: err}
+	}
 	conn, err := w.pool.Acquire(hctx)
 	if err != nil {
-		return finish{kind: finishFailed, err: fromDB(asDBError(err))}
+		return failed(fromDB(asDBError(err)))
 	}
 	// The connection goes back to the pool only when its transaction ended normally. After a panic, an
 	// abort or an error whose effect on the connection is unknown it is closed instead: a query may still be
@@ -343,7 +365,8 @@ func (w *worker) attemptJob(hctx context.Context, a *attempt, registry *core.Reg
 	healthy := false
 	defer func() {
 		if r := recover(); r != nil {
-			result = finish{kind: finishFailed, err: NewJobError(panicText(r)), panicked: true}
+			result = failed(NewJobError(panicText(r)))
+			result.panicked = true
 			healthy = false
 		}
 		if healthy {
@@ -358,7 +381,7 @@ func (w *worker) attemptJob(hctx context.Context, a *attempt, registry *core.Reg
 	end := context.WithoutCancel(hctx)
 	tx, err := conn.Begin(end)
 	if err != nil {
-		return finish{kind: finishFailed, err: fromDB(asDBError(err))}
+		return failed(fromDB(asDBError(err)))
 	}
 	handlerErr := def.handler(hctx, newJobContext(tx, registry, claimed, w.log))
 	if handlerErr != nil {
@@ -492,12 +515,13 @@ func (w *worker) runWorker(ctx context.Context, concurrency int, id string, sign
 		case <-finished:
 		case <-signals:
 			w.log("exiting now (second signal); running jobs are recovered by their lease")
+			w.hardStopped.Store(true)
 			// The slots end their attempts without recording anything; give them a moment to close their
-			// connections.
+			// connections, not the abort wait: a handler that ignores its context must not delay the exit.
 			hardStop()
 			select {
 			case <-finished:
-			case <-time.After(2 * time.Second):
+			case <-time.After(500 * time.Millisecond):
 			}
 		}
 	}

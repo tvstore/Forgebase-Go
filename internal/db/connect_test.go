@@ -18,7 +18,7 @@ func refusedTLS(t *testing.T, url string) string {
 	return e.Message
 }
 
-// Rust: tls.rs::no_sslmode_and_disable_mean_no_tls (the part that this phase has)
+// Rust: tls.rs::no_sslmode_and_disable_mean_no_tls
 func TestNoSslmodeAndDisableMeanNoTLS(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"postgres://u:p@h:5432/db", "postgres://u:p@h:5432/db"},

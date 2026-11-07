@@ -291,3 +291,4 @@ echo "== stop the server"
 kill "$server" 2>/dev/null || true
 wait "$server" || true
 server=""
+echo "done"

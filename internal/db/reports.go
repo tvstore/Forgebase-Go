@@ -140,7 +140,7 @@ func RunReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, call
 	for i, raw := range rows {
 		row := make([]core.Value, len(report.Columns))
 		for j, column := range report.Columns {
-			v, err := decodeReportColumn(tm, columns[j].DataTypeOID, raw[j], column)
+			v, err := decodeReportColumn(tm, columns[j].DataTypeOID, resultFormat(columns[j].DataTypeOID), raw[j], column)
 			if err != nil {
 				return nil, wrap(err)
 			}
@@ -153,7 +153,7 @@ func RunReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, call
 
 // fetchReport prepares the statement, checks its shape, binds values and reads at most max_rows + 1 rows
 // through a portal (the Execute message of the extended protocol has a row limit; pgx does not expose
-// it, so the messages are sent and read here). The values of the rows are in the text format.
+// it, so the messages are sent and read here). The values of the rows are in the format resultFormat chooses per column.
 func fetchReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, values []core.Value) ([][][]byte, []pgconn.FieldDescription, error) {
 	// The unnamed statement: nothing is left in the connection's statement cache.
 	statement, err := conn.PgConn().Prepare(ctx, "", report.SQL, nil)
@@ -177,12 +177,16 @@ func fetchReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, va
 			args[i] = []byte(text)
 		}
 	}
+	formats := make([]int16, len(statement.Fields))
+	for i, field := range statement.Fields {
+		formats[i] = resultFormat(field.DataTypeOID)
+	}
 	limit := report.MaxRows + 1
 	fe := conn.PgConn().Frontend()
 	fe.SendBind(&pgproto3.Bind{
 		ParameterFormatCodes: []int16{pgtype.TextFormatCode},
 		Parameters:           args,
-		ResultFormatCodes:    []int16{pgtype.TextFormatCode},
+		ResultFormatCodes:    formats,
 	})
 	fe.SendExecute(&pgproto3.Execute{MaxRows: limit})
 	fe.SendSync(&pgproto3.Sync{})
@@ -241,9 +245,18 @@ func reportArgText(v core.Value) (string, bool, error) {
 	return "", false, fmt.Errorf("error serializing parameter: cannot bind a %s value", v.KindName())
 }
 
-// decodeReportColumn reads a column of the declared kind from its text form. A column of another SQL
+// resultFormat is the format a column is requested in: binary for date and timestamptz, as Rust's
+// tokio-postgres reads them (the text form depends on the DateStyle of the session), text for the rest.
+func resultFormat(oid uint32) int16 {
+	if oid == pgtype.DateOID || oid == pgtype.TimestamptzOID {
+		return pgtype.BinaryFormatCode
+	}
+	return pgtype.TextFormatCode
+}
+
+// decodeReportColumn reads a column of the declared kind in the given format. A column of another SQL
 // type is an error (the check at migrate finds that earlier), not a wrong value.
-func decodeReportColumn(tm *pgtype.Map, oid uint32, data []byte, column core.ReportColumn) (core.Value, error) {
+func decodeReportColumn(tm *pgtype.Map, oid uint32, format int16, data []byte, column core.ReportColumn) (core.Value, error) {
 	if !columnFits(column.Kind, oid) {
 		return core.Null(), fmt.Errorf("error deserializing column `%s`: the SQL returns %s, but %s is declared",
 			column.Name, oidName(tm, oid), column.Kind.Name())
@@ -261,7 +274,7 @@ func decodeReportColumn(tm *pgtype.Map, oid uint32, data []byte, column core.Rep
 		core.ColumnCheck:    {Kind: core.FieldCheck},
 	}
 	dest := columnDest(kinds[column.Kind.Kind])
-	if err := tm.Scan(oid, pgtype.TextFormatCode, data, dest); err != nil {
+	if err := tm.Scan(oid, format, data, dest); err != nil {
 		return core.Null(), fmt.Errorf("error deserializing column `%s`: %w", column.Name, err)
 	}
 	v, err := fromColumn(dest)

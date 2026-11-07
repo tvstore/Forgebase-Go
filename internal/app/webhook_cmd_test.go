@@ -434,3 +434,19 @@ func TestAWebhookOfOneSiteEnqueuesNothingOnTheOther(t *testing.T) {
 		t.Errorf("site b: %s", got)
 	}
 }
+
+// Rust: run.rs (Command::Webhook): the site is opened before the URL of add is checked, so a database that cannot
+// be reached is reported before a bad URL.
+func TestWebhookAddOpensTheSiteBeforeItChecksTheURL(t *testing.T) {
+	vars := map[string]string{"FORGEBASE_DATABASE_URL": "postgres://nobody:nothing@127.0.0.1:1/none"}
+	r := runCLI(vars, "", "webhook", "add", "w", "--doctype", "customer", "--events", "insert", "--url", "not a url", "--doctypes", doctypes)
+	expectCode(t, r, 1, "unreachable database")
+	if strings.Contains(r.stderr, "invalid URL") || strings.Contains(r.stderr, "nothing") {
+		t.Errorf("%q", r.stderr)
+	}
+	// With a database, the bad URL is the error.
+	e := webhookEnv(t)
+	bad := e.addWebhook("w", "not a url")
+	expectCode(t, bad, 1, "bad url")
+	expectContains(t, bad.stderr, "invalid URL: the URL is not a valid absolute URL")
+}
