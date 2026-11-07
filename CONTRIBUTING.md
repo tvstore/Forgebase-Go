@@ -32,6 +32,7 @@ The helper scripts back the `changes`, `docs` and `licenses` jobs of CI. They ne
 ```sh
 python3 .github/ci/test_classify_paths.py   # unit test of the path classifier (which CI jobs a change needs)
 python3 .github/ci/linkcheck.py             # relative links and anchors in *.md (links to files of later phases are listed in .github/ci/linkcheck-pending.txt)
+python3 .github/ci/test_test_mapping.py     # unit test of the generator of docs/parity/test-mapping.md (the generator itself needs a checkout of the frozen Rust repository, see docs/parity-report.md)
 go test ./.github/ci/licensecheck           # unit test of the licence classifier
 go mod download && go run ./.github/ci/licensecheck   # licence of every module in the build graph ("no dependencies" for now)
 git diff --name-only --no-renames origin/main...HEAD | python3 .github/ci/classify-paths.py --event pull_request   # what CI would run for your branch
