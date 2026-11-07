@@ -14,7 +14,6 @@ Cargo.toml
 # example (the job, the method, the fixture and the overlay: P5 to P7 rewrite those passages and remove the entries).
 examples/sales/src/
 examples/sales/tests/
-examples/sales/fixtures/
 examples/sales_extension/src/
 examples/sales_extension/overlays/
 

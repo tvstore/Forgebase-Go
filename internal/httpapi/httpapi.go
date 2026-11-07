@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -51,9 +52,18 @@ import (
 //	POST /resource/{doctype}/{name}/submit         body {"version"}: 200 {"data": doc}; /cancel the same
 //	POST /resource/{doctype}/{name}/amend          body {"version"}: 201 {"data": new doc}
 //	POST /method/{app}.{method}                    body: a JSON object, optional (M9.1, ADR 0019): 200 {"data": ..}
+//	GET  /export/{doctype}?format=csv|json&        200, a streamed file (text/csv; charset=utf-8 or application/json,
+//	     filters=&sort=&fields=                    Content-Disposition: attachment, X-Forgebase-Row-Count); needs the
+//	                                               read and export rights; 422 export_too_large over the row limit (M9.3)
+//	POST /report/{app}.{name}/export?format=       200, a file: the report's rows as CSV, or JSON {"columns", "rows",
+//	     csv|json, body {"params": {..}}           "truncated"}; X-Forgebase-Truncated: true for a cut result (M9.3)
+//	POST /import/{doctype}?format=csv|json&        body: the file; 200 {"data": {"dry_run", "mode", "rows", "inserted",
+//	     mode=insert|upsert&dry_run=1              "updated", "errors", "error_count"}}; 422 import_failed (the same
+//	                                               summary in details), invalid_import, import_too_large; 415 for the
+//	                                               wrong Content-Type; 413 over ImportBodyLimitBytes (M9.3)
 //
-// Anything else is 404, a wrong method is 405 with Allow. The routes of later phases (export, import,
-// customize and user-permissions) answer 404 like any unknown path until the phase that ports them.
+// Anything else is 404, a wrong method is 405 with Allow. The routes of later phases (customize and
+// user-permissions) answer 404 like any unknown path until the phase that ports them.
 //
 // With Config.DeskDir set, GET /desk/, /desk/index.html and /desk/assets/{name} serve the built desk
 // from that directory (see desk.go for the allow-list and the headers). The Host routing applies to
@@ -76,6 +86,18 @@ type Config struct {
 	// effective limit is at most half of the pool's maximum size (at least 1), whatever is set here, so
 	// that with a pool of 2 or more connections logins can never hold all of them.
 	MaxConcurrentLogins int
+	// ExportMaxRows is the most rows an export may have (M9.3, ADR 0021); more is 422 export_too_large.
+	ExportMaxRows uint64
+	// ImportMaxRows is the most data rows an import file may have; more is 422 import_too_large, before anything
+	// runs.
+	ImportMaxRows int
+	// ExportSendTimeout is how long an export waits for the client to take one chunk of the body. A client that
+	// stops reading would otherwise hold a pooled connection and a REPEATABLE READ snapshot for as long as it
+	// likes; when the time passes the body is aborted and both are released.
+	ExportSendTimeout time.Duration
+	// ImportBodyLimitBytes is the largest body of an import request in bytes: the import route has its own
+	// limit, and the other routes keep BodyLimitBytes.
+	ImportBodyLimitBytes int64
 	// DeskDir is the directory of the built desk (desk/dist) to serve under /desk/, or "" (the default)
 	// to serve no desk: /desk/* is then a 404.
 	DeskDir string
@@ -84,10 +106,14 @@ type Config struct {
 // DefaultConfig is the Rust AppConfig::default() of the settings that exist so far.
 func DefaultConfig() Config {
 	return Config{
-		AllowedHosts:        []string{"localhost", "127.0.0.1"},
-		SecureCookies:       true,
-		BodyLimitBytes:      1024 * 1024,
-		MaxConcurrentLogins: 8,
+		AllowedHosts:         []string{"localhost", "127.0.0.1"},
+		SecureCookies:        true,
+		BodyLimitBytes:       1024 * 1024,
+		MaxConcurrentLogins:  8,
+		ExportMaxRows:        100_000,
+		ImportMaxRows:        10_000,
+		ExportSendTimeout:    30 * time.Second,
+		ImportBodyLimitBytes: 16 * 1024 * 1024,
 	}
 }
 

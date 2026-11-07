@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -21,7 +23,7 @@ import (
 // against a real PostgreSQL. Ported from crates/forgebase/tests/app_binary.rs (the parts that need only the
 // app model: migrate and its dry run, fb_app, hooks of an extending app for the doc commands, the
 // --doctypes directory as the app local, a startup error for every command) and, since P5, the job commands
-// and the worker, and, since P6, the check of the reports at migrate. Deferred: the fixtures (P7) of that file.
+// and the worker, and, since P6, the check of the reports at migrate, and, since P7.2, the fixtures.
 //
 // The test binary runs itself again as the application binary (selected by the environment variable
 // FORGEBASE_TEST_BINARY) for every command: TestMain below.
@@ -87,8 +89,23 @@ func binaryCRMWithReport(valid bool) *forgebase.App {
 	return binaryCRM().Report("totals", report)
 }
 
+// The fixtures of crm: two records. The hook of sales rejects the title banned.
+const (
+	customerFixtures = `{"doctype": "customer", "records": [{"code": "fx-1", "title": "One"}, {"code": "fx-2"}]}`
+	bannedFixtures   = `{"doctype": "customer", "records": [{"code": "fx-1"}, {"code": "fx-2", "title": "banned"}]}`
+	unknownFixtures  = `{"doctype": "customer", "records": [{"code": "fx-1", "nope": 1}]}`
+)
+
+func fixturesOf(json string) fs.FS { return fxFiles("fixtures/customer.json", json) }
+
 func TestMain(m *testing.M) {
 	switch os.Getenv(binaryVar) {
+	case "fixtures":
+		os.Exit(forgebase.New().App(binaryCRM().Fixtures(fixturesOf(customerFixtures))).Run())
+	case "fixtures_banned":
+		os.Exit(forgebase.New().App(binaryCRM().Fixtures(fixturesOf(bannedFixtures))).App(binarySales()).Run())
+	case "fixtures_unknown_field":
+		os.Exit(forgebase.New().App(binaryCRM().Fixtures(fixturesOf(unknownFixtures))).Run())
 	case "reports_ok":
 		os.Exit(forgebase.New().App(binaryCRMWithReport(true)).Run())
 	case "reports_bad":
@@ -367,4 +384,57 @@ func TestTheReportCheckAtMigrate(t *testing.T) {
 		t.Fatalf("exit code %d", again.code)
 	}
 	contains(t, again.stdout, "app migrations: up to date")
+}
+
+// Rust: app_binary.rs::fixtures: the line of migrate and of a dry run, a failing record, and a startup error.
+func TestFixturesAtMigrate(t *testing.T) {
+	db := fbtest.NewDB(t)
+	ok := binaryRun{t: t, mode: "fixtures", url: db.URL()}
+	// A dry run on an empty database does not plan them yet and keeps nothing.
+	if out := ok.succeeds("", "migrate", "--dry-run"); !strings.Contains(out, "fixtures: crm: 2 record(s), not planned yet") {
+		t.Errorf("%s", out)
+	}
+	if out := ok.succeeds("", "migrate"); !strings.Contains(out, "fixtures: crm: 2 inserted, 0 updated, 0 kept, 0 unchanged\n") {
+		t.Errorf("%s", out)
+	}
+	if got := db.Rows("SELECT name, modified_by FROM doc_customer ORDER BY name"); !reflect.DeepEqual(got,
+		[][]string{{"fx-1", "fixture:crm"}, {"fx-2", "fixture:crm"}}) {
+		t.Errorf("%v", got)
+	}
+	if out := ok.succeeds("", "migrate"); !strings.Contains(out, "fixtures: crm: 0 inserted, 0 updated, 0 kept, 2 unchanged\n") {
+		t.Errorf("%s", out)
+	}
+	out := ok.succeeds("", "migrate", "--dry-run")
+	if !strings.Contains(out, "fixtures: crm: would insert 0, update 0, keep 0, 2 unchanged\n") || !strings.HasSuffix(out, "dry run: nothing was changed\n") {
+		t.Errorf("%s", out)
+	}
+
+	// A record the pipeline refuses (the hook of sales): exit code 1, the message names app, file and record,
+	// and nothing of the app's fixtures is kept.
+	db = fbtest.NewDB(t)
+	banned := binaryRun{t: t, mode: "fixtures_banned", url: db.URL()}
+	failed := banned.run("", "migrate")
+	if failed.code != 1 {
+		t.Fatalf("exit code %d", failed.code)
+	}
+	if !strings.HasPrefix(failed.stderr, "error: fixtures of app `crm` were not applied: fixtures/customer.json: record 2 (`fx-2`)") ||
+		!strings.Contains(failed.stderr, "a banned customer is not allowed") {
+		t.Errorf("%s", failed.stderr)
+	}
+	// What was applied (and committed) is printed first, as for a failed report check.
+	contains(t, failed.stdout, "framework migrations: 13 applied", "schema sync: applied", "app migrations: 1 applied\n  crm 0001 seed\n")
+	if strings.Contains(failed.stdout, "fixtures: crm") {
+		t.Errorf("%s", failed.stdout)
+	}
+	if got := db.Rows("SELECT count(*)::text FROM doc_customer"); got[0][0] != "0" {
+		t.Errorf("%v", got)
+	}
+
+	// A mistake that needs no database is a startup error, for every command.
+	unknown := binaryRun{t: t, mode: "fixtures_unknown_field", url: "postgres://unused:unused@127.0.0.1:1/unused"}
+	startup := unknown.run("", "migrate")
+	if startup.code != 1 || !strings.HasPrefix(startup.stderr,
+		"error: invalid app setup:\n  - app `crm`: fixtures/customer.json: record 1 (`fx-1`): `nope` is not a field of `customer`") {
+		t.Errorf("%d %s", startup.code, startup.stderr)
+	}
 }

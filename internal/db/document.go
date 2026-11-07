@@ -917,7 +917,7 @@ func cloneTables(m map[string][]core.Row) map[string][]core.Row {
 // cloneDocument is a deep copy of doc, with non-nil maps: the operations work on a copy, so a hook
 // that changes its document never changes the caller's (in Rust the document is moved).
 func cloneDocument(doc core.Document) core.Document {
-	return core.Document{Name: doc.Name, Values: cloneValues(doc.Values), Tables: cloneTables(doc.Tables)}
+	return core.Document{Name: doc.Name, NameGiven: doc.NameGiven, Values: cloneValues(doc.Values), Tables: cloneTables(doc.Tables)}
 }
 
 // lockCurrent reads the document with this name and its rows, locking the document row with lock

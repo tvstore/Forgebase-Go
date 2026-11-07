@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,9 +14,8 @@ import (
 // migrations of the apps, under one session-level lock (the Rust functions migrate, migrate_apps and
 // migrate_all of forgebase-db).
 //
-// The workflow backfill (P6) runs after the sync; the fixtures arrive with P7: the report already has
-// their place (and the app's text report prints it), so adding them does not change these signatures.
-// The schedules (P5) are synced by MigrateAll.
+// The workflow backfill (P6) runs after the sync, then the schedules (P5, synced by MigrateAll), and last the
+// fixtures of the apps (P7, ADR 0022).
 
 // AppliedAppMigration is one app data migration that was applied (or, in a dry run, is pending).
 type AppliedAppMigration struct {
@@ -46,7 +46,7 @@ type MigrateReport struct {
 	Schedules []string
 	// WorkflowWarnings are documents in a workflow state the workflow no longer defines (see backfillWorkflowStates).
 	WorkflowWarnings []string
-	// Fixtures are the fixtures of the apps that have some (P4).
+	// Fixtures are the fixtures of the apps that have some, in app order; in a dry run, what they would do.
 	Fixtures []AppFixtures
 	// FixturesPlanned is false while framework migrations are pending in a dry run: the fixtures
 	// are then only counted.
@@ -154,7 +154,13 @@ func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry,
 				}
 			}
 		}
-		return &MigrateReport{Migrations: migrations, AppMigrations: listed}, nil
+		var fixtures []AppFixtures
+		for _, app := range apps {
+			if len(app.Fixtures) > 0 {
+				fixtures = append(fixtures, AppFixtures{App: app.Name, Records: len(app.Fixtures)})
+			}
+		}
+		return &MigrateReport{Migrations: migrations, AppMigrations: listed, Fixtures: fixtures}, nil
 	}
 	pending, err := pendingAppMigrations(ctx, conn, apps)
 	if err != nil {
@@ -199,8 +205,35 @@ func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry,
 			return nil, err
 		}
 	}
+	// Last, after the app migrations (which may create what a record links to) and the backfill: one transaction
+	// per app, in app order. A failure leaves everything above applied.
+	var fixtures []AppFixtures
+	var failure error
+	for _, app := range apps {
+		if len(app.Fixtures) == 0 {
+			continue
+		}
+		var one *AppFixtures
+		if options.DryRun {
+			if one, err = planFixtures(ctx, conn, app); err != nil {
+				return nil, err
+			}
+			fixtures = append(fixtures, *one)
+			continue
+		}
+		one, err = applyFixtures(ctx, conn, registry, app, options.LockTimeout)
+		var dbErr *Error
+		if errors.As(err, &dbErr) && dbErr.Kind == ErrFixtureFailed {
+			failure = err
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		fixtures = append(fixtures, *one)
+	}
 	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, Schedules: lines,
-		WorkflowWarnings: warnings, FixturesPlanned: true}, nil
+		WorkflowWarnings: warnings, Fixtures: fixtures, FixturesPlanned: true, FixturesFailure: failure}, nil
 }
 
 func applied(app string, m AppMigration) AppliedAppMigration {

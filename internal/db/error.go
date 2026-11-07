@@ -146,6 +146,13 @@ const (
 	// events or the secret are invalid, or no webhook has the name (Message). Raised by the `webhook`
 	// commands, never by a document operation. The message never contains the secret.
 	ErrWebhook
+	// ErrExportTooLarge: an export would have more rows than the limit; nothing was written (Count,
+	// Limit).
+	ErrExportTooLarge
+	// ErrFixtureFailed: a fixture record could not be applied (M9.4, ADR 0022); the fixtures of the app were
+	// all rolled back, unless the message says the outcome of the commit is unknown (App, File, Record,
+	// Message).
+	ErrFixtureFailed
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -199,6 +206,10 @@ type Error struct {
 	Report string
 	// Details are the problems of ErrReportCheck, one message each.
 	Details []string
+	// Count and Limit are the rows of an export and the most allowed, for ErrExportTooLarge.
+	Count, Limit uint64
+	// File and Record are the fixture file and the record (its position and name) of ErrFixtureFailed.
+	File, Record string
 	// Hook is the failed hook of ErrHook: before_insert, validate, before_delete, before_submit,
 	// before_cancel or before_transition.
 	Hook string
@@ -319,6 +330,10 @@ func (e *Error) Error() string {
 		return "job: " + e.Message
 	case ErrWebhook:
 		return "webhook: " + e.Message
+	case ErrExportTooLarge:
+		return fmt.Sprintf("the export would have %d rows, over the limit of %d; narrow the filters", e.Count, e.Limit)
+	case ErrFixtureFailed:
+		return fmt.Sprintf("fixtures of app `%s` were not applied: %s: %s: %s", e.App, e.File, e.Record, e.Message)
 	case ErrHook:
 		return fmt.Sprintf("%s hook of DocType `%s` rejected the operation: %s", e.Hook, e.DocType, e.Message)
 	}

@@ -12,7 +12,7 @@ import (
 // ADR 0024): what each caller reads and writes, the metadata API (hidden fields left out, read_only for
 // fields that can be read but not written), 422 field_not_permitted, and that a hidden field is unknown
 // everywhere: the answer is compared, byte for byte, with the answer of a server whose DocType does not
-// have the field at all. The parts that call export or import come with those routes (P7); the summary and
+// have the field at all. The parts that call export or import came with those routes (P7.2); the summary and
 // the saved views are ported (P6).
 
 // account is credit_limit (level 1), vault_code (level 2, nobody has a rule), a table ledger at level 1.
@@ -148,6 +148,16 @@ func TestAUserWithoutTheLevelSeesNoTraceOfTheField(t *testing.T) {
 	if strings.Contains(list.text, "credit_limit") || strings.Contains(list.text, `:500`) {
 		t.Error(list.text)
 	}
+	// Export: CSV columns and JSON keys.
+	csv := s.get(s.agent, "/api/v1/export/account?format=csv")
+	wantStatus(t, csv, http.StatusOK, csv.text)
+	if first, _, _ := strings.Cut(csv.text, "\r\n"); first != "name,title,region,revenue" {
+		t.Error(csv.text)
+	}
+	export := s.get(s.agent, "/api/v1/export/account?format=json")
+	if strings.Contains(export.text, "credit_limit") || strings.Contains(export.text, "ledger") {
+		t.Error(export.text)
+	}
 	// Meta.
 	meta := s.get(s.agent, "/api/v1/meta/account")
 	sameList(t, fieldNames(meta), "title", "region", "revenue")
@@ -252,6 +262,9 @@ func TestAHiddenFieldIsRefusedExactlyLikeAFieldThatDoesNotExist(t *testing.T) {
 		same(t, hidden, plain, func() *req {
 			return get("/api/v1/summary/account?group_by=region&aggregates=sum:" + field)
 		})
+		same(t, hidden, plain, func() *req { return get("/api/v1/export/account?format=csv&fields=title," + field) })
+		same(t, hidden, plain, func() *req { return get("/api/v1/export/account?format=json&fields=" + field) })
+		same(t, hidden, plain, func() *req { return get("/api/v1/export/account?format=csv&filters=" + filters) })
 		// A value of the wrong type is not even looked at: no type error names the field.
 		for _, value := range []any{"not a number", 1, nil, []any{J{"qty": "x"}}} {
 			body := J{"title": "t", field: value}
@@ -277,6 +290,39 @@ func TestAHiddenFieldIsRefusedExactlyLikeAFieldThatDoesNotExist(t *testing.T) {
 		if a.code() != "validation_failed" {
 			t.Error(a.text)
 		}
+	}
+}
+
+// Rust: field_levels.rs::import_columns_of_hidden_fields_are_unknown
+func TestImportColumnsOfHiddenFieldsAreUnknown(t *testing.T) {
+	hidden := newLevelSite(t, true)
+	plain := newLevelSite(t, false)
+	const csv = "title,credit_limit\nA,5\n"
+	importAs := func(s *levelSite, who session, format, contentType, body string) reply {
+		return s.send(post("/api/v1/import/account?format="+format+"&mode=insert").session(who).raw(contentType, []byte(body)))
+	}
+	for _, s := range []*levelSite{hidden, plain} {
+		wantCode(t, importAs(s, s.agent, "csv", "text/csv", csv), http.StatusUnprocessableEntity, "invalid_import")
+	}
+	a, b := importAs(hidden, hidden.agent, "csv", "text/csv", csv), importAs(plain, plain.agent, "csv", "text/csv", csv)
+	if a.text != b.text {
+		t.Errorf("%s vs %s", a.text, b.text)
+	}
+	// JSON rows: the row error is the one of an unknown field.
+	rows := `[{"title": "A", "credit_limit": 5}]`
+	a, b = importAs(hidden, hidden.agent, "json", "application/json", rows), importAs(plain, plain.agent, "json", "application/json", rows)
+	wantStatus(t, a, http.StatusUnprocessableEntity, a.text)
+	if a.text != b.text {
+		t.Errorf("%s vs %s", a.text, b.text)
+	}
+	// A boss imports the column.
+	ok := importAs(hidden, hidden.boss, "csv", "text/csv", csv)
+	wantStatus(t, ok, http.StatusOK, ok.text)
+	// And the reader of level 1 only cannot: not permitted, as a row error.
+	denied := importAs(hidden, hidden.auditor, "csv", "text/csv", csv)
+	wantStatus(t, denied, http.StatusUnprocessableEntity, denied.text)
+	if !strings.Contains(denied.text, "cannot be changed with your permissions") {
+		t.Error(denied.text)
 	}
 }
 

@@ -58,7 +58,7 @@ go build -o bin/forgebase ./cmd/forgebase
 export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/forgebase_e2e   # an EMPTY database
 .github/ci/e2e-seed.sh                                   # the temporary P3 seed; writes bin/e2e/doctypes, migrates, creates the users
 FORGEBASE_DESK_DIR=desk/dist FORGEBASE_DEV_INSECURE_COOKIES=1 bin/forgebase serve --doctypes bin/e2e/doctypes &
-(cd desk && E2E_BASE_URL=http://127.0.0.1:8000 npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts --grep "<E2E_GREP of the e2e job in ci.yml>")
+(cd desk && E2E_BASE_URL=http://127.0.0.1:8000 npx playwright test e2e/smoke.spec.ts e2e/restrict.spec.ts e2e/transfer.spec.ts --grep "<E2E_GREP of the e2e job in ci.yml>")
 ```
 
 The seed runs against an empty database each time (drop and create it again for a second run). The tests of the specs that need routes of later phases are not selected yet; the pattern in `ci.yml` grows with the phases.

@@ -16,9 +16,8 @@ import (
 // field does not exist at all), that hidden data survives an update by a lower-level user, hooks,
 // if_owner and the leak review. Ported from crates/forgebase-db/tests/field_levels.rs.
 //
-// Deferred, with the phase that has what they need: export (P7; the test
-// export_leaves_out_hidden_fields_and_refuses_them_as_unknown). The summary, the saved views and the
-// transition are ported (P6).
+// The summary, the saved views and the transition are ported (P6), the export test
+// (export_leaves_out_hidden_fields_and_refuses_them_as_unknown) in P7.2.
 
 // flAccount is the account: credit_limit (level 1), vault_code (level 2, no rule names it), a table
 // ledger at level 1, a unique internal_ref and a Link partner at level 1. Without withLevels it
@@ -610,7 +609,7 @@ func TestHooksSeeTheWholeDocumentDuringAnUpdateByAUser(t *testing.T) {
 // Rust: field_levels.rs::hidden_fields_are_unknown_to_filters_sort_summary_and_export_with_identical_errors
 //
 // The filter and the sort of a list, the group-by and the aggregate of a summary, and the administrator's
-// filter; the export (P7) is not ported yet.
+// filter; the export of a hidden field is the next test (the Rust test body has no export either).
 func TestHiddenFieldsAreUnknownToFiltersSortsAndSummariesWithIdenticalErrors(t *testing.T) {
 	env := newFlEnv(t)
 	env.fullAccount()
@@ -665,6 +664,68 @@ func TestHiddenFieldsAreUnknownToFiltersSortsAndSummariesWithIdenticalErrors(t *
 		t.Errorf("admin filter: %v %v", rows, err)
 	}
 }
+
+// export is every document of an export of the accounts from reg, in pages.
+func (e *flEnv) export(reg *core.Registry, who core.Caller, filters []db.Filter, sorts []db.Sort) ([]*db.StoredDocument, error) {
+	e.t.Helper()
+	tx, err := db.BeginExport(bg, e.d.Pool)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(bg) }()
+	export, err := db.StartExport(bg, tx, reg, who, db.ExportQuery{DocType: "account", Filters: filters, Sort: sorts, Limit: 1000, WithTables: true})
+	if err != nil {
+		return nil, err
+	}
+	var all []*db.StoredDocument
+	for {
+		page, err := export.NextPage(bg)
+		if err != nil || page == nil {
+			return all, err
+		}
+		all = append(all, page...)
+	}
+}
+
+// Rust: field_levels.rs::export_leaves_out_hidden_fields_and_refuses_them_as_unknown
+func TestExportLeavesOutHiddenFieldsAndRefusesThemAsUnknown(t *testing.T) {
+	env := newFlEnv(t)
+	env.fullAccount()
+	u := user("u", "User")
+	docs, err := env.export(env.reg, u, nil, nil)
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("export: %v %v", docs, err)
+	}
+	if _, has := docs[0].Values["credit_limit"]; has {
+		t.Error("credit_limit was exported")
+	}
+	if _, has := docs[0].Tables["ledger"]; has {
+		t.Error("ledger was exported")
+	}
+	// Manager: level 1 included.
+	docs, err = env.export(env.reg, user("m", "Manager"), nil, nil)
+	if err != nil || docs[0].Values["credit_limit"] != core.Int(500) || len(docs[0].Tables["ledger"]) != 2 {
+		t.Errorf("manager: %v %v", docs, err)
+	}
+	// Administrator: everything.
+	docs, err = env.export(env.reg, admin(), nil, nil)
+	if err != nil || docs[0].Values["vault_code"] != text("1234") {
+		t.Errorf("administrator: %v %v", docs, err)
+	}
+	// Filters and sort on a hidden field: the error of an unknown field.
+	filter := []db.Filter{f("credit_limit", db.Eq(core.Int(1)))}
+	sorts := []db.Sort{db.Asc("credit_limit")}
+	hidden, missing := message(t, 0, errOf(env.export(env.reg, u, filter, nil))), message(t, 0, errOf(env.export(env.plain, u, filter, nil)))
+	if hidden != missing || !strings.Contains(hidden, "unknown field") {
+		t.Errorf("filter: %q and %q", hidden, missing)
+	}
+	hidden, missing = message(t, 0, errOf(env.export(env.reg, u, nil, sorts))), message(t, 0, errOf(env.export(env.plain, u, nil, sorts)))
+	if hidden != missing || !strings.Contains(hidden, "unknown field") {
+		t.Errorf("sort: %q and %q", hidden, missing)
+	}
+}
+
+func errOf[T any](_ T, err error) error { return err }
 
 // Rust: field_levels.rs::a_saved_view_on_a_hidden_field_is_unknown_and_hidden_from_the_list
 func TestASavedViewOnAHiddenFieldIsUnknownAndHiddenFromTheList(t *testing.T) {

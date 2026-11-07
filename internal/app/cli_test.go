@@ -582,7 +582,6 @@ func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
 		phase string
 		name  string
 	}{
-		{[]string{"data", "export", "customer", "--doctypes", "d"}, "P7", "data export"},
 		{[]string{"customize", "field", "list"}, "P7", "customize field list"},
 		{[]string{"user", "permission", "list"}, "P7", "user permission list"},
 	} {

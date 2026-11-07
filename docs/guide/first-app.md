@@ -444,7 +444,7 @@ func ordersOf(ctx context.Context, m *forgebase.MethodContext) (any, error) {
 
 ## 9. Fixtures
 
-> Go port: fixtures (`App.Fixtures`, embedded like the DocTypes) arrive in P7. The behaviour below is that of the Rust implementation and does not change.
+> Go port: fixtures are ported (P7.2): `App.Fixtures(fsys)` embeds them like the DocTypes ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)). The behaviour below is that of the Rust implementation and does not change.
 
 Some records should exist on every site that installs your app: the customer groups, the territories, a default price list. Ship them as a **fixture**: a JSON file with the records of one DocType, embedded in the app.
 
@@ -487,7 +487,7 @@ So a site's edit survives until you ship a new version of that record. To let si
 
 **Tests.** `DB.Migrate` applies fixtures too, and `Migrated.Fixtures` has the counts of each app, so you can test that your records exist after `db.Migrate(binary, false)`. Each site applies its own fixtures: the fixtures of an app that a site does not install are not applied there.
 
-The Rust `sales` example ships a fixture next to its SQL migration, so one `migrate` shows an insert and an adoption (the Go example gets it in P7): see [Integrating with other systems](integration.md#4-fixtures-records-the-app-ships). The design and the alternatives are in [ADR 0022](../adr/0022-fixtures.md).
+The `sales` example ships a fixture next to its SQL migration, so one `migrate` shows an insert and an adoption: see [Integrating with other systems](integration.md#4-fixtures-records-the-app-ships). The design and the alternatives are in [ADR 0022](../adr/0022-fixtures.md).
 
 Running your app for real (several sites, a reverse proxy, workers, upgrades, backups and restores) is in the [operations guide](operations.md).
 

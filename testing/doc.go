@@ -44,5 +44,7 @@
 // [Client] also calls app methods: [Client.Post] to /api/v1/method/{app}.{method}, [Client.WithToken] and
 // [Client.WithoutCSRF] for the gate, [Client.PostRaw] for a body that is not JSON.
 //
+// [DB.Migrate] also applies the fixtures of the apps ([Migrated.Fixtures] has the counts, ADR 0022).
+//
 // Not in this version (later phases): custom fields and metadata reload (P7).
 package testing

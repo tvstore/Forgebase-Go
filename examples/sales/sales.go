@@ -2,8 +2,6 @@
 //
 // It shows what an app is made of (DocTypes, hooks, a data migration, background jobs and a schedule) using the
 // public forgebase API only. cmd/sales puts it into a binary; the module examples/sales_extension builds on it.
-// The fixture of the Rust example arrives with the phase that ports the framework feature it uses (README.md has
-// the list).
 package sales
 
 import (
@@ -28,6 +26,11 @@ var doctypes embed.FS
 //
 //go:embed reports/sales_by_customer.sql
 var salesByCustomerSQL string
+
+// The fixtures (ADR 0022): records that migrate inserts when missing and updates only when the app changes them.
+//
+//go:embed fixtures/*.json
+var fixtures embed.FS
 
 // Data migrations (SQL, append-only): see the comments in the file. The file name is the version and the
 // name: 0001_default_customer_groups.sql is version 1, default_customer_groups.
@@ -72,8 +75,11 @@ func App() *forgebase.App {
 				Column(forgebase.DecimalColumn("total")).
 				Column(forgebase.DateColumn("last_order"))).
 		// Data migrations (SQL, append-only): see the comments in the file.
-		Migrations(migrations)
-	// A later phase adds to this chain, in the order of the Rust example: the fixtures (P7).
+		Migrations(migrations).
+		// Fixtures (ADR 0022): records `migrate` inserts when missing and updates only when the app changes
+		// them, after the migrations above. This file names Retail and Wholesale too, which the migration made
+		// already: the first `migrate` adopts them ("kept") and inserts Online.
+		Fixtures(fixtures)
 }
 
 // OrderRules are the business rules of a sales order: computed amounts and total, and what a submit needs.

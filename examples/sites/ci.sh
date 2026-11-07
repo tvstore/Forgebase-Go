@@ -15,13 +15,14 @@
 #      receiver of examples/sites/receiver.py (Python standard library, started and stopped by this
 #      script): the delivery is signed, the receiver verifies the signature with the recipe of
 #      docs/guide/webhooks.md and records it, exactly one `submit` delivery arrives for the order that
-#      was approved, a forged signature is refused, and `webhook test` succeeds.
+#      was approved, a forged signature is refused, and `webhook test` succeeds;
+#   6. (P7.2, M9.4) the fixture of the sales app: the first `migrate` of a site kept the two customer
+#      groups of the SQL migration and inserted the third, and a second `migrate` finds all three
+#      unchanged.
 #
-# The Rust script (examples/sites/ci.sh of the reference implementation) has three more parts. They
+# The Rust script (examples/sites/ci.sh of the reference implementation) has two more parts. They
 # arrive in the Go port with the phase that ports what they use, and are added here then:
 #
-#   - (P7) the fixture of the sales app: the first `migrate` of a site kept the two customer groups of
-#     the SQL migration and inserted the third, and a second `migrate` finds all three unchanged;
 #   - (P7) a site custom field, added by `customize field add` with the server running: it appears in
 #     that site's metadata within 15 s without a restart, not in `shop`'s, takes a value over the API,
 #     disappears with `customize field disable` (the data is kept) and returns with `enable`;
@@ -87,8 +88,8 @@ field_password="the password of the field"
 
 echo "== create the sites"
 "$bin" site list
-# `site create` migrates.
-"$bin" site create shop > /dev/null
+# `site create` migrates: the first migrate of `shop` applies the fixture of the sales app.
+"$bin" site create shop | tee "$work/shop-create.log" > /dev/null
 "$bin" site create field > /dev/null
 "$bin" site create restore_check --empty > /dev/null
 
@@ -142,6 +143,18 @@ for n in 1 2; do
   "$bin" doc insert sales_order --site shop --data \
     "{\"customer\":\"c$n@example.com\",\"order_date\":\"2026-10-0$n\",\"items\":[{\"description\":\"Pen\",\"qty\":$n,\"rate\":\"1.25\"},{\"description\":\"Ink\",\"qty\":1,\"rate\":\"9.00\"}]}" > /dev/null
 done
+
+echo "== the fixture of the sales app (M9.4)"
+# The first migrate (of `site create shop`) kept Retail and Wholesale, which the SQL migration of
+# the sales app made, and inserted Online; a second migrate finds the three unchanged.
+grep -qx 'fixtures: sales: 1 inserted, 0 updated, 2 kept, 0 unchanged' "$work/shop-create.log" \
+  || { cat "$work/shop-create.log" >&2; fail "the first migrate did not insert 1 and keep 2 groups"; }
+"$bin" migrate --site shop > "$work/shop-migrate.log"
+grep -qx 'fixtures: sales: 0 inserted, 0 updated, 0 kept, 3 unchanged' "$work/shop-migrate.log" \
+  || { cat "$work/shop-migrate.log" >&2; fail "the second migrate did not find the groups unchanged"; }
+[ "$("$bin" doc list customer_group --site shop --limit 500 | jq -r '[.[].name] | sort | join(",")')" = "Online,Retail,Wholesale" ] \
+  || fail "shop does not have the three customer groups"
+echo "ok: the first migrate kept 2 customer groups and inserted 1, the second found them unchanged"
 
 echo "== backup shop, restore into restore_check, migrate"
 "$bin" site backup shop --out "$work/shop.dump"

@@ -1,0 +1,8 @@
+{
+  "doctype": "customer_group",
+  "records": [
+    {"title": "Retail"},
+    {"title": "Wholesale"},
+    {"title": "Online"}
+  ]
+}

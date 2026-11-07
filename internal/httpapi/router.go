@@ -180,6 +180,9 @@ func (s *State) buildRoutes() []*route {
 		h(map[string]handlerFunc{"GET": handleSummary}, "GET,HEAD", "/api/v1/summary/{doctype}"),
 		h(map[string]handlerFunc{"GET": handleReportList}, "GET,HEAD", "/api/v1/report"),
 		h(map[string]handlerFunc{"POST": handleReportRun}, "POST", "/api/v1/report/{name}"),
+		h(map[string]handlerFunc{"POST": handleReportExport}, "POST", "/api/v1/report/{name}/export"),
+		h(map[string]handlerFunc{"GET": handleExport}, "GET,HEAD", "/api/v1/export/{doctype}"),
+		h(map[string]handlerFunc{"POST": handleImport}, "POST", "/api/v1/import/{doctype}"),
 		h(map[string]handlerFunc{"POST": handleMethodCall}, "POST", "/api/v1/method/{name}"),
 	}
 	// The desk routes exist only when a directory is configured.

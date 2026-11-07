@@ -1,6 +1,6 @@
 # Workflow, saved views and reports
 
-> Go port status: ported in P6. The workflow, the saved views, the summary and the query reports behave as described, over HTTP, in the command line and in the desk, and the code examples are Go ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) has the API). The one part that is not ported yet is the **export** of a report result (section 3, "Export"), which comes with import and export in P7.
+> Go port status: ported in P6. The workflow, the saved views, the summary and the query reports behave as described, over HTTP, in the command line and in the desk, and the code examples are Go ([ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) has the API). The export of a report result (section 3, "Export") is ported with import and export (P7.2).
 
 For the person who builds an app on Forgebase and has done the [first-app guide](first-app.md). This page covers the three parts of M8 that an app uses: an **approval workflow** on a DocType, **saved views and the summary** that the desk gives every list, and **query reports** (SQL that the app ships). Everything here is in the `sales` example, [`examples/sales`](../../examples/sales/README.md), and uses only the public `forgebase` package. The rules and the reasons are in [ADR 0015](../adr/0015-workflow-states-and-transitions.md) (workflow), [ADR 0016](../adr/0016-query-reports-read-only-execution.md) (reports) and [architecture, section 11](../blueprint/architecture.md#11-desk-reports-workflow) (desk, views, summary).
 
@@ -241,7 +241,7 @@ curl -s -X POST -H "Authorization: token $MANAGER_TOKEN" -H 'Content-Type: appli
 # {"data": {"columns": [...], "rows": [["bob@example.com", 1, "40.00", "2026-10-03"], ...], "truncated": false}}
 ```
 
-**Export** (comes with import and export in P7; not in the Go port yet). In the desk the result has an **Export** menu (CSV or JSON): it runs the report again with the same parameters and saves the file. Over HTTP, `POST /api/v1/report/<app>.<name>/export?format=csv|json` takes the same body as a run and answers the file (CSV has the column names as its header; JSON is `{"columns", "rows", "truncated"}`); it is for the same roles, with the report's own row limit and time limit, and `X-Forgebase-Truncated: true` marks a result that was cut at the limit ([ADR 0021](../adr/0021-import-and-export.md)). Text that a spreadsheet could take for a formula gets a leading `'` in CSV; numbers and dates never change. There are no charts yet.
+**Export** (P7.2). In the desk the result has an **Export** menu (CSV or JSON): it runs the report again with the same parameters and saves the file. Over HTTP, `POST /api/v1/report/<app>.<name>/export?format=csv|json` takes the same body as a run and answers the file (CSV has the column names as its header; JSON is `{"columns", "rows", "truncated"}`); it is for the same roles, with the report's own row limit and time limit, and `X-Forgebase-Truncated: true` marks a result that was cut at the limit ([ADR 0021](../adr/0021-import-and-export.md)). Text that a spreadsheet could take for a formula gets a leading `'` in CSV; numbers and dates never change. There are no charts yet.
 
 ## 4. Test it
 

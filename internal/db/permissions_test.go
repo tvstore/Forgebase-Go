@@ -15,9 +15,9 @@ import (
 // if_owner, deny by default, the union of roles, hidden documents that look missing (also for stale
 // versions and links), and what errors may say. Ported from crates/forgebase-db/tests/permissions.rs.
 //
-// Deferred, with the phase that has what they need: the export and import rights of the matrix and the export
-// part of the_matrix_with_user_permissions (P7). Each place says so. The calls to list are ported (P3), the
-// workflow transition and available_transitions of the matrix (P6).
+// The export and import rights of the matrix (the attempt function, the bypass of the administrator and the
+// system) and the export part of the_matrix_with_user_permissions are ported in P7.2. The calls to list are
+// ported (P3), the workflow transition and available_transitions of the matrix (P6).
 
 // permTicket is submittable, one role per right (each also reads), and Own, which has every right
 // on own documents only. A Link to party in the document and in its rows.
@@ -259,10 +259,22 @@ func attempt(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Right, c
 	case core.RightAmend:
 		_, err := db.Amend(bg, d.Pool, reg, "ticket", name, version, caller)
 		return err
+	// Rights of a file, not of one document (the matrix of the combinations is in import_export_test.go): here
+	// only that the evaluator's answer reaches the caller.
+	case core.RightExport:
+		tx, err := db.BeginExport(bg, d.Pool)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(bg) }()
+		_, err = db.StartExport(bg, tx, reg, caller, db.ExportQuery{DocType: "ticket", Limit: 1000})
+		return err
+	case core.RightImport:
+		row := db.ImportRow{Row: 1, Values: pairs("title", text("n"))}
+		_, err := db.Import(bg, d.Pool, reg, "ticket", caller, []db.ImportRow{row}, db.ImportInsert, false)
+		return err
 	}
-	// Export and import are rights of a file, not of one document: the Rust test calls the export
-	// and the import here; they arrive with P7.
-	t.Fatalf("right %v is not an operation of this matrix (export and import are P7)", right)
+	t.Fatalf("right %v is not an operation of this matrix", right)
 	return nil
 }
 
@@ -348,11 +360,11 @@ func TestARuleOfAFieldLevelGrantsNoDocumentRight(t *testing.T) {
 // Rust: permissions.rs::administrator_and_the_system_context_bypass_every_rule
 func TestAdministratorAndTheSystemContextBypassEveryRule(t *testing.T) {
 	d, reg := permSetup(t)
-	// The seven rights of the matrix; export and import are P7.
-	for _, c := range roleOf {
+	// Every right, the export and the import included.
+	for _, right := range core.AllRights {
 		for _, caller := range []core.Caller{admin(), sys("sys"), user("u", "Nobody", core.Administrator)} {
-			if err := attempt(t, d, reg, c.right, caller); err != nil {
-				t.Errorf("%s as %+v: %v", c.right, caller, err)
+			if err := attempt(t, d, reg, right, caller); err != nil {
+				t.Errorf("%s as %+v: %v", right, caller, err)
 			}
 		}
 	}
@@ -1044,7 +1056,7 @@ func attemptLinked(t *testing.T, d *dbtest.DB, reg *core.Registry, right core.Ri
 // NotFound for every operation (before the right, the version or the state), a visible one behaves as
 // without the restriction, and the Administrator and the system ignore the rows.
 //
-// Not ported here: the export of the cases (P7).
+// The export of the cases is at the end, with the agent_case DocType.
 func TestTheMatrixWithUserPermissions(t *testing.T) {
 	d, reg := permSetup(t)
 	makeParty(t, d, reg, "ok@x.y", sys("sys"))
@@ -1109,8 +1121,22 @@ func TestTheMatrixWithUserPermissions(t *testing.T) {
 			{agentAdmin, true, "administrator"},
 			{sys("sys"), true, "system"},
 		} {
+			// The export lists the case only to a caller who sees it.
+			tx, err := db.BeginExport(bg, d.Pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			export, err := db.StartExport(bg, tx, reg, who.caller, db.ExportQuery{DocType: "agent_case", Limit: 10,
+				Filters: []db.Filter{f("name", db.Eq(text(made.Name)))}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (export.Count() == 1) != who.visible {
+				t.Errorf("export of a case linked to %q by %s: count %d", ticket.customer, who.label, export.Count())
+			}
+			_ = tx.Rollback(bg)
 			// A stale version is NotFound for a hidden case, before the version is compared.
-			_, err := db.Transition(bg, d.Pool, reg, "agent_case", made.Name, "Close", made.Version+7, who.caller)
+			_, err = db.Transition(bg, d.Pool, reg, "agent_case", made.Name, "Close", made.Version+7, who.caller)
 			var e *db.Error
 			switch {
 			case !who.visible && errorsAs(err, &e) && e.Kind == db.ErrNotFound:

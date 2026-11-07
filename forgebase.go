@@ -54,6 +54,12 @@
 //     known as `<app>.<job>`; invalid [JobOptions] are startup errors. A schedule names a job the same app
 //     registered (an app schedules only its own jobs), at most once, with valid values. The app name
 //     `forgebase` is reserved for the framework's own clean-up jobs, which every binary has.
+//   - Fixtures. Records an app ships ([App.Fixtures], JSON files embedded like the DocTypes): one file per
+//     DocType, which must use field naming and have no workflow, no submit and no parent. `migrate` applies
+//     them last, after the app migrations, in app order and one transaction per app, through the document
+//     pipeline as the system caller `fixture:<app>`: a record is inserted if it is missing and updated only
+//     when the app changes it (a checksum per record in fb_fixture), a site's edit stands until then, and
+//     nothing is ever deleted (ADR 0022).
 //   - Startup errors. All of the above is checked before anything runs; every problem is reported
 //     together ([StartupError], exit code 1).
 //
@@ -140,8 +146,8 @@ const Version = app.Version
 // ---- apps and the binary ----------------------------------------------------------------------
 
 // App is a named unit of an application: DocTypes, hooks and data migrations. Build one with
-// [NewApp]; the methods are DependsOn, DocTypes, Hooks, Migrations, Version and Name, and each
-// returns the App so that calls chain.
+// [NewApp]; the methods are DependsOn, DocTypes, Fixtures, Hooks, Migrations, Version and Name (and the ones of
+// jobs, schedules, reports and methods), and each returns the App so that calls chain.
 type App = app.App
 
 // NewApp starts an app. The name follows the rules of a DocType name (lower-case ASCII letters, digits and

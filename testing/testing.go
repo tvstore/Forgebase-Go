@@ -66,6 +66,29 @@ type Migrated struct {
 	// AppMigrations are the app migrations applied, in the order they ran; with a dry run, the
 	// pending ones.
 	AppMigrations []AppliedMigration
+	// Fixtures is what the fixtures of each app that has any did, in app order; with a dry run, what they
+	// would do. [DB.Migrate] applies fixtures like `forgebase migrate` does, so a test database has the records
+	// of the apps' fixture files (ADR 0022).
+	Fixtures []AppliedFixtures
+	// FixturesPlanned is false in a dry run on a database whose framework migrations are pending: the fixtures
+	// are listed, but their counts are all zero because nothing could be planned yet.
+	FixturesPlanned bool
+}
+
+// AppliedFixtures is what [DB.Migrate] did with the fixtures of one app (ADR 0022); in a dry run, what it would
+// do. Only apps that have fixture records are listed.
+type AppliedFixtures struct {
+	// App is the app.
+	App string
+	// Inserted is the number of records inserted (also the ones inserted again after the site deleted them and
+	// the app shipped a new version).
+	Inserted int
+	// Updated is the number of records whose new version was applied to an existing document.
+	Updated int
+	// Kept is the number of records whose document existed already: left as it is and tracked from now on.
+	Kept int
+	// Unchanged is the number of records that did not change since they were last applied: nothing was done.
+	Unchanged int
 }
 
 // AppliedMigration is a migration that [DB.Migrate] applied (in a dry run: would apply).
@@ -131,7 +154,8 @@ func (d *DB) drop() {
 func (d *DB) URL() string { return d.url }
 
 // Migrate runs what `forgebase migrate` runs for b: the framework migrations, the DocType schema sync,
-// the app migrations in app order and then the check of the reports' SQL. With dryRun nothing is kept
+// the app migrations in app order, the fixtures of the apps ([Migrated.Fixtures] has the counts, and a refused
+// record is an error) and then the check of the reports' SQL. With dryRun nothing is kept
 // (and the reports are not checked). The error is the message
 // `forgebase migrate` would print: a *forgebase.StartupError when the apps do not fit together (nothing
 // was run), else a refused schema sync, a changed or unknown applied migration, a failing migration, a
@@ -145,6 +169,11 @@ func (d *DB) Migrate(b *forgebase.Binary, dryRun bool) (*Migrated, error) {
 	report, err := composed.Migrate(context.Background(), d.pool, db.SyncOptions{DryRun: dryRun, LockTimeout: 5 * time.Second})
 	if err != nil {
 		return nil, err
+	}
+	// A refused fixture is an error: the report says what was committed before it, and the caller of
+	// `forgebase migrate` prints that first; a test only needs the reason.
+	if report.FixturesFailure != nil {
+		return nil, report.FixturesFailure
 	}
 	// Like `forgebase migrate`: after the migrations, and not in a dry run.
 	if !dryRun {
@@ -160,7 +189,10 @@ func (d *DB) Migrate(b *forgebase.Binary, dryRun bool) (*Migrated, error) {
 			return nil, fmt.Errorf("the migrations were applied, but %d report(s) do not fit their SQL:\n%s", len(problems), strings.Join(lines, "\n"))
 		}
 	}
-	done := &Migrated{}
+	done := &Migrated{FixturesPlanned: report.FixturesPlanned}
+	for _, f := range report.Fixtures {
+		done.Fixtures = append(done.Fixtures, AppliedFixtures{App: f.App, Inserted: f.Inserted, Updated: f.Updated, Kept: f.Kept, Unchanged: f.Unchanged})
+	}
 	for _, m := range report.AppMigrations {
 		done.AppMigrations = append(done.AppMigrations, AppliedMigration{App: m.App, Version: m.Version, Name: m.Name})
 	}

@@ -51,7 +51,7 @@ func App() *forgebase.App {
 ```
 
 - **The builder mutates and returns its receiver.** `App` and `Binary` are pointers to data; the methods return the receiver so that calls chain. An app is built once, at startup, by one goroutine; neither type is safe for concurrent mutation. Building cannot fail: everything wrong (an invalid name, a missing dependency, a hook on an unknown DocType, an unreadable file, a nil argument) is held and reported together at startup in the `StartupError`, as in Rust.
-- **Later phases add methods; no existing call changes.** `Job`, `JobWith` and `Schedule` came with P5 (below); `Report` came with P6 (below); `Method` came with P7.1 (below); `Fixtures` and `ExtendDocType` (P7) are not added yet. `App` and `Binary` have unexported fields only, so a method is an addition. `Binary.RunArgs` takes the arguments without the program name (`os.Args[1:]`), unlike Rust's `run_from`, which takes `args_os` with it.
+- **Later phases add methods; no existing call changes.** `Job`, `JobWith` and `Schedule` came with P5 (below); `Report` came with P6 (below); `Method` came with P7.1 (below); `Fixtures` came with P7.2 (below); `ExtendDocType` (P7) is not added yet. `App` and `Binary` have unexported fields only, so a method is an addition. `Binary.RunArgs` takes the arguments without the program name (`os.Args[1:]`), unlike Rust's `run_from`, which takes `args_os` with it.
 - **`Binary` and not `Forgebase`.** `forgebase.Forgebase` would stutter; the type is the binary of an application, so it is `forgebase.Binary` and the constructor is `forgebase.New`. The Rust method `app` is `App`.
 - **`DocTypes(fs.FS)`** reads every file whose name ends in `.toml`, at any depth, in the order of `fs.WalkDir` (lexical within each directory), and uses the path in the file system as its name in messages (an `embed.FS` of `//go:embed doctypes/*.toml` gives `doctypes/customer.toml`, the path the Rust list wrote). Names that start with a dot are skipped. This replaces the explicit list of `doctypes!` with the embedded directory itself: the list is the embed pattern, and the guard (below) catches a file the pattern does not reach. **The order of the Rust list** decided only the order in which problems are reported (the load order within an app has no other effect: DocTypes are unique and the registry is keyed by name), so lexical order is the mapping; an app that wanted a different order of messages loses nothing else. Calling it again adds more files.
 - **`Migrations(fs.FS)`** reads every `*.sql` file the same way. The file is named `NNNN_name.sql`: the digits are the version (positive, at most 2 147 483 647) and the rest is the name recorded in `fb_app_migration`, so `0001_default_customer_groups.sql` is version 1 `default_customer_groups`, as the Rust call `(1, "default_customer_groups", "migrations/0001_default_customer_groups.sql")` wrote it. Any other `.sql` name is a startup error naming the file; other files (a README) are ignored. Within one call the migrations are ordered by version; across calls the versions must still increase, and equal versions are refused with the Rust message. A listing that is out of order, or has a negative version, which Rust could write by hand, cannot be written in file names. The checksum of an applied migration is the SHA-256 of the file text, as in Rust, so a database migrated by the Rust binary verifies in Go while the file is byte-identical.
@@ -106,7 +106,7 @@ func AssertDocTypesListed(t testing.TB, app *forgebase.App, dir string)
 
 It maps `forgebase::testing` one to one with these differences: a helper takes the `testing.TB` once (`NewDB`) and fails the test with `t.Fatalf` where Rust panics; the database is dropped by `t.Cleanup`, so there is no `cleanup()` and no drop thread; the database never skips (a missing `FORGEBASE_TEST_DATABASE_URL` fails the test with the Rust message); the HTTP client sends requests straight into the `net/http` handler with `httptest` (no socket); the JSON of a request is any value `encoding/json` can marshal (`map[string]any{...}`), and a reply keeps the decoded body (`any`) next to its text, so there is no `Json` or `json!` and no `serde_json` re-export; `Migrate` returns `error` (a `*forgebase.StartupError` when the apps do not fit together, else the message `forgebase migrate` would print) instead of the `MigrateError` enum. **The guard** `AssertDocTypesListed` compares the DocType files in `dir` (relative to the test's working directory, which is the directory of the package under test) with the embedded set, reading `dir` with the same rules as `DocTypes`, and compares paths in full (`doctypes/customer.toml`), so a file embedded from elsewhere does not count; `./` and a trailing `/` in `dir` are ignored.
 
-Since P5, `RunJobs`, `JobRun` and `RunSchedulesAt` (below). Since P6, `CheckReports(b, db)`, and `Migrate` runs it as `TestDb::migrate` does (unless the migration is a dry run). Since P7.1, `WebhookTestSettings(t, caPEM, timeout)` (below). Not in this version, with the phase that adds it: `Migrated.Fixtures`, `AppliedFixtures`, `add_custom_field`, `set_custom_field_enabled`, `client_polling` and `reload_metadata` (P7). The public surface of `testing` stays in this ADR; later phases extend it here.
+Since P5, `RunJobs`, `JobRun` and `RunSchedulesAt` (below). Since P6, `CheckReports(b, db)`, and `Migrate` runs it as `TestDb::migrate` does (unless the migration is a dry run). Since P7.1, `WebhookTestSettings(t, caPEM, timeout)` (below). Since P7.2, `Migrated.Fixtures`, `Migrated.FixturesPlanned` and `AppliedFixtures` (below). Not in this version, with the phase that adds it: `add_custom_field`, `set_custom_field_enabled`, `client_polling` and `reload_metadata` (P7). The public surface of `testing` stays in this ADR; later phases extend it here.
 
 ### Background jobs and schedules (P5.1)
 
@@ -216,8 +216,8 @@ The rules are those of [ADR 0019](0019-app-method-endpoints.md) and of the Rust 
 |---|---|
 | `App` (`new`, `version`, `depends_on`, `doctypes`, `hooks`, `migrations`, `name`) | `App` (`NewApp`, `Version`, `DependsOn`, `DocTypes`, `Hooks`, `Migrations`, `Name`) |
 | `App::job`, `job_with`, `schedule` | `Job`, `JobWith`, `Schedule` (P5) |
-| `App::extend_doctype`, `fixtures`, `report`, `method` | `App.Report(name, *Report)` (P6, below); `App.Method(name, *Method)` (P7.1, below); later: `ExtendDocType`, `Fixtures` (P7) |
-| `DocTypeFile`, `MigrationFile`, `FixtureFile`, `OverlayFile`, the macros `doctypes!`, `migrations!`, `overlays!`, `fixtures!` | none: `//go:embed` and `fs.FS` (above); fixtures and overlays arrive with `Fixtures` and `ExtendDocType` in P7 |
+| `App::extend_doctype`, `fixtures`, `report`, `method` | `App.Report(name, *Report)` (P6, below); `App.Method(name, *Method)` (P7.1, below); `App.Fixtures(fs.FS)` (P7.2, below); later: `ExtendDocType` (P7) |
+| `DocTypeFile`, `MigrationFile`, `FixtureFile`, `OverlayFile`, the macros `doctypes!`, `migrations!`, `overlays!`, `fixtures!` | none: `//go:embed` and `fs.FS` (above); fixtures are `App.Fixtures` (P7.2, below), overlays arrive with `ExtendDocType` in P7 |
 | `Forgebase` (`new`, `app`, `check`, `run`, `run_from`) | `Binary` (`New`, `App`, `Check`, `Run`, `RunArgs`) |
 | `StartupError` | `StartupError` |
 | `DocTypeHooks`, `HookContext`, `HookError`, `Operation`, `TransitionInfo`, `EnqueuedJob`, `EnqueuedJobs` | the same names (aliases), `BaseHooks` for the no-op base |
@@ -236,7 +236,8 @@ The rules are those of [ADR 0019](0019-app-method-endpoints.md) and of the Rust 
 | `testing::run_jobs`, `JobRun`, `run_schedules_at` | `RunJobs`, `JobRun` (fields `Done`, `Retried`, `Dead`), `RunSchedulesAt` (P5) |
 | `testing::check_reports` | `CheckReports(b, db)` (P6) |
 | `webhook_test_settings` | `WebhookTestSettings(t, caPEM, timeout)` (P7.1, below) |
-| `AppliedFixtures`, `add_custom_field` ... | P7 as listed above |
+| `testing::AppliedFixtures`, `Migrated::fixtures` and `fixtures_planned` | `AppliedFixtures`, `Migrated.Fixtures` and `Migrated.FixturesPlanned` (P7.2, below) |
+| `add_custom_field` ... | P7 as listed above |
 | `forgebase new-app` | `forgebase new-app` (below) |
 
 ### `forgebase new-app`
@@ -266,3 +267,27 @@ The rules are those of [ADR 0019](0019-app-method-endpoints.md) and of the Rust 
 - **Wrapping core types for the public API:** a second copy of `Document`, `Value` and `HookContext` and conversions on every hook call, to hide package names the compiler already hides; aliases give the same boundary with no code.
 - **Wrapper types for `App` and `Binary` in the root package** (a struct with the same methods delegating to `internal/app`): `go doc` and pkg.go.dev would then list every method with its documentation. It costs about sixty lines and a seam so that `forgebase/testing` can reach the wrapped value (an exported accessor, which is API, or a registry, which is a global); not done for now. The owner may ask for it; it changes no call in an app.
 - **Examples inside the root module:** see above.
+
+### Fixtures (P7.2)
+
+[ADR 0022](0022-fixtures.md) is the design; this is its Go spelling. `App` gets one method and `forgebase/testing` one type and two fields (no existing call changes):
+
+```go
+func (*App) Fixtures(fsys fs.FS) *App
+
+type AppliedFixtures struct{ App string; Inserted, Updated, Kept, Unchanged int }
+// Migrated.Fixtures []AppliedFixtures; Migrated.FixturesPlanned bool
+```
+
+```go
+//go:embed fixtures/*.json
+var fixtures embed.FS
+
+forgebase.NewApp("sales").DocTypes(doctypes).Migrations(migrations).Fixtures(fixtures)
+```
+
+- **`Fixtures(fs.FS)`** reads every file whose name ends in `.json`, at any depth, in the order of `fs.WalkDir` (lexical within each directory), with the path in the file system as its name in messages (`fixtures/customer_group.json`, the path the Rust `fixtures!` list wrote). Names that start with a dot are skipped; a file that is not UTF-8 is a startup error naming it. Calling it again adds more files. This replaces the explicit list of `fixtures![..]` by the embedded directory, as `DocTypes` and `Migrations` do. **Difference from Rust: the order of the files.** The Rust list fixed the order in which files, and so DocTypes, are applied (it matters when a record links to a record of another file of the same app); here it is the lexical order of the paths, so an app that needs another order names its files `1_groups.json`, `2_lists.json`. Within a file the order of the records is the file's, as in Rust, and apps are applied in app order.
+- **The rules, the messages and the checksum are those of ADR 0022**, byte for byte: the startup checks (file, DocType, naming, identity, keys, JSON types, numbers) with the Rust messages; the canonical JSON and its SHA-256 are produced by `internal/httpapi` (`canonical.go`) with a number formatter written for Go (`strconv` with precision -1 is the shortest text that reads back, the same digits as Rust's `{:e}`), and a set of test vectors (input, canonical text, SHA-256 computed by Python's `hashlib`, including `1e21`, `0.1`, `-0.0` and a 30-digit integer) fixes it in `canonical_test.go`, so a database that the Rust binary fixtured is not fixtured again by the Go binary. The parser is the one of the HTTP API (serde_json's rules and messages), so `-0`, an integer above `uint64` and the rest of the numbers that ADR 0022 refuses are refused here too, and the same numbers are accepted.
+- **Applying** is `internal/db` (`fixtures.go`): one transaction per app with `lock_timeout`, the table of ADR 0022, the system caller `fixture:<app>`, and a refused record is `db.ErrFixtureFailed` (the message `fixtures of app <app> were not applied: <file>: record <n> (<name>): <reason>` of ADR 0022), returned in `MigrateReport.FixturesFailure` together with the report of what was applied, which `forgebase migrate` prints first. The dry run reads `fb_fixture` and the DocType tables and writes nothing.
+- **`forgebase/testing`:** `DB.Migrate` applies the fixtures like `forgebase migrate`; a refused record is the returned error. `Migrated.Fixtures` lists the apps that have fixture records, in app order, with the counts (zero in a dry run while framework migrations are pending, when `FixturesPlanned` is false).
+
