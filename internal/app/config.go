@@ -95,6 +95,13 @@ func (s *site) databaseURL(getenv func(string) string) (string, error) {
 		s.name, s.databaseURLEnv)
 }
 
+// toolConnectionURL is the URL for `site create`, `site backup` and `site restore`, which connect once, or hand
+// the connection to pg_dump and pg_restore through PG* variables (backup.go). The only use of the URL outside
+// this file; the same errors as open.
+func (s *site) toolConnectionURL(getenv func(string) string) (string, error) {
+	return s.databaseURL(getenv)
+}
+
 // siteContext is everything a command needs for one site: the site, its pool and its registry,
 // which holds only the DocTypes of the apps installed on the site (and, from P7, the site's custom
 // fields).

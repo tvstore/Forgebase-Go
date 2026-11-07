@@ -190,4 +190,4 @@ From then on a site can edit or delete a group and the next `migrate` leaves tha
 
 ## 5. TLS to PostgreSQL
 
-A managed database such as Neon requires TLS, and since M9.0 Forgebase connects with it: put `?sslmode=require` at the end of the database URL and the certificate and the host name are verified against the operating system's CA store. Nothing else changes in an app. See [TLS to PostgreSQL](operations.md#tls-to-postgresql), the [deploy guide](deploy.md#3-render--neon-free-path) and [ADR 0018](../adr/0018-postgres-tls.md).
+A managed database such as Neon requires TLS, and since M9.0 Forgebase connects with it (in the Go port since P5.2, through `crypto/tls`; the behaviour is the same): put `?sslmode=require` at the end of the database URL and the certificate and the host name are verified against the operating system's CA store. Nothing else changes in an app. See [TLS to PostgreSQL](operations.md#tls-to-postgresql), the [deploy guide](deploy.md#3-render--neon-free-path) and [ADR 0018](../adr/0018-postgres-tls.md).

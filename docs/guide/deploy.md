@@ -228,7 +228,7 @@ unset PW FORGEBASE_DATABASE_URL
 4. Docker command (Render's "Docker Command" field, which becomes the arguments of the image's entrypoint): **`all`**. This is the single-container mode ([section 2](#2-single-container-mode)): the web server and the job worker run in one container, which is what a free service allows.
 5. Deploy. Open `https://<your-service>.onrender.com/desk/` and log in as `admin` with the password of step 3.2.
 
-If the service does not start, read Render's logs. A line that starts with `error performing TLS handshake` or `no root certificate` is a connection problem: see [TLS to PostgreSQL](operations.md#tls-to-postgresql) and the troubleshooting table there.
+If the service does not start, read Render's logs. A line that starts with `error performing TLS handshake` or contains `no root certificate` is a connection problem: see [TLS to PostgreSQL](operations.md#tls-to-postgresql) and the troubleshooting table there.
 
 ### 3.4 Limits to expect (check each provider's current docs)
 

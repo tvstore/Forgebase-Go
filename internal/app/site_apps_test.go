@@ -26,11 +26,11 @@ import (
 // scenarios migrate_per_site and cli_per_site of crates/forgebase/tests/site_apps.rs, and from the
 // config validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules
 // of the apps are part of them since P5 (the worker of a site is in site_workers_test.go of the root
-// package, which runs the apps as a real process). Deferred, with the phase that brings what they use: site
-// list and site create (P5), the method assertions of http_per_site (P7, with App.Method), and the
-// removed-app scenario with fixtures (P7). The DocType part of http_per_site is ported below; it builds the
-// server's per-site states in the test (what serve does with siteComposed) and sends requests into the
-// routing handler, with no socket.
+// package, which runs the apps as a real process). The site list, site create and follow_ups scenarios are in
+// site_cmd_test.go (P5.2). Deferred, with the phase that brings what they use: the method assertions of
+// http_per_site (P7, with App.Method), and the removed-app scenario with fixtures (P7). The DocType part of
+// http_per_site is ported below; it builds the server's per-site states in the test (what serve does with
+// siteComposed) and sends requests into the routing handler, with no socket.
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +
@@ -238,7 +238,7 @@ func TestCommandsKnowOnlyTheAppsOfTheSite(t *testing.T) {
 }
 
 // Rust: site_apps.rs::config_and_site_list (the validation of the apps list, which needs the apps of the
-// binary; the other lines of that scenario are the site list, P5)
+// binary; the other lines of that scenario, the site list, are in site_cmd_test.go)
 func TestTheAppsOfASiteAreCheckedAgainstTheAppsOfTheBinary(t *testing.T) {
 	p := newAppPair(t, `apps = ["extra"]`)
 	r := p.run("migrate", "--site", "a")

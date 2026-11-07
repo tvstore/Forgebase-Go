@@ -1,0 +1,26 @@
+# Two customers on one server (M7, ADR 0014), for the composed binary of examples/sales_extension.
+# Used by examples/sites/ci.sh (the `sites` job of CI). Read examples/sites/README.md first.
+#
+# Each site has its own database. The URLs are not in this file: each site names the environment
+# variable that holds its URL.
+
+# `shop` sells with the `sales` app only: it has no `customer_visit`.
+[[sites]]
+name = "shop"
+hosts = ["shop.localhost"]
+database_url_env = "SHOP_DATABASE_URL"
+apps = ["sales"]
+
+# `field` installs every app of the binary (`sales` and `sales_extension`).
+[[sites]]
+name = "field"
+hosts = ["field.localhost"]
+database_url_env = "FIELD_DATABASE_URL"
+
+# The target of the restore test: the same apps as `shop`. It is created empty (`site create
+# restore_check --empty`), then `shop`'s backup is restored into it.
+[[sites]]
+name = "restore_check"
+hosts = ["restore.localhost"]
+database_url_env = "RESTORE_DATABASE_URL"
+apps = ["sales"]

@@ -1,6 +1,6 @@
 # Operating Forgebase
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. The worker (`forgebase worker`) and the job commands are in the Go binary since P5; `site`, the webhooks and the rest arrive with their phases.
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. The worker (`forgebase worker`), the job commands (P5.1), the `site` commands (list, create, backup, restore) and TLS to PostgreSQL (P5.2) are in the Go binary; the webhooks and the rest arrive with their phases. The error texts of a TLS failure are those of Go's `crypto/tls` (see [TLS to PostgreSQL](#tls-to-postgresql)).
 
 For the person who runs a Forgebase deployment: one server, one binary, one or more sites. Every command here was run against the repository at the time of writing (the two-site flow is `examples/sites/ci.sh`, run by the CI job `sites`). Design and decisions: [ADR 0014](../adr/0014-multi-site-database-per-site.md). Security notes: [security model](../blueprint/security-model.md#multi-site-isolation-m71-accepted-adr-0014).
 
@@ -81,7 +81,8 @@ BETA_DATABASE_URL=postgres://forgebase_app:long-random-password@db.internal:5432
 - The host name is sent for routing (SNI). A Unix-socket host with TLS is refused; use TCP.
 - `sslcert`, `sslkey` (client certificates), `sslcrl` and other `ssl*` parameters are refused, not ignored. Only `postgres://` and `postgresql://` URLs are accepted.
 - `site backup` and `site restore` give `pg_dump` and `pg_restore` the same choice in their environment: `PGSSLMODE=verify-full` with `PGSSLROOTCERT` (the path, or `system`, which needs the version 16 client tools). With no TLS they get `PGSSLMODE=disable`.
-- A failure says what failed, for example `error performing TLS handshake: invalid peer certificate: UnknownIssuer` (the server's certificate is not signed by a trusted root: use `sslrootcert`) or `certificate not valid for name "..."` (the URL's host is not in the certificate). It is not a password error, and no message contains the URL.
+- A failure says what failed, for example `error performing TLS handshake: x509: certificate signed by unknown authority` (the server's certificate is not signed by a trusted root: use `sslrootcert`) or `error performing TLS handshake: x509: certificate is valid for db.other.example, not db.example.com` (the URL's host is not in the certificate), or `error performing TLS handshake: server does not support TLS` (the server answered no to the TLS request; there is no fallback to plain text). It is not a password error, and no message contains the URL or the password. (The Rust implementation words the first two as `invalid peer certificate: UnknownIssuer` and `certificate not valid for name "..."`: the TLS stack is `crypto/tls` here, [ADR 0026](../adr/0026-go-implementation.md).)
+- The database connection **refuses a set `PGSERVICE`** (the connection settings come from the URL only): unset it in the environment of Forgebase. `site backup` and `site restore` run `pg_dump` and `pg_restore` without any `PG*` variable of the operator.
 
 **Connections.** Every site has its own pool (by default four connections per CPU; `pool_size` sets it) and every worker has one of its own. PostgreSQL's `max_connections` must cover the sum for all sites, workers and your own tools.
 
@@ -236,8 +237,8 @@ Delete the app from the site's `apps` list (and from the list of every site that
 |---|---|
 | `404 not_found` for every request | The `Host` matches no site. Check `site list`, and that the proxy passes the original `Host` (`proxy_set_header Host $host;`). `400 invalid_host` means a malformed or missing `Host`. |
 | `site `acme`: the environment variable ACME_DATABASE_URL is not set or is empty` | The variable named in `forgebase.toml` is missing in this process's environment (systemd: `EnvironmentFile=`; shell: `export`). |
-| `error performing TLS handshake: invalid peer certificate: UnknownIssuer` | The server's certificate is not signed by a root that Forgebase trusts. For a private CA add `sslrootcert=/path/ca.pem` to the URL ([TLS to PostgreSQL](#tls-to-postgresql)). |
-| `certificate not valid for name "..."` | The host in the URL is not in the server certificate. Connect with a name that is (or fix the certificate). |
+| `error performing TLS handshake: x509: certificate signed by unknown authority` | The server's certificate is not signed by a root that Forgebase trusts. For a private CA add `sslrootcert=/path/ca.pem` to the URL ([TLS to PostgreSQL](#tls-to-postgresql)). |
+| `error performing TLS handshake: x509: certificate is valid for ..., not ...` | The host in the URL is not in the server certificate. Connect with a name that is (or fix the certificate). |
 | `` `sslmode=prefer` is not supported: use `disable` or `require` `` | Change the URL: `sslmode=disable` for no TLS, `sslmode=require` for TLS. |
 | `no root certificate in the operating system's trust store` | The machine or image has no CA certificates. Install `ca-certificates` or set `sslrootcert`. |
 | `pg_dump not found; install the PostgreSQL client tools ...` | Install `postgresql-client-NN` or set `FORGEBASE_PG_BIN` to the directory that has the tools. |

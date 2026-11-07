@@ -140,6 +140,9 @@ func (d *DB) drop() {
 	_, _ = conn.Exec(ctx, "DROP DATABASE IF EXISTS "+db.QuoteIdent(d.name)+" WITH (FORCE)")
 }
 
+// Name is the name of this database.
+func (d *DB) Name() string { return d.name }
+
 // URL is the URL of this database, for a test that needs a pool of its own.
 func (d *DB) URL() string { return withDatabase(d.adminURL, d.name) }
 

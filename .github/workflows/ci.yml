@@ -139,6 +139,33 @@ jobs:
           go install "honnef.co/go/tools/cmd/staticcheck@$STATICCHECK_VERSION"
           go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      # The backup tests run the real pg_dump and pg_restore, whose major version must equal the server's (16): a
+      # newer pg_dump writes an archive that the server's pg_restore may not read, and a newer pg_restore sends SQL
+      # that an older server rejects (newer runner images ship 18). postgresql-client-16 installs to
+      # /usr/lib/postgresql/16/bin next to other versions (the Ubuntu 24.04 archive has it; a no-op when it is
+      # installed already). FORGEBASE_PG_BIN points there for the rest of the job. The step prints the versions and
+      # fails if either is not 16.
+      - name: PostgreSQL 16 client tools
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          bin=/usr/lib/postgresql/16/bin
+          for tool in pg_dump pg_restore; do
+            version="$("$bin/$tool" --version)"
+            echo "$version"
+            case "$version" in
+              "$tool (PostgreSQL) 16."*) ;;
+              *) echo "$tool is not version 16" >&2; exit 1 ;;
+            esac
+          done
+          echo "FORGEBASE_PG_BIN=$bin" >> "$GITHUB_ENV"
+      # TLS to PostgreSQL (ADR 0018): a second PostgreSQL 16 on port 5433 with ssl=on and a throwaway CA, started by
+      # the same script that runs locally. It appends FORGEBASE_TEST_TLS_URL, FORGEBASE_TEST_TLS_CA and
+      # FORGEBASE_TEST_TLS_WRONG_CA to GITHUB_ENV, so the TLS tests run in the `go test` below. They fail (never
+      # skip) when CI is true and these variables are missing. Docker and openssl are on the runner.
+      - name: PostgreSQL 16 with TLS
+        run: .github/ci/pg-tls.sh up "$RUNNER_TEMP/pg-tls"
       - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
@@ -291,6 +318,74 @@ jobs:
         if: failure()
         run: cat "$RUNNER_TEMP/demo/server.log"
 
+  # Two sites on one server and a backup restored into a new database (M7.3, ADR 0014): the composed binary of
+  # examples/sales_extension with examples/sites/forgebase.toml. The script examples/sites/ci.sh does the work and
+  # can be run locally. It needs the client tools (pg_dump, pg_restore, version 16, the server's) like the `check`
+  # job, and curl and jq (on the runner image). The URLs are built from the service container's throwaway
+  # credentials; the script never prints them. The databases are created by the script (`site create`). The
+  # parts of the Rust script that need the workflow (P6), webhooks, custom fields and user permissions (P7) are
+  # added by those phases.
+  sites:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
+    # Pinned to 24.04, not ubuntu-latest: the client tools must match the postgres:16 service, and 24.04 ships
+    # postgresql-client-16 in its own archive (26.04 does not). Re-evaluate when the PostgreSQL floor or the
+    # service version changes, or when 24.04 runners are retired.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forgebase
+          POSTGRES_PASSWORD: forgebase
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgebase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SHOP_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/sites_shop
+      FIELD_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/sites_field
+      RESTORE_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/sites_restore
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Go toolchain
+        run: .github/ci/install-go.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-sites-${{ hashFiles('go.mod', 'go.sum', 'examples/*/go.mod', 'examples/*/go.sum') }}
+          restore-keys: ${{ runner.os }}-sites-
+      # Same step as in the `check` job (see the comment there).
+      - name: PostgreSQL 16 client tools
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          bin=/usr/lib/postgresql/16/bin
+          for tool in pg_dump pg_restore; do
+            version="$("$bin/$tool" --version)"
+            echo "$version"
+            case "$version" in
+              "$tool (PostgreSQL) 16."*) ;;
+              *) echo "$tool is not version 16" >&2; exit 1 ;;
+            esac
+          done
+          echo "FORGEBASE_PG_BIN=$bin" >> "$GITHUB_ENV"
+      - name: Build the composed binary
+        run: cd examples/sales_extension && go build -o ../../bin/sales_extension ./cmd/sales_extension
+      - name: Two sites, a backup and a restore
+        run: examples/sites/ci.sh
+
   # The desk (the React app of desk/, copied unchanged from the Rust repository except for the path of the
   # icon list in desk/src/icons.test.ts, which is internal/core/doctype_icons.txt here): lint, typecheck,
   # unit tests, build, licences and audit.
@@ -432,11 +527,11 @@ jobs:
   # or fails on its merits, when the pull request is marked ready for review; merging needs the
   # `ci-result` of the run on the READY pull request head (AGENTS.md section 10.3).
   #
-  # Later phases add jobs (docker, sites, ...). Every new job must be added to `needs`
+  # Later phases add jobs (docker, ...). Every new job must be added to `needs`
   # here, or the ruleset does not guard it.
   ci-result:
     if: always()
-    needs: [changes, docs, check, licenses, app-template, desk, e2e]
+    needs: [changes, docs, check, licenses, sites, app-template, desk, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

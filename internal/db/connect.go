@@ -19,8 +19,9 @@ import (
 //
 // The URL is the only source of connection settings, as in tokio-postgres: the PG* environment
 // variables and the password file have no effect (url.go); a set PGSERVICE, which pgx cannot be told
-// to ignore, is refused. There is no TLS yet (it arrives with P5, ADR 0018): a URL without sslmode
-// or with sslmode=disable connects without TLS, and every other sslmode, and sslrootcert, is refused
+// to ignore, is refused. TLS follows the sslmode of the URL (ADR 0018, tls.go): a URL without sslmode
+// or with sslmode=disable connects without TLS; require, verify-ca and verify-full connect over TLS and
+// always verify the certificate chain and the host name; prefer, allow and every other value is refused
 // with ErrTLS. There is no connect timeout by default; give ctx a deadline or add
 // connect_timeout=<seconds> to the URL to bound it.
 //
@@ -36,15 +37,10 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 // Intentional difference from Rust, where the size is an Option<usize>: here a maxSize of 0 or less
 // means the default size (four per CPU), because Go has no None.
 func ConnectSized(ctx context.Context, databaseURL string, maxSize int) (*pgxpool.Pool, error) {
-	cleaned, err := checkTLSSettings(databaseURL)
+	config, err := parsePoolConfig(databaseURL)
 	if err != nil {
 		return nil, err
 	}
-	config, err := parsePoolConfig(cleaned)
-	if err != nil {
-		return nil, err
-	}
-	forceNoTLS(config)
 	if maxSize <= 0 {
 		maxSize = runtime.NumCPU() * 4
 	}
@@ -70,14 +66,34 @@ func ConnectSized(ctx context.Context, databaseURL string, maxSize int) (*pgxpoo
 	return pool, nil
 }
 
-// parsePoolConfig builds the pool configuration from a URL that checkTLSSettings accepted. The URL
-// is the only source of settings (see url.go). No error contains a value of the URL.
+// parsePoolConfig builds the pool configuration from a database URL: its TLS settings are checked and
+// taken out first (checkTLSSettings), then the rest is parsed. The URL is the only source of settings
+// (see url.go). No error contains a value of the URL.
 func parsePoolConfig(url string) (*pgxpool.Config, error) {
-	cfg, err := parseURLConfig(url)
+	cfg, err := prepareURL(url)
 	if err != nil {
 		return nil, err
 	}
 	return cfg.poolConfig()
+}
+
+// prepareURL is the URL as the settings of one connection: the TLS parameters taken out and checked,
+// the rest parsed (Rust: tls::prepare, up to the connector).
+func prepareURL(url string) (*urlConfig, error) { return prepareURLRecording(url, false) }
+
+// prepareURLRecording is prepareURL; with record the settings that cannot be passed on are noted
+// (see urlConfig.record).
+func prepareURLRecording(url string, record bool) (*urlConfig, error) {
+	rest, ssl, err := checkTLSSettings(url)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := parseURLConfigRecording(rest, record)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ssl = ssl
+	return cfg, nil
 }
 
 // acquireError maps the failure of the first connection: a server or connection error keeps the
@@ -91,7 +107,7 @@ func acquireError(err error) error {
 }
 
 // forceNoTLS makes every connection attempt plain: pgx defaults to sslmode=prefer (TLS first, plain
-// as the fallback), and this version has no TLS at all.
+// as the fallback), and a URL without TLS must never try it.
 func forceNoTLS(config *pgxpool.Config) {
 	cc := &config.ConnConfig.Config
 	cc.TLSConfig = nil
@@ -113,14 +129,14 @@ func forceNoTLS(config *pgxpool.Config) {
 	cc.Fallbacks = kept
 }
 
-// checkTLSSettings refuses the URLs that ask for TLS (not available before P5, ADR 0018) and
-// returns the URL without its TLS parameters (sslmode=disable is the same as none). It follows the
+// checkTLSSettings takes the TLS parameters out of the URL (ADR 0018): it returns the URL without them
+// and what they ask for (tlsSetting). sslmode=disable is the same as none. It follows the
 // Rust parser (tls.rs): only postgres:// and postgresql:// URLs; the credentials end at the first
 // '@'; a '/', '?' or '#' before it is refused so that the credentials never hide the query; keys
 // are percent-decoded before they are compared; no other ssl* option is accepted.
-func checkTLSSettings(url string) (string, error) {
-	refuse := func(message string) (string, error) {
-		return "", &Error{Kind: ErrTLS, Message: message}
+func checkTLSSettings(url string) (string, tlsSetting, error) {
+	refuse := func(message string) (string, tlsSetting, error) {
+		return "", tlsSetting{}, &Error{Kind: ErrTLS, Message: message}
 	}
 	lower := strings.ToLower(url[:min(len(url), 13)])
 	schemeLen := 0
@@ -133,7 +149,7 @@ func checkTLSSettings(url string) (string, error) {
 		// Anything that is not a URL: if the driver can parse it (the key=value form) it is refused
 		// because its sslmode could not be checked here; if not, it is simply an invalid URL.
 		if _, err := pgconn.ParseConfig(url); err != nil {
-			return "", &Error{Kind: ErrCreatePool, Message: "the database URL is not a valid PostgreSQL URL"}
+			return "", tlsSetting{}, &Error{Kind: ErrCreatePool, Message: "the database URL is not a valid PostgreSQL URL"}
 		}
 		return refuse("the database URL must start with postgres:// or postgresql://")
 	}
@@ -191,6 +207,7 @@ func checkTLSSettings(url string) (string, error) {
 			}
 		}
 	}
+	var ssl tlsSetting
 	switch {
 	case mode == nil || *mode == "disable":
 		if root != nil {
@@ -198,8 +215,14 @@ func checkTLSSettings(url string) (string, error) {
 				"set `sslmode=require` or remove `sslrootcert`")
 		}
 	case *mode == "require" || *mode == "verify-ca" || *mode == "verify-full":
-		return refuse("TLS to PostgreSQL (`sslmode=" + *mode + "`) is not available yet; " +
-			"it arrives with phase P5 of the Go port: use `sslmode=disable` or no `sslmode`")
+		ssl.verify = true
+		switch {
+		case root == nil || *root == "system":
+		case *root == "":
+			return refuse("the `sslrootcert` of the database URL is empty")
+		default:
+			ssl.rootFile = *root
+		}
 	case *mode == "prefer" || *mode == "allow":
 		return refuse("`sslmode=prefer` is not supported: use `disable` or `require` " +
 			"(`allow` is not supported either)")
@@ -207,7 +230,7 @@ func checkTLSSettings(url string) (string, error) {
 		return refuse("the `sslmode` of the database URL is not supported: use `disable`, `require`, " +
 			"`verify-ca` or `verify-full`")
 	}
-	if !sameTLSView(url) {
+	if !sameTLSView(url, ssl) {
 		return refuse("the database URL has an `sslmode` that could not be read safely; " +
 			"check the URL (a `/`, `?`, `#`, `@` or `%` in the password must be percent-encoded)")
 	}
@@ -215,7 +238,7 @@ func checkTLSSettings(url string) (string, error) {
 	if len(kept) > 0 {
 		rest += "?" + strings.Join(kept, "&")
 	}
-	return rest, nil
+	return rest, ssl, nil
 }
 
 // percentDecode decodes %XX escapes (exactly two hex digits each); '+' stays '+'. It reports false
@@ -257,10 +280,11 @@ func hexValue(c byte) (byte, bool) {
 }
 
 // sameTLSView is the belt and braces of checkTLSSettings: the standard library's URL parser must
-// not see a TLS option that the scan above did not accept (it would be one the scan missed). A URL
-// that net/url cannot parse is left to the driver's own parser, which cannot see TLS settings
-// either, because the scan found none and they are removed from the URL it gets.
-func sameTLSView(raw string) bool {
+// see the same TLS choice as the scan above, and no TLS option that the scan did not accept (it
+// would be one the scan missed). A URL that net/url cannot parse is left to the driver's own
+// parser, which cannot see TLS settings either, because the scan found none and they are removed
+// from the URL it gets.
+func sameTLSView(raw string, ssl tlsSetting) bool {
 	u, err := neturl.Parse(raw)
 	if err != nil {
 		return true
@@ -270,9 +294,20 @@ func sameTLSView(raw string) bool {
 		if k == "sslnegotiation" || !(strings.HasPrefix(k, "ssl") || k == "requiressl") {
 			continue
 		}
-		if k != "sslmode" || len(values) != 1 || values[0] != "disable" {
-			return false
+		// Only the exact spelling is accepted: another one (SSLMODE) is one that the scan above did not
+		// see, and libpq-style parsers may read it.
+		if key == "sslmode" && len(values) == 1 {
+			if values[0] == "disable" && !ssl.verify {
+				continue
+			}
+			if ssl.verify && (values[0] == "require" || values[0] == "verify-ca" || values[0] == "verify-full") {
+				continue
+			}
 		}
+		if key == "sslrootcert" && ssl.verify && len(values) == 1 {
+			continue
+		}
+		return false
 	}
 	return true
 }

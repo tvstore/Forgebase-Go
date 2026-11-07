@@ -221,7 +221,7 @@ func TestStockBinaryRuleNeedsTheDoctypesOption(t *testing.T) {
 			t.Errorf("%v:\n%q", c.args, errOut.String())
 		}
 	}
-	// site create --empty (P5) needs no --doctypes: only the commands that need DocTypes do.
+	// site create --empty needs no --doctypes: only the commands that need DocTypes do.
 	m := mustParseArgs(t, "site", "create", "acme", "--empty")
 	if !m.flag("empty") || m.cmd.arg("doctypes") == nil {
 		t.Errorf("%v", m.flags)
@@ -582,7 +582,6 @@ func TestNotYetPortedCommandsParseCompletelyThenFailWithThePhase(t *testing.T) {
 		phase string
 		name  string
 	}{
-		{[]string{"site", "list"}, "P5", "site list"},
 		{[]string{"doc", "transition", "c", "x", "Approve", "--version", "1", "--doctypes", "d"}, "P6", "doc transition"},
 		{[]string{"data", "export", "customer", "--doctypes", "d"}, "P7", "data export"},
 		{[]string{"webhook", "list"}, "P7", "webhook list"},

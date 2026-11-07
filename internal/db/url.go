@@ -1,6 +1,7 @@
 package db
 
 import (
+	"crypto/x509"
 	"math"
 	"net"
 	"os"
@@ -32,10 +33,19 @@ type urlConfig struct {
 	keepalivesRetries                                int           // 0: the operating system's
 	targetSessionAttrs                               string
 	channelBinding                                   string
+	// sslNegotiation is "postgres" or "direct" (TLS only).
+	sslNegotiation string
+	// ssl is what the TLS parameters of the URL asked for (checkTLSSettings took them out).
+	ssl tlsSetting
+	// record: the settings that the Go implementation cannot pass on (hostaddr, tcp_user_timeout,
+	// load_balance_hosts=random) are noted in unsupportedSet instead of refused. Only the backup
+	// tools' environment (pg_environment) wants that: it names them itself.
+	record         bool
+	unsupportedSet map[string]bool
 }
 
 func newURLConfig() *urlConfig {
-	return &urlConfig{keepalives: true, keepalivesIdle: 2 * time.Hour, targetSessionAttrs: "any", channelBinding: "prefer"}
+	return &urlConfig{keepalives: true, keepalivesIdle: 2 * time.Hour, targetSessionAttrs: "any", channelBinding: "prefer", sslNegotiation: "postgres"}
 }
 
 // urlError is a problem of the database URL. The text never contains a value of the URL, only the
@@ -88,12 +98,17 @@ func lenientDecode(s string, mustBeUTF8 bool) (string, error) {
 
 // parseURLConfig parses a postgres:// or postgresql:// URL like tokio-postgres (a sloppy parser
 // that matches libpq: the credentials end at the first '@').
-func parseURLConfig(url string) (*urlConfig, error) {
+func parseURLConfig(url string) (*urlConfig, error) { return parseURLConfigRecording(url, false) }
+
+// parseURLConfigRecording is parseURLConfig; with record the settings that cannot be passed on are
+// noted (see urlConfig.record).
+func parseURLConfigRecording(url string, record bool) (*urlConfig, error) {
 	s := strings.TrimPrefix(strings.TrimPrefix(url, "postgresql://"), "postgres://")
 	if s == url {
 		return nil, urlError("it must start with postgres:// or postgresql://")
 	}
 	cfg := newURLConfig()
+	cfg.record = record
 
 	// Credentials.
 	if at := strings.IndexByte(s, '@'); at >= 0 {
@@ -249,15 +264,16 @@ func (c *urlConfig) param(key, value string) error {
 	case "application_name":
 		c.applicationName = &value
 	case "sslnegotiation":
-		// The TLS parameters are taken out of the URL by checkTLSSettings; this one is kept, and has
-		// no effect without TLS.
+		// The other TLS parameters are taken out of the URL by checkTLSSettings; this one is kept, and
+		// has no effect without TLS.
 		if value != "postgres" && value != "direct" {
 			return invalidValue(key)
 		}
+		c.sslNegotiation = value
 	case "host":
 		c.hosts = append(c.hosts, strings.Split(value, ",")...)
 	case "hostaddr":
-		return unsupported("`hostaddr`")
+		return c.unsupportedParam("hostaddr", "`hostaddr`")
 	case "port":
 		for _, port := range strings.Split(value, ",") {
 			n := uint64(5432)
@@ -283,7 +299,7 @@ func (c *urlConfig) param(key, value string) error {
 			return err
 		}
 		if n > 0 {
-			return unsupported("`tcp_user_timeout`")
+			return c.unsupportedParam("tcp_user_timeout", "`tcp_user_timeout`")
 		}
 	case "keepalives":
 		n, err := parseUnsigned(value, 64)
@@ -327,13 +343,26 @@ func (c *urlConfig) param(key, value string) error {
 		switch value {
 		case "disable":
 		case "random":
-			return unsupported("`load_balance_hosts=random`")
+			return c.unsupportedParam("load_balance_hosts", "`load_balance_hosts=random`")
 		default:
 			return invalidValue(key)
 		}
 	default:
 		return urlError("unknown option `" + key + "`")
 	}
+	return nil
+}
+
+// unsupportedParam refuses a setting that the Go implementation cannot pass on, or notes it when the
+// configuration records them.
+func (c *urlConfig) unsupportedParam(key, what string) error {
+	if !c.record {
+		return unsupported(what)
+	}
+	if c.unsupportedSet == nil {
+		c.unsupportedSet = map[string]bool{}
+	}
+	c.unsupportedSet[key] = true
 	return nil
 }
 
@@ -382,6 +411,14 @@ func (c *urlConfig) pgxSettings(user string) string {
 	if len(ports) == 0 {
 		ports = []string{"5432"}
 	}
+	// Without TLS pgx must not try it (it would use sslmode=prefer): no SNI either. With TLS pgx
+	// verifies the chain and the host name (verify-full); the roots are set on the TLS configuration
+	// afterwards (poolConfig), because pgx would otherwise read the file itself and says nothing of
+	// an empty system store.
+	sslmode, negotiation, sni := "disable", "postgres", "0"
+	if c.ssl.verify {
+		sslmode, negotiation, sni = "verify-full", c.sslNegotiation, "1"
+	}
 	return strings.Join([]string{
 		kv("host", strings.Join(c.hosts, ",")),
 		kv("port", strings.Join(ports, ",")),
@@ -393,14 +430,14 @@ func (c *urlConfig) pgxSettings(user string) string {
 		kv("options", ""),
 		kv("timezone", ""),
 		kv("connect_timeout", "0"),
-		kv("sslmode", "disable"),
-		kv("sslnegotiation", "postgres"),
+		kv("sslmode", sslmode),
+		kv("sslnegotiation", negotiation),
 		kv("sslcertmode", "disable"),
 		kv("sslkey", ""),
 		kv("sslcert", ""),
 		kv("sslrootcert", ""),
 		kv("sslpassword", ""),
-		kv("sslsni", "0"),
+		kv("sslsni", sni),
 		kv("target_session_attrs", c.targetSessionAttrs),
 		kv("channel_binding", c.channelBinding),
 		kv("min_protocol_version", ""),
@@ -432,6 +469,18 @@ func (c *urlConfig) poolConfig() (*pgxpool.Config, error) {
 	// is refused (a disclosed deviation, see the dependency evaluation).
 	if os.Getenv("PGSERVICE") != "" {
 		return nil, &Error{Kind: ErrCreatePool, Message: "Forgebase reads the connection settings only from the database URL; unset PGSERVICE"}
+	}
+	// TLS needs a host name to verify, and is not offered over a Unix socket; the roots are loaded (and
+	// reported when missing) before anything is connected.
+	var roots *x509.CertPool
+	if c.ssl.verify {
+		if err := c.checkTLSHost(); err != nil {
+			return nil, err
+		}
+		var err error
+		if roots, err = loadRoots(c.ssl); err != nil {
+			return nil, err
+		}
 	}
 	if err := c.checkHosts(); err != nil {
 		return nil, err
@@ -478,6 +527,12 @@ func (c *urlConfig) poolConfig() (*pgxpool.Config, error) {
 	}
 	cc.DialFunc = dialer.DialContext
 	cc.ConnectTimeout = 0
-	forceNoTLS(config)
+	if !c.ssl.verify {
+		forceNoTLS(config)
+		return config, nil
+	}
+	if err := setTLSRoots(config, roots); err != nil {
+		return nil, err
+	}
 	return config, nil
 }
