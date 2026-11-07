@@ -61,16 +61,18 @@ func init() {
 	// module for the name and running go build):
 	//   - the roots of the standard library's import paths (`go list std`), and the directories of
 	//     $GOROOT/src that are not in it, builtin and arena: an import path of the app would mean the library
-	//     or be ambiguous with it; cmd, internal and vendor likewise;
+	//     or be ambiguous with it; cmd, internal and vendor are refused as a precaution, being directories there too
+	//     (no build of them was shown to fail);
 	//   - the package patterns std, all, tool and work, which are not importable packages;
 	//   - toolchain, which is not a valid module path, and mod, whose packages the go command refuses
 	//     ("disallowed import path");
-	//   - main, which cannot be the package of a library.
+	//   - main, which cannot be the package of a library, and testdata, a directory the go tool skips (so ./... would
+	//     miss cmd/testdata).
 	for _, name := range strings.Fields(`
 		archive bufio bytes cmp compress container context crypto database debug embed encoding errors expvar
 		flag fmt hash html image index io iter log maps math mime net os path plugin reflect regexp runtime
 		slices sort strconv strings structs sync syscall testing text time unicode unique unsafe uuid vendor
-		weak cmd main internal simd builtin arena std all tool work toolchain mod`) {
+		weak cmd main internal simd builtin arena std all tool work toolchain mod testdata`) {
 		notAPackageName[name] = true
 	}
 	// The names that Windows reserves for devices: a module path may not have them as an element.

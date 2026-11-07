@@ -268,14 +268,14 @@ jobs:
         run: go test ./...
       - name: Build the generated app
         working-directory: ${{ runner.temp }}/demo
-        run: go build -o demo ./cmd/demo
+        run: go build -o bin/demo ./cmd/demo
       - name: Migrate, serve, log in and read the metadata
         working-directory: ${{ runner.temp }}/demo
         run: |
           set -eu
-          ./demo migrate
-          echo 'a long password' | ./demo user create ann --role "Demo User"
-          FORGEBASE_DEV_INSECURE_COOKIES=1 ./demo serve > server.log 2>&1 &
+          bin/demo migrate
+          echo 'a long password' | bin/demo user create ann --role "Demo User"
+          FORGEBASE_DEV_INSECURE_COOKIES=1 bin/demo serve > server.log 2>&1 &
           server=$!
           # Any answer, whatever its status, means the server is up.
           for _ in $(seq 1 30); do

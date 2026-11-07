@@ -20,7 +20,7 @@ go build -o bin/forgebase ./cmd/forgebase                     # in the Forgebase
 bin/forgebase new-app crm --forgebase-path . --dir ~/apps
 ```
 
-The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). The go command treats some names specially, so these are refused as well: the package patterns `std`, `all`, `tool` and `work`, `toolchain` (not a module path), `mod`, `builtin` and `arena` (directories of the Go distribution), `cmd`, `internal`, `vendor`, and the device names Windows reserves (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`). Nothing else is: the generated files import the app package under the alias `apppkg` and name their own files `app.go` and `app_test.go`, so a name such as `t`, `binary`, `foo_test` or `x_linux` works (a test generates and vets a module for each of a list of such names, and one that every refused name is refused). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
+The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). The go command treats some names specially, so these are refused as well: the package patterns `std`, `all`, `tool` and `work`, `toolchain` (not a module path), `mod`, `builtin` and `arena` (directories of the Go distribution), `testdata` (the go tool skips such a directory), `main`, `cmd`, `internal`, `vendor`, and the device names Windows reserves (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`). Nothing else is: the generated files import the app package under the alias `apppkg` and name their own files `app.go` and `app_test.go`, so a name such as `t`, `binary`, `foo_test` or `x_linux` works (a test generates and vets a module for each of a list of such names, and one that every refused name is refused). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
 
 ```
 crm/
@@ -49,13 +49,13 @@ The tests that need PostgreSQL **fail** with a clear message when the variable i
 
 ```sh
 export FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/crm
-go build -o crm ./cmd/crm
-./crm migrate                                 # framework tables, schema sync, app migrations
-echo 'a long password' | ./crm user create ann --role "Crm User"
-FORGEBASE_DEV_INSECURE_COOKIES=1 ./crm serve  # http://127.0.0.1:8000/api/v1
+go build -o bin/crm ./cmd/crm
+bin/crm migrate                                 # framework tables, schema sync, app migrations
+echo 'a long password' | bin/crm user create ann --role "Crm User"
+FORGEBASE_DEV_INSECURE_COOKIES=1 bin/crm serve  # http://127.0.0.1:8000/api/v1
 ```
 
-Log in with `POST /api/v1/login` and `{"username": "ann", "password": "..."}`; the reply sets the session cookie. `GET /api/v1/meta/crm_note` then returns the DocType with `"app": "crm"`. `serve` does not migrate: run `migrate` after every change to DocTypes or migrations. `./crm --help` lists the other commands. The binary of an app has all the commands of the stock `forgebase` binary, and does not need `--doctypes`.
+Log in with `POST /api/v1/login` and `{"username": "ann", "password": "..."}`; the reply sets the session cookie. `GET /api/v1/meta/crm_note` then returns the DocType with `"app": "crm"`. `serve` does not migrate: run `migrate` after every change to DocTypes or migrations. `bin/crm --help` lists the other commands. The binary of an app has all the commands of the stock `forgebase` binary, and does not need `--doctypes`.
 
 ## 3. DocTypes are embedded
 
@@ -112,7 +112,7 @@ bin/forgebase new-app tasks --forgebase-path . --dir ~/apps   # in the Forgebase
 ```sh
 cd ~/apps/tasks
 rm doctypes/tasks_note.toml cmd/tasks/main_test.go
-go mod edit -require=crm@v0.0.0 -replace=crm=../crm   # crm is a module next to this one
+go mod edit -require=crm@v0.0.0 -replace=crm=.bin/crm   # crm is a module next to this one
 ```
 
 (With a module that has a proper path and a version, `go get` it instead; the `replace` is for modules that live on your disk.)
@@ -347,9 +347,9 @@ The job gets `{"scheduled_for": "<the tick, RFC 3339 UTC>"}`: the time that was 
 **Run it.** Jobs need a worker; schedules need a worker and `migrate`:
 
 ```sh
-./sales migrate
-./sales worker                  # until Ctrl-C or SIGTERM; --concurrency N
-./sales job list --status dead  # job show <id>, job retry <id>, job enqueue <name> --payload '{..}'
+bin/sales migrate
+bin/sales worker                  # until Ctrl-C or SIGTERM; --concurrency N
+bin/sales job list --status dead  # job show <id>, job retry <id>, job enqueue <name> --payload '{..}'
 ```
 
 **Test it.** `forgebase/testing` gets `RunJobs` and `RunSchedulesAt` in P5: `RunJobs` runs every due job with the worker's own code and counts how many ended `done`, `retried` or `dead`; jobs that hooks and other jobs enqueue run too. `RunSchedulesAt` enqueues the schedules that are due at a given time (read `next_run_at` from `fb_schedule` with `DB.Rows`), and `RunJobs` then runs them. To test delivery twice, copy a job row with `DB.Exec` (`INSERT INTO fb_job ... SELECT ... FROM fb_job`) and run again. A job that is retried is queued again after its backoff, so `RunJobs` does not run it again in the same call. The tests of the Rust `sales` and `sales_extension` show each of these.

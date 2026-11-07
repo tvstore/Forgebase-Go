@@ -438,7 +438,7 @@ func TestEveryAcceptedNameGeneratesAModuleThatVets(t *testing.T) {
 	}
 	dir := t.TempDir()
 	names := []string{"t", "binary", "doctype", "apps", "apppkg", "rules", "ctx", "doc", "ann", "testdb", "doctypes", "app", "foo_test", "x_linux", "x_windows_amd64", "title", "forgebase_x", "migrations", "db",
-		"fbtest", "com0", "conin", "testdata", "x_test", "ext", "test", "go1", "example", "vet", "modx", "sum", "bug", "env", "internal_", "a"}
+		"fbtest", "com0", "conin", "x_test", "ext", "test", "go1", "example", "vet", "modx", "sum", "bug", "env", "internal_", "a"}
 	for _, name := range names {
 		if r := runCLI(map[string]string{}, "", "new-app", name, "--forgebase-path", root, "--dir", dir); r.code != 0 {
 			t.Fatalf("%s: %+v", name, r)
@@ -451,21 +451,66 @@ func TestEveryAcceptedNameGeneratesAModuleThatVets(t *testing.T) {
 	}
 }
 
-// Not in Rust: the names the go command treats specially are refused, each verified once by generating a
-// module and running go build (the meta-packages std, all, tool and work are not importable, toolchain is not
-// a module path, builtin and arena are in $GOROOT/src but not in `go list std`, and Windows reserves
-// the device names as path elements).
-func TestNewAppRefusesTheNamesTheGoCommandTreatsSpecially(t *testing.T) {
+// Not in Rust: every name in the refused list is refused, the list itself being iterated (keywords, predeclared
+// identifiers, the standard library's roots, the names the go command treats specially, the Windows device names).
+// Each of the special ones was verified once by generating a module and running go build: std, all, tool and
+// work are not importable, toolchain is not a module path, mod is "disallowed", builtin and arena are
+// ambiguous with $GOROOT/src, the device names are not path elements, and ./... skips testdata. internal and
+// vendor are refused as a precaution only.
+func TestNewAppRefusesEveryNameOfTheRefusedList(t *testing.T) {
 	s := newScratch(t)
 	checkout := s.checkout()
-	for _, name := range []string{"std", "all", "tool", "work", "toolchain", "mod", "builtin", "arena", "con", "prn", "aux", "nul",
-		"com1", "com9", "lpt1", "lpt9", "vendor", "cmd", "internal", "unsafe"} {
-		r := s.newAppCmd(s.root, name, "--forgebase-path", checkout)
-		if r.code != 1 || !strings.Contains(r.stderr, "cannot be used as a package name here") {
+	for _, must := range []string{"std", "all", "tool", "work", "toolchain", "mod", "builtin", "arena", "testdata", "con", "com1", "lpt9", "main", "unsafe"} {
+		if !notAPackageName[must] {
+			t.Errorf("%q is not in the refused list", must)
+		}
+	}
+	s.t.Chdir(s.root)
+	for name := range notAPackageName {
+		r := runCLI(map[string]string{}, "", "new-app", name, "--forgebase-path", checkout)
+		want := "cannot be used as a package name here"
+		if goKeywords[name] {
+			want = "is a Go keyword"
+		}
+		if r.code != 1 || !strings.Contains(r.stderr, want) {
 			t.Errorf("name %q: %+v", name, r)
 		}
 		if _, err := os.Stat(filepath.Join(s.root, name)); !os.IsNotExist(err) {
 			t.Errorf("name %q: created", name)
+		}
+	}
+}
+
+// Not in Rust: no file of a generated app is ignored by its own .gitignore, whatever the name (a line
+// /NAME would have ignored the directories doctypes/ and migrations/ of an app with that name).
+func TestNoFileOfAGeneratedAppIsIgnoredByItsGitignore(t *testing.T) {
+	s := newScratch(t)
+	checkout := s.checkout()
+	for _, name := range []string{"doctypes", "migrations", "cmd", "bin", "demo"} {
+		if r := s.newAppCmd(s.root, name, "--forgebase-path", checkout); r.code != 0 && name != "cmd" {
+			t.Fatalf("%s: %+v", name, r)
+		}
+	}
+	for _, name := range []string{"doctypes", "migrations", "bin", "demo"} {
+		dir := filepath.Join(s.root, name)
+		if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v %s", err, out)
+		}
+		out, err := exec.Command("git", "-C", dir, "add", "-A", "--dry-run").CombinedOutput()
+		if err != nil {
+			t.Fatalf("git add: %v %s", err, out)
+		}
+		added := map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			added[strings.Trim(strings.TrimPrefix(line, "add "), "'")] = true
+		}
+		for _, file := range filesOf(t, dir) {
+			if strings.HasPrefix(file, ".git/") {
+				continue
+			}
+			if !added[file] {
+				t.Errorf("app %q: %s is ignored by its .gitignore", name, file)
+			}
 		}
 	}
 }

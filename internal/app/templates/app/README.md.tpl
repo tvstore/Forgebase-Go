@@ -7,19 +7,19 @@ A [Forgebase](https://github.com/tvstore/forgebase-go) app: the package (`app.go
 Needs Go {{go_version}} or newer and, for the tests and for running, a PostgreSQL 16 server.
 
 ```sh
-go build -o {{name}} ./cmd/{{name}}
+go build -o bin/{{name}} ./cmd/{{name}}
 # Tests: a superuser (or CREATEDB) URL; every test creates and drops its own database.
 export FORGEBASE_TEST_DATABASE_URL=postgres://user:password@localhost:5432/postgres
 go test ./...
 
 # Run: an empty database of your own.
 export FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/{{name}}
-./{{name}} migrate                                         # schema, then data migrations
-echo 'a long password' | ./{{name}} user create ann --role "{{title}} User"
-FORGEBASE_DEV_INSECURE_COOKIES=1 ./{{name}} serve          # http://127.0.0.1:8000/api/v1
+bin/{{name}} migrate                                         # schema, then data migrations
+echo 'a long password' | bin/{{name}} user create ann --role "{{title}} User"
+FORGEBASE_DEV_INSECURE_COOKIES=1 bin/{{name}} serve          # http://127.0.0.1:8000/api/v1
 ```
 
-`./{{name}} --help` lists all commands (`doc`, `user`, `token`, ...). `FORGEBASE_DEV_INSECURE_COOKIES=1` is for plain-HTTP development only. `serve` does not migrate: run `migrate` after every change to DocTypes or migrations.
+`bin/{{name}} --help` lists all commands (`doc`, `user`, `token`, ...). `FORGEBASE_DEV_INSECURE_COOKIES=1` is for plain-HTTP development only. `serve` does not migrate: run `migrate` after every change to DocTypes or migrations.
 
 ## What is where
 
