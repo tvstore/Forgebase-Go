@@ -141,7 +141,7 @@ func TestPreferUnknownModesAndClientCertificatesAreRefused(t *testing.T) {
 			t.Errorf("%s: %v", c.query, err)
 		}
 	}
-	if _, err := db.CreateDatabase(bg, tls.With("sslmode=prefer"), ""); err == nil {
+	if _, err := db.CreateDatabase(bg, tls.With("sslmode=prefer"), nil); err == nil {
 		t.Error("CreateDatabase accepted sslmode=prefer")
 	}
 	if _, err := db.InspectDatabase(bg, tls.With("sslmode=prefer")); err == nil {
@@ -202,15 +202,15 @@ func TestCreateDatabaseInspectAndMigrateWorkOverTLS(t *testing.T) {
 
 	// The maintenance connection of CreateDatabase uses TLS: with the wrong CA it fails.
 	wrong := tls.ForDatabase(name) + "?sslmode=require&sslrootcert=" + dbtest.Encode(tls.WrongCA)
-	_, err := db.CreateDatabase(bg, wrong, "")
+	_, err := db.CreateDatabase(bg, wrong, nil)
 	if err == nil || !strings.Contains(err.Error(), "TLS") || !strings.Contains(err.Error(), "unknown authority") {
 		t.Fatalf("wrong CA: %v", err)
 	}
 
-	if created, err := db.CreateDatabase(bg, url, ""); err != nil || !created {
+	if created, err := db.CreateDatabase(bg, url, nil); err != nil || !created {
 		t.Fatalf("create: %v %v", created, err)
 	}
-	if created, err := db.CreateDatabase(bg, url, ""); err != nil || created {
+	if created, err := db.CreateDatabase(bg, url, nil); err != nil || created {
 		t.Fatalf("exists: %v %v", created, err)
 	}
 	info, err := db.InspectDatabase(bg, url)

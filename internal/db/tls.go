@@ -3,7 +3,7 @@ package db
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
+	"encoding/base64"
 	"errors"
 	"io/fs"
 	"os"
@@ -75,18 +75,15 @@ func loadRoots(ssl tlsSetting) (*x509.CertPool, error) {
 		}
 		return nil, tlsError("cannot read the `sslrootcert` file " + quote(ssl.rootFile) + ": " + reason)
 	}
+	certs, err := pemCertificates(data)
+	if err != nil {
+		return nil, tlsError("cannot read the `sslrootcert` file " + quote(ssl.rootFile) + ": " + err.Error())
+	}
+	// Certificates that do not parse are ignored (rustls: add_parsable_certificates).
 	pool := x509.NewCertPool()
 	added := 0
-	for {
-		var block *pem.Block
-		block, data = pem.Decode(data)
-		if block == nil {
-			break
-		}
-		if block.Type != "CERTIFICATE" {
-			continue
-		}
-		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+	for _, der := range certs {
+		if cert, err := x509.ParseCertificate(der); err == nil {
 			pool.AddCert(cert)
 			added++
 		}
@@ -95,6 +92,48 @@ func loadRoots(ssl tlsSetting) (*x509.CertPool, error) {
 		return nil, tlsError("the `sslrootcert` file " + quote(ssl.rootFile) + " has no usable PEM certificate")
 	}
 	return pool, nil
+}
+
+// pemCertificates are the CERTIFICATE sections of a PEM text, as rustls-pki-types' pem_file_iter reads them
+// (Rust: CertificateDer::pem_file_iter): text outside the sections is ignored, sections of other kinds (keys,
+// CRLs) are skipped, and a malformed section (no end line, an end line of another kind, base64 that does not
+// decode) makes the whole file an error. A file with no section at all yields none (the caller refuses it).
+func pemCertificates(data []byte) ([][]byte, error) {
+	var certs [][]byte
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		label, ok := strings.CutPrefix(line, "-----BEGIN ")
+		if !ok || !strings.HasSuffix(label, "-----") {
+			continue
+		}
+		label = strings.TrimSuffix(label, "-----")
+		end := "-----END " + label + "-----"
+		var body strings.Builder
+		closed := false
+		for i++; i < len(lines); i++ {
+			l := strings.TrimSpace(lines[i])
+			if l == end {
+				closed = true
+				break
+			}
+			if strings.HasPrefix(l, "-----") {
+				return nil, errors.New("section end marker does not match its start")
+			}
+			body.WriteString(l)
+		}
+		if !closed {
+			return nil, errors.New("section end marker is missing")
+		}
+		der, err := base64.StdEncoding.DecodeString(body.String())
+		if err != nil {
+			return nil, errors.New("section is not valid base64")
+		}
+		if label == "CERTIFICATE" {
+			certs = append(certs, der)
+		}
+	}
+	return certs, nil
 }
 
 // quote is a path as Rust's {:?} writes it.
