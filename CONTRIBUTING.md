@@ -76,10 +76,10 @@ The job `app-template` generates an app outside the checkout and checks it as a 
 ```sh
 go build -o bin/forgebase ./cmd/forgebase
 bin/forgebase new-app demo --forgebase-path "$PWD" --dir /tmp/forgebase-app-template
-cd /tmp/forgebase-app-template/demo && test -z "$(gofmt -l .)" && go vet ./... && go mod tidy -diff && go test ./... && go build -o demo ./cmd/demo
+cd /tmp/forgebase-app-template/demo && test -z "$(gofmt -l .)" && go vet ./... && go mod tidy -diff && go test ./... && go build -o bin/demo ./cmd/demo
 export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/demo
-./demo migrate && echo 'a long password' | ./demo user create ann --role "Demo User"
-FORGEBASE_DEV_INSECURE_COOKIES=1 ./demo serve &   # then log in at /api/v1/login; GET /api/v1/meta/demo_note says "app":"demo"
+bin/demo migrate && echo 'a long password' | bin/demo user create ann --role "Demo User"
+FORGEBASE_DEV_INSECURE_COOKIES=1 bin/demo serve &   # then log in at /api/v1/login; GET /api/v1/meta/demo_note says "app":"demo"
 ```
 
 The jobs `docker` and `sites` of the Rust CI come back with the phases that port what they check; the local commands for them are added to this file then.
