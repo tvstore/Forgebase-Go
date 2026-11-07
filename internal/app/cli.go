@@ -3,11 +3,12 @@ package app
 import (
 	"errors"
 	"fmt"
-	"github.com/tvstore/forgebase-go/internal/core"
 	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tvstore/forgebase-go/internal/core"
 )
 
 // The command-line parser. Forgebase has no command-line framework (ADR 0026, G2); the Rust

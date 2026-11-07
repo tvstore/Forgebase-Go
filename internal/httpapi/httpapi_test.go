@@ -259,8 +259,11 @@ func TestPercentDecode(t *testing.T) {
 
 // Rust: (axum Query over serde_urlencoded) pairs in order, "+" is a space, bad UTF-8 becomes U+FFFD.
 func TestQueryPairs(t *testing.T) {
-	got := queryPairs("a=1&b=x+y&c&&d=%41%2b&e=%FF&a=2&=v")
-	want := [][2]string{{"a", "1"}, {"b", "x y"}, {"c", ""}, {"d", "A+"}, {"e", "�"}, {"a", "2"}, {"", "v"}}
+	// Invalid UTF-8 is one U+FFFD per maximal invalid subpart, as String::from_utf8_lossy: a cut sequence is one.
+	fffd := string(rune(0xFFFD))
+	got := queryPairs("a=1&b=x+y&c&&d=%41%2b&e=%FF&a=2&=v&f=%E2%82x&g=%FF%FF")
+	want := [][2]string{{"a", "1"}, {"b", "x y"}, {"c", ""}, {"d", "A+"}, {"e", fffd}, {"a", "2"}, {"", "v"},
+		{"f", fffd + "x"}, {"g", fffd + fffd}}
 	if len(got) != len(want) {
 		t.Fatalf("%v", got)
 	}

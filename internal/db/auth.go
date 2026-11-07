@@ -224,7 +224,10 @@ func (u AuthUser) Caller() core.Caller {
 }
 
 // LoginSession is the result of a successful Login. The tokens are returned only here and cannot be
-// read back later: the database holds their digests only. fmt prints them as <redacted>.
+// read back later: the database holds their digests only. fmt prints them as <redacted>. (Format works on
+// a value that fmt reaches directly: a struct that holds a LoginSession or an APITokenSecret in an unexported
+// field is printed field by field by %v and bypasses Format, so never put one in such a struct that is
+// logged.)
 type LoginSession struct {
 	// Token is the session token: send it to the client (the HTTP API puts it in a cookie), never
 	// log it.

@@ -450,8 +450,12 @@ func TestAnEmptyParameterIsAnUnknownDoctypeOrName(t *testing.T) {
 	e, admin := resourceSetup(t)
 	wantCode(t, e.send(get("/api/v1/resource//x").session(admin)), http.StatusNotFound, "not_found")
 	wantCode(t, e.send(post("/api/v1/resource//x/submit").session(admin).json(J{"version": 1})), http.StatusNotFound, "not_found")
-	// An empty name of a known DocType: not found (a document that does not exist).
-	wantCode(t, e.send(get("/api/v1/resource/note//").session(admin)), http.StatusNotFound, "not_found")
-	rep := e.send(post("/api/v1/resource/bill//submit").session(admin).json(J{"version": 1}))
+	// A trailing empty segment finds no route in either router: "no such route".
+	rep := e.send(get("/api/v1/resource/note//").session(admin))
+	wantCode(t, rep, http.StatusNotFound, "not_found")
+	if str(rep.errorObj(), "message") != "no such route" {
+		t.Error(rep.text)
+	}
+	rep = e.send(post("/api/v1/resource/bill//submit").session(admin).json(J{"version": 1}))
 	wantCode(t, rep, http.StatusNotFound, "not_found")
 }
