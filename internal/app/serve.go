@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
 
@@ -76,10 +77,15 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 		}
 	}
 	// Every site's registry is composed before any pool is opened, so a configuration or composition
-	// error is reported without touching a database. Each site gets a registry of its own.
-	composed, startup := compose(r.m.str("doctypes"))
-	if startup != nil {
-		return startup
+	// error is reported without touching a database. Each site gets a registry of its own, of the apps
+	// installed on it.
+	registries := make([]*core.Registry, len(sites))
+	for i, site := range sites {
+		composed, err := r.siteComposed(site, r.m.str("doctypes"))
+		if err != nil {
+			return err
+		}
+		registries[i] = composed.registry
 	}
 	var opened []*siteContext
 	defer func() {
@@ -87,8 +93,8 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 			sc.close()
 		}
 	}()
-	for _, site := range sites {
-		sc, err := site.open(ctx, r.o.Getenv, composed.registry.Clone(), 0)
+	for i, site := range sites {
+		sc, err := site.open(ctx, r.o.Getenv, registries[i], 0)
 		if err != nil {
 			return err
 		}

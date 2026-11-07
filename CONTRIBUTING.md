@@ -63,7 +63,26 @@ FORGEBASE_DESK_DIR=desk/dist FORGEBASE_DEV_INSECURE_COOKIES=1 bin/forgebase serv
 
 The seed runs against an empty database each time (drop and create it again for a second run). The tests of the specs that need routes of later phases are not selected yet; the pattern in `ci.yml` grows with the phases.
 
-The jobs `docker`, `sites` and `app-template` of the Rust CI come back with the phases that port what they check; the local commands for them are added to this file then.
+The example apps (P4) are modules of their own (`examples/*/go.mod`, a `replace` to this checkout), so `./...` at the root does not enter them; CI runs the same checks in each (the step "Example modules" of the job `check`). Run them with the same database:
+
+```sh
+for dir in examples/*/; do
+  (cd "$dir" && go vet ./... && go test -race ./... && go build ./... && go mod tidy -diff)
+done
+```
+
+The job `app-template` generates an app outside the checkout and checks it as a user would. To run it locally (it needs an empty database called `demo` next to the test database):
+
+```sh
+go build -o bin/forgebase ./cmd/forgebase
+bin/forgebase new-app demo --forgebase-path "$PWD" --dir /tmp/forgebase-app-template
+cd /tmp/forgebase-app-template/demo && test -z "$(gofmt -l .)" && go vet ./... && go mod tidy -diff && go test ./... && go build -o demo ./cmd/demo
+export FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/demo
+./demo migrate && echo 'a long password' | ./demo user create ann --role "Demo User"
+FORGEBASE_DEV_INSECURE_COOKIES=1 ./demo serve &   # then log in at /api/v1/login; GET /api/v1/meta/demo_note says "app":"demo"
+```
+
+The jobs `docker` and `sites` of the Rust CI come back with the phases that port what they check; the local commands for them are added to this file then.
 
 ## PostgreSQL for tests
 

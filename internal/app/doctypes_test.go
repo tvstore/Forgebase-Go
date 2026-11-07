@@ -8,7 +8,7 @@ import (
 )
 
 // Ported from crates/forgebase/src/doctypes.rs (the unit tests of the module). The Rust tests load
-// the directory with compose(&[], Some(dir)); here compose(dir) is the same call.
+// the directory with compose(&[], Some(dir)); here compose(nil, dir) is the same call.
 
 const goodTOML = "name = \"{n}\"\nlabel = \"L\"\n[[fields]]\nname = \"f\"\ntype = \"text\"\n"
 
@@ -25,7 +25,7 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 
 // loadDir is the DocTypes of one directory, loaded as the app local: their names, or the problems.
 func loadDir(dir string) ([]string, []string) {
-	c, startup := compose(dir)
+	c, startup := compose(nil, dir)
 	if startup != nil {
 		return nil, startup.Problems()
 	}

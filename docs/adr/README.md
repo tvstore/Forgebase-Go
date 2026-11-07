@@ -57,3 +57,4 @@ An ADR records one significant decision: the context, what was decided, what els
 | [0025](0025-user-permissions.md) | User permissions: restrict a user to some documents, `row_scope`, SQL on every path | Accepted (Rust-specific parts superseded by 0026 for this repository) |
 | [0026](0026-go-implementation.md) | Go implementation | Accepted by owner |
 | [0027](0027-decimal-and-toml.md) | Decimal and TOML libraries: an own `rust_decimal`-compatible decimal, `BurntSushi/toml` | Accepted (working session, within G2) |
+| [0028](0028-go-public-api-of-the-app-model.md) | Go public API of the app model: `forgebase`, `forgebase/testing`, `new-app`, example modules | Accepted (working session, within G3) |

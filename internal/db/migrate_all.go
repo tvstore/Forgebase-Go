@@ -3,17 +3,19 @@ package db
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tvstore/forgebase-go/internal/core"
 )
 
-// The whole of `forgebase migrate` for the stock binary: the framework migrations, then the schema
-// sync, under one session-level lock (the Rust functions migrate and migrate_all of forgebase-db).
+// The whole of `forgebase migrate`: the framework migrations, the schema sync and the data
+// migrations of the apps, under one session-level lock (the Rust functions migrate, migrate_apps and
+// migrate_all of forgebase-db).
 //
-// The app data migrations, the schedules, the workflow backfill and the fixtures of apps arrive with
-// the app model (P4) and the job queue (P5): the report already has their places (and the app's text
-// report prints them), so adding them does not change this signature.
+// The schedules, the workflow backfill and the fixtures arrive with the job queue (P5), workflows
+// (P6) and fixtures (P7): the report already has their places (and the app's text report prints
+// them), so adding them does not change these signatures.
 
 // AppliedAppMigration is one app data migration that was applied (or, in a dry run, is pending).
 type AppliedAppMigration struct {
@@ -36,7 +38,7 @@ type MigrateReport struct {
 	// Sync is the schema sync; nil while framework migrations are pending in a dry run, because
 	// the plan needs the tables they create.
 	Sync *SyncReport
-	// AppMigrations are the app data migrations, in the order they run (P4).
+	// AppMigrations are the app data migrations, in the order they run.
 	AppMigrations []AppliedAppMigration
 	// Schedules are the changes made to the schedules, one line each (P5).
 	Schedules []string
@@ -60,6 +62,30 @@ type MigrateReport struct {
 // sync fails. With DryRun nothing is kept: the report lists the pending framework migrations and the
 // sync plan; while framework migrations are pending the plan is nil.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, registry *core.Registry, options SyncOptions) (*MigrateReport, error) {
+	return MigrateApps(ctx, pool, registry, nil, options)
+}
+
+// MigrateApps applies the framework migrations, syncs the DocType schema of registry and then
+// applies the data migrations of apps, in the order of apps and, per app, by version (the Rust
+// migrate_apps).
+//
+// Each app migration is its own transaction together with its fb_app_migration row, so a failing
+// one is rolled back (ErrAppMigrationFailed) and stops the run; the ones before it stay applied.
+// Each runs with lock_timeout set to options.LockTimeout (set_config with is_local). Before the
+// schema sync every applied migration of apps is verified against the SQL the apps declare now
+// (ErrAppChecksumMismatch, ErrUnknownAppMigration), and a declared migration that is not applied
+// must not have a lower version than an applied one of the same app (ErrOutOfOrderAppMigration), so
+// a changed or out-of-order migration is refused before anything but the framework migrations is
+// applied. After an app's migrations, fb_app is upserted with the app's name and version (apps that
+// are not in apps are left as they are).
+//
+// With DryRun the report lists the pending framework and app migrations and the sync plan. While
+// framework migrations are pending the sync plan is nil; the app migrations are still verified and
+// listed when fb_app_migration exists, and before framework migration 0004 creates it every
+// declared app migration is listed as pending (none can have been applied).
+//
+// The rest is as for Migrate.
+func MigrateApps(ctx context.Context, pool *pgxpool.Pool, registry *core.Registry, apps []AppSpec, options SyncOptions) (*MigrateReport, error) {
 	acquired, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, &Error{Kind: ErrPool, Message: err.Error(), Err: err}
@@ -83,24 +109,75 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, registry *core.Registry, o
 	if resetErr != nil {
 		return nil, wrap(resetErr)
 	}
-	report, err := migrateLocked(ctx, conn, registry, options)
+	report, err := migrateLocked(ctx, conn, registry, apps, options)
 	// Released explicitly as well, so that a caller that keeps going does not wait for the close.
 	_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", MigrateLockKey)
 	return report, err
 }
 
-func migrateLocked(ctx context.Context, starter TxStarter, registry *core.Registry, options SyncOptions) (*MigrateReport, error) {
-	migrations, err := MigrateFramework(ctx, starter, options.DryRun)
+func migrateLocked(ctx context.Context, conn *pgx.Conn, registry *core.Registry, apps []AppSpec, options SyncOptions) (*MigrateReport, error) {
+	migrations, err := MigrateFramework(ctx, conn, options.DryRun)
 	if err != nil {
 		return nil, err
 	}
 	if options.DryRun && len(migrations) > 0 {
-		// Framework migrations are pending, so the sync plan cannot be computed.
-		return &MigrateReport{Migrations: migrations}, nil
+		// Framework migrations are pending, so the sync plan cannot be computed. The app migrations are
+		// still verified when their tables already exist (a later framework migration is pending);
+		// when they do not, no app migration can have been applied.
+		var listed []AppliedAppMigration
+		exists, err := appMigrationTablesExist(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			pending, err := pendingAppMigrations(ctx, conn, apps)
+			if err != nil {
+				return nil, err
+			}
+			for _, p := range pending {
+				listed = append(listed, applied(p.app, p.migration))
+			}
+		} else {
+			for _, app := range apps {
+				for _, m := range app.Migrations {
+					listed = append(listed, applied(app.Name, m))
+				}
+			}
+		}
+		return &MigrateReport{Migrations: migrations, AppMigrations: listed}, nil
 	}
-	sync, err := Sync(ctx, starter, registry, options)
+	pending, err := pendingAppMigrations(ctx, conn, apps)
 	if err != nil {
 		return nil, err
 	}
-	return &MigrateReport{Migrations: migrations, Sync: sync, FixturesPlanned: true}, nil
+	sync, err := Sync(ctx, conn, registry, options)
+	if err != nil {
+		return nil, err
+	}
+	var done []AppliedAppMigration
+	if options.DryRun {
+		for _, p := range pending {
+			done = append(done, applied(p.app, p.migration))
+		}
+	} else {
+		for _, app := range apps {
+			for _, p := range pending {
+				if p.app != app.Name {
+					continue
+				}
+				if err := applyAppMigration(ctx, conn, app.Name, p.migration, options.LockTimeout); err != nil {
+					return nil, err
+				}
+				done = append(done, applied(app.Name, p.migration))
+			}
+			if err := recordApp(ctx, conn, app); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return &MigrateReport{Migrations: migrations, Sync: sync, AppMigrations: done, FixturesPlanned: true}, nil
+}
+
+func applied(app string, m AppMigration) AppliedAppMigration {
+	return AppliedAppMigration{App: app, Version: m.Version, Name: m.Name}
 }

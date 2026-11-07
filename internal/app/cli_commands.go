@@ -307,10 +307,10 @@ func rootCommand() *command {
 					},
 				},
 			},
-			{name: "new-app", about: "Create a new app: a Rust crate (library and binary) with a sample DocType, a hook, tests, a README and an AGENTS.md, in `<DIR>/<NAME>`. It builds and passes its tests as created. Needs no database. Never overwrites: an existing target directory is an error",
+			{name: "new-app", about: "Create a new app: a Go module (the app package and a command) with a sample DocType, a hook, tests, a README and an AGENTS.md, in `<DIR>/<NAME>`. It builds and passes its tests as created. Needs no database. Never overwrites: an existing target directory is an error",
 				args: []argSpec{
-					{id: "name", positional: true, valueName: "NAME", required: true, help: "The app and crate name: lower-case ASCII letters, digits and underscores, starting with a letter (the rules of a DocType name), at most 54 bytes"},
-					{id: "forgebase_path", long: "forgebase-path", valueName: "DIR", kind: kindPath, required: true, help: "The Forgebase checkout the app depends on (it contains `crates/forgebase`). Written into the app's `Cargo.toml` as an absolute path"},
+					{id: "name", positional: true, valueName: "NAME", required: true, help: "The app and module name: lower-case ASCII letters, digits and underscores, starting with a letter (the rules of a DocType name), at most 54 bytes"},
+					{id: "forgebase_path", long: "forgebase-path", valueName: "DIR", kind: kindPath, required: true, help: "The Forgebase checkout the app depends on (the module github.com/tvstore/forgebase-go, with a `go.mod` at its root). Written into the app's `go.mod` as an absolute `replace` path"},
 					{id: "dir", long: "dir", valueName: "DIR", kind: kindPath, def: ".", hasDefault: true, help: "The directory in which `<NAME>` is created"},
 				},
 			},

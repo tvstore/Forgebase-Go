@@ -159,6 +159,27 @@ jobs:
       - run: go mod verify
       # Fails when go.mod or go.sum is not tidy.
       - run: go mod tidy -diff
+      # The example apps are modules of their own (examples/*/go.mod, a `replace` to this checkout): each imports
+      # only the public API, which the compiler enforces (everything else is under internal/), and has its own
+      # checks. They use the PostgreSQL service above. `./...` at the root does not enter them.
+      - name: Example modules
+        run: |
+          set -eu
+          for dir in examples/*/; do
+            [ -f "${dir}go.mod" ] || continue
+            echo "== $dir"
+            (
+              cd "$dir"
+              go vet ./...
+              staticcheck ./...
+              govulncheck ./...
+              go test -race ./...
+              go build ./...
+              CGO_ENABLED=0 go build ./...
+              go mod verify
+              go mod tidy -diff
+            )
+          done
 
   # Every third-party module in the build graph must have an allowed licence (MIT, Apache-2.0,
   # BSD-2-Clause, BSD-3-Clause, ISC). The checker is .github/ci/licensecheck, standard library only.
@@ -184,6 +205,91 @@ jobs:
       - run: go mod download
       - name: Check the licences
         run: go run ./.github/ci/licensecheck
+
+  # The generated app (P4): `forgebase new-app` writes a module outside the checkout; it is checked as created
+  # (gofmt, vet, tests, build, tidy), then it migrates, serves, logs a user in and reports the sample DocType in the
+  # metadata API as owned by the app. The generated module requires this checkout with a `replace` to its absolute
+  # path, and its go.sum is the checkout's. The password below is for a throwaway user of the service container.
+  app-template:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forgebase
+          POSTGRES_PASSWORD: forgebase
+          POSTGRES_DB: demo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgebase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The tests create and drop their own databases; the app itself uses the database `demo`.
+      FORGEBASE_TEST_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/postgres
+      FORGEBASE_DATABASE_URL: postgres://forgebase:forgebase@localhost:5432/demo
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Go toolchain
+        run: .github/ci/install-go.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-app-template-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: ${{ runner.os }}-app-template-
+      - run: go build -o bin/forgebase ./cmd/forgebase
+      - name: Generate the app
+        run: bin/forgebase new-app demo --forgebase-path "$GITHUB_WORKSPACE" --dir "$RUNNER_TEMP"
+      - name: Check the generated app
+        working-directory: ${{ runner.temp }}/demo
+        run: |
+          set -eu
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The generated files are not gofmt-formatted:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+          go vet ./...
+          go mod tidy -diff
+      - name: Test the generated app
+        working-directory: ${{ runner.temp }}/demo
+        run: go test ./...
+      - name: Build the generated app
+        working-directory: ${{ runner.temp }}/demo
+        run: go build -o demo ./cmd/demo
+      - name: Migrate, serve, log in and read the metadata
+        working-directory: ${{ runner.temp }}/demo
+        run: |
+          set -eu
+          ./demo migrate
+          echo 'a long password' | ./demo user create ann --role "Demo User"
+          FORGEBASE_DEV_INSECURE_COOKIES=1 ./demo serve > server.log 2>&1 &
+          server=$!
+          # Any answer, whatever its status, means the server is up.
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:8000/api/v1/meta; then break; fi
+            sleep 1
+          done
+          curl -fsS -c jar -H 'Content-Type: application/json' \
+            -d '{"username":"ann","password":"a long password"}' http://127.0.0.1:8000/api/v1/login
+          curl -fsS -b jar http://127.0.0.1:8000/api/v1/meta/demo_note | tee meta.json
+          grep -q '"app":"demo"' meta.json
+          kill "$server"
+      - name: Show the server log
+        if: failure()
+        run: cat "$RUNNER_TEMP/demo/server.log"
 
   # The desk (the React app of desk/, copied unchanged from the Rust repository except for the path of the
   # icon list in desk/src/icons.test.ts, which is internal/core/doctype_icons.txt here): lint, typecheck,
@@ -326,11 +432,11 @@ jobs:
   # or fails on its merits, when the pull request is marked ready for review; merging needs the
   # `ci-result` of the run on the READY pull request head (AGENTS.md section 10.3).
   #
-  # Later phases add jobs (docker, sites, app-template, ...). Every new job must be added to `needs`
+  # Later phases add jobs (docker, sites, ...). Every new job must be added to `needs`
   # here, or the ruleset does not guard it.
   ci-result:
     if: always()
-    needs: [changes, docs, check, licenses, desk, e2e]
+    needs: [changes, docs, check, licenses, app-template, desk, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

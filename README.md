@@ -46,7 +46,7 @@ The port has eight phases, then a parity report that compares the Go implementat
 | P1 | Metadata and storage (M1): P1.1, the metadata, validation and permission core (`internal/core`, `internal/decimal`), and P1.2, the database foundations (`internal/db`: the pool, the framework migrations and the schema sync), are implemented | **In progress** |
 | P2 | Relationships and lifecycle (M2): P2.1, the document pipeline (`internal/db`: insert, get, update, delete, submit, cancel and amend with links, child tables, hooks, series, the docstatus rules and the outbox), is implemented; P2.2, the command-line skeleton (`forgebase --help`, `migrate` and the `doc` commands insert, get, update, delete, submit, cancel and amend on the stock binary), is implemented | **In progress** |
 | P3 | Auth, permissions and the REST API (M3), the minimal desk (M4) and UX, serving the unchanged desk: P3.1, authentication storage (users, sessions, API tokens, lockout), the list query, link titles and the `user`, `token` and `doc list` commands, and P3.2, the HTTP API (`internal/httpapi`), `forgebase serve` and the desk served by Go (the **first visible result**), are implemented | **In progress** |
-| P4 | App model and developer experience (M5), the example apps, `forgebase/testing` | Planned |
+| P4 | App model and developer experience (M5): the public API (`forgebase`, `forgebase/testing`, [ADR 0028](docs/adr/0028-go-public-api-of-the-app-model.md)), apps and their composition, app migrations, `forgebase new-app`, and the example modules `examples/sales` and `examples/sales_extension` (their M5 parts), are implemented | **In progress** |
 | P5 | Jobs and scheduler (M6), sites (M7), PostgreSQL TLS (M9.0, moved from P7), container and deploy (D1, D2) | Planned |
 | P6 | Workflow and reports (M8) | Planned |
 | P7 | Integration (M9.1–M9.5) and customization (M10) | Planned |
@@ -56,7 +56,7 @@ The milestones of the Rust implementation (M0 to M10) and their exit criteria ar
 
 ## Quick start
 
-**The first visible result (P3.2).** The stock binary serves the HTTP API and the unchanged desk. The example apps, the app model and the rest of the routes (workflow transitions, saved views, summaries, reports, export and import, custom fields) come in P4 to P7; the guides describe them already, and their code examples still show the Rust API until the phase that ports them.
+**The first visible result (P3.2).** The stock binary serves the HTTP API and the unchanged desk. The rest of the routes (workflow transitions, saved views, summaries, reports, export and import, custom fields) come in P5 to P7; the guides describe them already, and their code examples still show the Rust API until the phase that ports them.
 
 ```sh
 export GOTOOLCHAIN=go1.27.3 FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/database
@@ -78,6 +78,17 @@ go run ./cmd/forgebase doc insert customer --doctypes internal/app/testdata/quic
 go run ./cmd/forgebase doc list customer --doctypes internal/app/testdata/quickstart --limit 5
 go run ./cmd/forgebase token create root                  # prints key:secret once, for "Authorization: token key:secret"
 ```
+
+**An app of your own (P4).** `forgebase new-app` writes a Go module with a sample DocType, a hook and tests; the example apps [`examples/sales`](examples/sales/README.md) and [`examples/sales_extension`](examples/sales_extension/README.md) are modules too, and each builds its own binary:
+
+```sh
+go build -o bin/forgebase ./cmd/forgebase
+bin/forgebase new-app demo --forgebase-path . --dir ~/apps             # then: cd ~/apps/demo && go test ./...
+(cd examples/sales && go build -o ../../bin/sales ./cmd/sales)         # the binary of an app: no --doctypes needed
+bin/sales migrate && bin/sales serve
+```
+
+[Your first app](docs/guide/first-app.md) is the step-by-step guide.
 
 Every command that is not ported yet parses its arguments and says in which phase it arrives. The quick start of the Rust implementation in the [getting started guide](docs/guide/getting-started.md) shows the rest of what the Go port will do.
 

@@ -44,6 +44,18 @@ class ClassifyTest(unittest.TestCase):
                      "examples/sales/main.go", "internal/db/migrations/0001_init.sql"]:
             self.assertEqual(flags([path]), expect(go=True, e2e=True), path)
 
+    def test_the_app_model_paths_are_go(self):
+        # P4: the example modules (their own go.mod and go.sum, SQL migrations, DocTypes, READMEs), the test
+        # helpers, the new-app templates and the fixtures of the root package's tests. Each runs the Go jobs
+        # (the example modules and the app-template job are part of them).
+        for path in ["examples/sales/go.mod", "examples/sales/go.sum", "examples/sales_extension/go.mod",
+                     "examples/sales/migrations/0001_default_customer_groups.sql",
+                     "examples/sales_extension/doctypes/customer_visit.toml", "examples/sales_extension/README.md",
+                     "testing/testing.go", "testing/doc.go", "internal/app/templates/app/go.mod.tpl",
+                     "internal/app/templates/app/README.md.tpl", "testdata/apps/doctypes/widget.toml",
+                     "testdata/apps/migrations/0001_seed.sql", "apps_test.go"]:
+            self.assertEqual(flags([path]), expect(go=True, e2e=True), path)
+
     def test_go_file_anywhere_outside_desk(self):
         self.assertEqual(flags(["forgebase.go"]), expect(go=True, e2e=True))
         self.assertEqual(flags(["forgebase_test.go"]), expect(go=True, e2e=True))

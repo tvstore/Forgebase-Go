@@ -1,6 +1,9 @@
 package db
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Hooks for the tests of package db_test.
 
@@ -13,3 +16,8 @@ func WrapForTest(err error) error { return wrap(err) }
 
 // LockTimeoutSettingForTest is lockTimeoutSetting.
 func LockTimeoutSettingForTest(timeout time.Duration) string { return lockTimeoutSetting(timeout) }
+
+// AppMigrationTablesExistForTest is appMigrationTablesExist.
+func AppMigrationTablesExistForTest(ctx context.Context, q Queryer) (bool, error) {
+	return appMigrationTablesExist(ctx, q)
+}

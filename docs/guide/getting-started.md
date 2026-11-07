@@ -1,62 +1,68 @@
 # Getting started
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them.
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. Ported: the [Apps](#apps) section (the Go API of the app model, [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md)) and the build and run commands, which now are `go` commands: `bin/sales ...` stands for the binary of the example app, built with `cd examples/sales && go build -o ../../bin/sales ./cmd/sales`. The quick start still uses commands that arrive in later phases (`doc transition`, the report, the worker: P5 to P7).
 
 Install Forgebase and try it end to end with the example app: the full quick start, the document commands, permissions and workflow, and how apps are built. The short version is in the [README](../../README.md#quick-start).
 
 ```sh
-cargo build
-cargo run -p forgebase -- --version
+go build ./...
+go run ./cmd/forgebase --version
 ```
 
 ## Quick start
 
 Needs a PostgreSQL 16 server and an empty database. Connections are not encrypted unless the URL says `sslmode=require` ([TLS to PostgreSQL](operations.md#tls-to-postgresql)), so on a network that is not private add it.
 
-The quick start runs the binary of the example app [`examples/sales`](../../examples/sales/README.md), so its DocTypes, hooks and data migration are built in and there is no `--doctypes` option. (The stock `forgebase` binary has no apps: it takes the DocTypes of a directory with `--doctypes DIR`, see [Apps](#apps).) Every command here was run against a fresh database.
+The quick start runs the binary of the example app [`examples/sales`](../../examples/sales/README.md), so its DocTypes, hooks and data migration are built in and there is no `--doctypes` option. (The stock `forgebase` binary has no apps: it takes the DocTypes of a directory with `--doctypes DIR`, see [Apps](#apps).) Build it once (the example is a module of its own, so this runs in its directory):
+
+```sh
+cd examples/sales && go build -o ../../bin/sales ./cmd/sales && cd ../..
+```
+
+Every command here was run against a fresh database.
 
 ```sh
 export FORGEBASE_DATABASE_URL=postgres://user:password@localhost:5432/mydb
 
 # Create the framework tables and the DocType tables, then apply the app's data migrations (add --dry-run to only print the plan; on a fresh database it shows the pending framework migrations only, the DocType plan appears once they are applied)
-cargo run -p sales -- migrate
+bin/sales migrate
 
 # The migration `default_customer_groups` of the app created two customer groups, Retail and Wholesale
-cargo run -p sales -- doc list customer_group
+bin/sales doc list customer_group
 
 # Insert another customer group, then a customer that links to it by name (the name comes from the DocType's naming field)
-cargo run -p sales -- doc insert customer_group \
+bin/sales doc insert customer_group \
   --data '{"title": "Partner"}'
-cargo run -p sales -- doc insert customer \
+bin/sales doc insert customer \
   --data '{"email": "ann@example.com", "full_name": "Ann", "credit_limit": "1250.50", "customer_group": "Partner"}'
 
 # Read it (note its "version"), change it, then delete it (below). update and delete need --version, the version you last read;
 # if someone changed the document meanwhile they fail with a conflict that shows the current version.
-cargo run -p sales -- doc get customer ann@example.com
-cargo run -p sales -- doc update customer ann@example.com --version 1 \
+bin/sales doc get customer ann@example.com
+bin/sales doc update customer ann@example.com --version 1 \
   --data '{"loyalty_points": 10}'
 
 # A customer group that a customer still links to cannot be deleted: this command fails (exit code 1, the error names `customer`)
-cargo run -p sales -- doc delete customer_group Partner --version 1
+bin/sales doc delete customer_group Partner --version 1
 # Delete the customer first, then the group can be deleted
-cargo run -p sales -- doc delete customer ann@example.com --version 2
-cargo run -p sales -- doc delete customer_group Partner --version 1
+bin/sales doc delete customer ann@example.com --version 2
+bin/sales doc delete customer_group Partner --version 1
 
 # A sales order has a child table, `items`: the rows are an array in the same JSON and are saved with the order in one transaction.
 # Its name comes from a naming series (SO-<year>-00001, ...); the output shows it, the rows in order and the version. The sed keeps just the name for the next commands.
 # The `validate` hook of the app computes each row's `amount` (qty * rate, 2 places) and the order's `total`. A row without a rate has no amount.
-cargo run -p sales -- doc insert customer \
+bin/sales doc insert customer \
   --data '{"email": "bob@example.com", "full_name": "Bob"}'
-ORDER=$(cargo run -q -p sales -- doc insert sales_order \
+ORDER=$(bin/sales doc insert sales_order \
   --data '{"customer": "bob@example.com", "order_date": "2026-10-28", "items": [
     {"description": "Widget", "qty": 2, "rate": "9.50"},
     {"description": "Gadget", "qty": 1}]}' | sed -n 's/^  "name": "\(.*\)",$/\1/p')
 
 # An update that names `items` replaces its rows when they differ from the stored ones (a table with identical rows keeps its row ids); one that leaves it out keeps them.
 # The hook runs again: the amount becomes 47.50 and the total 47.50.
-cargo run -p sales -- doc update sales_order "$ORDER" --version 1 \
+bin/sales doc update sales_order "$ORDER" --version 1 \
   --data '{"items": [{"description": "Widget", "qty": 5, "rate": "9.50"}]}'
-cargo run -p sales -- doc delete sales_order "$ORDER" --version 2
+bin/sales doc delete sales_order "$ORDER" --version 2
 ```
 
 ## Submit, cancel and amend
@@ -65,32 +71,32 @@ cargo run -p sales -- doc delete sales_order "$ORDER" --version 2
 
 ```sh
 # Continues the example above (the `bob@example.com` customer exists). A new order is a draft in the state "Draft": "docstatus": 0, named by the series.
-NAME=$(cargo run -q -p sales -- doc insert sales_order \
+NAME=$(bin/sales doc insert sales_order \
   --data '{"customer": "bob@example.com", "items": [{"description": "Widget", "qty": 2, "rate": "9.50"}]}' | sed -n 's/^  "name": "\(.*\)",$/\1/p')
 
 # An order without items can be saved and sent for approval, but not approved (approving submits it): this fails (exit code 1)
 # with the hook's message "a sales order needs at least one item to be submitted". (Delete the draft again; it is version 2.)
-EMPTY=$(cargo run -q -p sales -- doc insert sales_order \
+EMPTY=$(bin/sales doc insert sales_order \
   --data '{"customer": "bob@example.com"}' | sed -n 's/^  "name": "\(.*\)",$/\1/p')
-cargo run -p sales -- doc transition sales_order "$EMPTY" "Submit for Approval" --version 1
-cargo run -p sales -- doc transition sales_order "$EMPTY" "Approve" --version 2
-cargo run -p sales -- doc delete sales_order "$EMPTY" --version 2
+bin/sales doc transition sales_order "$EMPTY" "Submit for Approval" --version 1
+bin/sales doc transition sales_order "$EMPTY" "Approve" --version 2
+bin/sales doc delete sales_order "$EMPTY" --version 2
 
 # Send it for approval (version 1 -> 2: "workflow_state": "Pending Approval"), then approve it (2 -> 3): "docstatus": 1.
 # A submitted order is locked: this update fails (exit code 1) ...
-cargo run -p sales -- doc transition sales_order "$NAME" "Submit for Approval" --version 1
-cargo run -p sales -- doc transition sales_order "$NAME" "Approve" --version 2
-cargo run -p sales -- doc update sales_order "$NAME" --version 3 \
+bin/sales doc transition sales_order "$NAME" "Submit for Approval" --version 1
+bin/sales doc transition sales_order "$NAME" "Approve" --version 2
+bin/sales doc update sales_order "$NAME" --version 3 \
   --data '{"order_date": "2026-11-01"}'
 # ... and this one, on the allow_on_submit field, works (version 3 -> 4). A submitted order cannot be deleted either.
-cargo run -p sales -- doc update sales_order "$NAME" --version 3 \
+bin/sales doc update sales_order "$NAME" --version 3 \
   --data '{"remarks": "rush delivery"}'
 
 # Cancel it (4 -> 5: "docstatus": 2), then amend it: a new draft with the same values and rows, named "<NAME>-1", "amended_from": "<NAME>".
-cargo run -p sales -- doc transition sales_order "$NAME" "Cancel" --version 4
-cargo run -p sales -- doc amend sales_order "$NAME" --version 5
+bin/sales doc transition sales_order "$NAME" "Cancel" --version 4
+bin/sales doc amend sales_order "$NAME" --version 5
 # The amendment is a draft again: edit it, send it for approval, and so on. A cancelled order can be amended once (the second try fails), or deleted.
-cargo run -p sales -- doc delete sales_order "$NAME" --version 5
+bin/sales doc delete sales_order "$NAME" --version 5
 ```
 
 `doc submit`, `doc cancel` and `doc amend` take `--actor` like the other commands and no data (`doc transition` takes the action and `--version`); the output of a submittable DocType includes `docstatus` (0, 1 or 2) and `amended_from`. `docstatus` and `amended_from` cannot be set through `--data`.
@@ -118,7 +124,7 @@ DocTypes are TOML files, one per DocType, in the `doctypes/` directory of an app
 `doc list` prints a page of documents as a JSON array (default 20, at most 500; child table rows are not listed). `--filter` is a JSON array of conditions combined with AND, `--sort` can be repeated (`FIELD` or `FIELD:desc`; `name` is always the last key, so paging is stable), `--limit` and `--offset` page. Operators: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in` (the value is an array), `like` (text fields only; a SQL pattern with `%` and `_`), `is null` and `is not null`. Values are written as in `--data`; a link is filtered by the target's name; the standard columns `name`, `owner`, `modified_by`, `created_at`, `modified_at`, `version` and (submittable DocTypes) `docstatus` can be used too.
 
 ```sh
-cargo run -p sales -- doc list customer \
+bin/sales doc list customer \
   --filter '[{"field":"tier","op":"=","value":"gold"},{"field":"loyalty_points","op":">=","value":10}]' \
   --sort loyalty_points:desc --limit 10
 ```
@@ -220,32 +226,38 @@ A transition is `POST /api/v1/resource/<doctype>/<name>/transition` with `{"acti
 
 ## Apps
 
-The stock `forgebase` binary has no apps: it loads DocTypes from `--doctypes DIR` (the quick start above uses the binary of an example app instead). Two example apps in this repository show what an app looks like, using the public `forgebase` API only (they change nothing under `crates/`): [`examples/sales`](../../examples/sales/README.md) (DocTypes, hooks that compute and refuse, a data migration, tests) and [`examples/sales_extension`](../../examples/sales_extension/README.md) (a custom app that depends on `sales`: a DocType that links to one of `sales`, and a hook on a DocType of `sales`; `cargo run -p sales_extension` is the composed binary). To build an application, make a crate that depends on `forgebase` (the only public API; `forgebase-core`, `forgebase-db` and `forgebase-http` are internal) and write apps and a binary:
+The stock `forgebase` binary has no apps: it loads DocTypes from `--doctypes DIR` (the quick start above uses the binary of an example app instead). Two example apps in this repository show what an app looks like, using the public `forgebase` API only (each is a Go module of its own, so the compiler enforces it; they change nothing outside `examples/`): [`examples/sales`](../../examples/sales/README.md) (DocTypes, hooks that compute and refuse, a data migration, tests) and [`examples/sales_extension`](../../examples/sales_extension/README.md) (a custom app that depends on `sales`: a DocType that links to one of `sales`, and a hook on a DocType of `sales`; `go run ./cmd/sales_extension` in its directory is the composed binary). To build an application, make a Go module that imports `github.com/tvstore/forgebase-go` (the only public API besides `.../testing`; everything else is under `internal/`) and write apps and a binary:
 
-```rust
-// An app is a plain function that returns data: no registry, no macros that generate code.
-pub fn app() -> forgebase::App {
-    forgebase::App::new("sales")
-        .version(env!("CARGO_PKG_VERSION"))
-        .depends_on(&["crm"])
-        .doctypes(forgebase::doctypes!["doctypes/sales_order.toml"])
-        .hooks("sales_order", OrderHooks)
-        .migrations(forgebase::migrations![(1, "backfill", "migrations/0001_backfill.sql")])
+```go
+// An app is a plain function that returns data: no registry, no code generation.
+//go:embed doctypes/*.toml
+var doctypes embed.FS
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+func App() *forgebase.App {
+	return forgebase.NewApp("sales").
+		Version("1.0.0").
+		DependsOn("crm").
+		DocTypes(doctypes).
+		Hooks("sales_order", OrderHooks{}).
+		Migrations(migrations) // migrations/0001_backfill.sql is version 1, "backfill"
 }
 
-fn main() -> std::process::ExitCode {
-    forgebase::Forgebase::new().app(crm::app()).app(sales::app()).run() // dependencies first
+func main() {
+	os.Exit(forgebase.New().App(crm.App()).App(sales.App()).Run()) // dependencies first
 }
 ```
 
-The binary has the same commands as the stock one (`migrate` also applies the app migrations). The stock binary has no apps, so it reports `"app": "local"` for every DocType in the metadata API (the `--doctypes` directory is the app `local`). Everything about how apps load, depend on each other, own DocTypes, order their hooks and migrate is in [ADR 0012](../adr/0012-app-model-and-public-api-boundary.md) and [the architecture](../blueprint/architecture.md#2-extension-model-accepted-adr-0006).
+The binary has the same commands as the stock one (`migrate` also applies the app migrations). The stock binary has no apps, so it reports `"app": "local"` for every DocType in the metadata API (the `--doctypes` directory is the app `local`). Everything about how apps load, depend on each other, own DocTypes, order their hooks and migrate is in [ADR 0012](../adr/0012-app-model-and-public-api-boundary.md), [ADR 0028](../adr/0028-go-public-api-of-the-app-model.md) (the Go shape of the API) and [the architecture](../blueprint/architecture.md#2-extension-model-accepted-adr-0006).
 
-To start an app, generate one (a crate with a sample DocType, a hook, tests, a README and an `AGENTS.md` for its maintainers; it builds and passes its tests as created):
+To start an app, generate one (a module with a sample DocType, a hook, tests, a README and an `AGENTS.md` for its maintainers; it builds and passes its tests as created):
 
 ```sh
-cargo build -p forgebase
-target/debug/forgebase new-app crm --forgebase-path . --dir ~/apps    # creates ~/apps/crm
-cd ~/apps/crm && FORGEBASE_TEST_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/postgres cargo test
+go build -o bin/forgebase ./cmd/forgebase
+bin/forgebase new-app crm --forgebase-path . --dir ~/apps    # creates ~/apps/crm
+cd ~/apps/crm && FORGEBASE_TEST_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/postgres go test ./...
 ```
 
 The step-by-step guide (run it, extend another app, upgrade with migrations, common errors) is [docs/guide/first-app.md](first-app.md).
