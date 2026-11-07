@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
 
@@ -244,20 +243,6 @@ func serveError(err error) error {
 		return nil
 	}
 	return err
-}
-
-// siteRegistries composes the registry of each site from the apps installed on it (and the --doctypes
-// directory local, when given): serve and the tests of its per-site wiring use it.
-func (r *runner) siteRegistries(sites []*site, local string) ([]*core.Registry, error) {
-	composeds, err := r.siteComposeds(sites, local)
-	if err != nil {
-		return nil, err
-	}
-	registries := make([]*core.Registry, len(composeds))
-	for i, c := range composeds {
-		registries[i] = c.registry
-	}
-	return registries, nil
 }
 
 // siteComposeds is the composition of each site: its registry and the handlers of its methods.

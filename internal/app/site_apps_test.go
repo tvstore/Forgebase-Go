@@ -27,10 +27,10 @@ import (
 // config validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules
 // of the apps are part of them since P5 (the worker of a site is in site_workers_test.go of the root
 // package, which runs the apps as a real process). The site list, site create and follow_ups scenarios are in
-// site_cmd_test.go (P5.2). Deferred, with the phase that brings what they use: the method assertions of
-// http_per_site (P7, with App.Method), and the removed-app scenario with fixtures (P7). The DocType part of
-// http_per_site is ported below; it builds the server's per-site states in the test (what serve does with
-// siteComposed) and sends requests into the routing handler, with no socket.
+// site_cmd_test.go (P5.2). Deferred, with the phase that brings what it uses: the removed-app scenario with
+// fixtures (P7). http_per_site is ported below, the method assertions (P7.1) included; it builds the server's
+// per-site states in the test (what serve does with siteComposeds and routeSites) and sends requests into the
+// routing handler, with no socket.
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +
@@ -54,9 +54,13 @@ func stamp(ctx context.Context, job *JobContext) error {
 	return err
 }
 
+// hello is the method <app>.hello of the test apps: any user may call it.
+func hello(context.Context, *MethodContext) (any, error) { return map[string]bool{"hello": true}, nil }
+
 func baseApp() *App {
 	return NewApp("base").Version("1.0.0").
 		DocTypes(files("doctypes/item.toml", siteItem)).
+		Method("hello", NewMethod(hello).AnyUser()).
 		Job("tick", noop).
 		Schedule("tick", DailyAt(4, 0))
 }
@@ -64,6 +68,7 @@ func baseApp() *App {
 func extraApp() *App {
 	return NewApp("extra").DependsOn("base").
 		DocTypes(files("doctypes/extra_item.toml", siteExtraItem)).
+		Method("hello", NewMethod(hello).AnyUser()).
 		Migrations(fstest.MapFS{"migrations/0001_seed.sql": {Data: []byte("CREATE TABLE extra_seed (entry text)")}}).
 		Job("stamp", stamp).
 		Job("mark", noop).
@@ -317,7 +322,7 @@ func siteLogin(t *testing.T, h http.Handler, host string) siteSession {
 	return siteSession{}
 }
 
-// Rust: site_apps.rs::http_per_site (the DocType part; the method assertions are P7)
+// Rust: site_apps.rs::http_per_site
 func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 	p := newAppPair(t, `apps = ["base"]`)
 	expectCode(t, p.run("migrate", "--site", "a"), 0, "migrate a")
@@ -327,21 +332,21 @@ func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// serve's own per-site wiring: its composition of each site (siteRegistries) and its routing (routeSites),
-	// on the pools of the two test databases, without a socket.
+	// serve's own per-site wiring: its composition of each site (siteComposeds, with the dispatcher of its
+	// methods) and its routing (routeSites), on the pools of the two test databases, without a socket.
 	cfg, err := loadConfig(filepath.Join(p.dir, "forgebase.toml"), func(string) string { return "" }, binaryApps(siteApps()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := &runner{o: Options{Apps: siteApps()}}
 	sites := cfg.sites
-	registries, err := r.siteRegistries(sites, "")
+	composeds, err := r.siteComposeds(sites, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	contexts := []*siteContext{
-		{site: sites[0], pool: p.a.Pool, registry: registries[0]},
-		{site: sites[1], pool: p.b.Pool, registry: registries[1]},
+		{site: sites[0], pool: p.a.Pool, registry: composeds[0].registry, methods: composeds[0].MethodDispatch()},
+		{site: sites[1], pool: p.b.Pool, registry: composeds[1].registry, methods: composeds[1].MethodDispatch()},
 	}
 	routing, lines, err := routeSites(true, contexts, nil, httpapi.DefaultConfig())
 	if err != nil {
@@ -395,5 +400,31 @@ func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
 	// Nothing was written to A.
 	if got := p.a.Rows("SELECT coalesce(to_regclass('doc_extra_item')::text, 'NULL')"); got[0][0] != "NULL" {
 		t.Errorf("%v", got)
+	}
+	// The methods (M9.1) of an app that is not installed do not exist either: base.hello is served on both
+	// sites, extra.hello only on B.
+	for _, c := range []struct {
+		host    string
+		session siteSession
+		method  string
+		want    int
+	}{
+		{"a.localhost", sessionA, "base.hello", 200},
+		{"a.localhost", sessionA, "extra.hello", 404},
+		{"b.localhost", sessionB, "base.hello", 200},
+		{"b.localhost", sessionB, "extra.hello", 200},
+	} {
+		if got := status(c.host, c.session, "POST", "/api/v1/method/"+c.method, "{}"); got != c.want {
+			t.Errorf("%s on %s: %d, want %d", c.method, c.host, got, c.want)
+		}
+	}
+	// A site that has no dispatcher (the State of a test, not of serve) answers 404 for every method.
+	bare := []*siteContext{{site: sites[1], pool: p.b.Pool, registry: composeds[1].registry}}
+	bareRouting, _, err := routeSites(true, bare, nil, httpapi.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := siteRequest(t, bareRouting, "POST", "/api/v1/method/base.hello", "b.localhost", siteLogin(t, bareRouting, "b.localhost"), "{}"); code != 404 {
+		t.Errorf("without a dispatcher: %d", code)
 	}
 }
