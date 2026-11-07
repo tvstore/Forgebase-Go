@@ -127,6 +127,11 @@ func RunReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, call
 	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = "+strconv.Itoa(reportLockTimeoutMS)); err != nil {
 		return nil, wrap(err)
 	}
+	// Dates and timestamps are read from the text output: ISO, whatever the DateStyle of the database, the
+	// role or the connection (Rust reads them in binary and does not depend on it).
+	if _, err := tx.Exec(ctx, "SET LOCAL DateStyle = ISO"); err != nil {
+		return nil, wrap(err)
+	}
 	rows, columns, err := fetchReport(ctx, conn, report, values)
 	if err != nil {
 		return nil, err

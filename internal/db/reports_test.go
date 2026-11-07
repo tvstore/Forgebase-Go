@@ -460,3 +460,35 @@ func TestAParameterTypedAsTextFitsEveryKind(t *testing.T) {
 	}
 	strsEqual(t, got, []string{"5", "1.25", "2026-10-30", "true"})
 }
+
+// Not in Rust (Rust reads dates in binary): date and timestamp columns do not depend on the DateStyle of
+// the database or the role.
+func TestDateColumnsDoNotDependOnTheDateStyle(t *testing.T) {
+	d := dbtest.New(t)
+	d.Exec(`ALTER DATABASE "` + d.Name() + `" SET DateStyle = 'SQL, DMY'`)
+	// A new pool: its connections take the setting of the database.
+	pool, err := db.ConnectSized(bg, d.URL(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var style string
+	if err := pool.QueryRow(bg, "SHOW DateStyle").Scan(&style); err != nil || !strings.Contains(style, "SQL") {
+		t.Fatal(style, err)
+	}
+	report := mkReport("SELECT date '2026-10-30', timestamptz '2026-10-30 10:20:30+02'", nil,
+		rcol("d", core.ColumnDate), rcol("t", core.ColumnDatetime))
+	connection, err := db.GetReportConnection(bg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close(bg)
+	res, err := db.RunReport(bg, connection.Conn(), report, manager(), nil)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatal(res, err)
+	}
+	if !res.Rows[0][0].Equal(date(2026, 10, 30)) ||
+		!res.Rows[0][1].Equal(core.Datetime(time.Date(2026, 10, 30, 8, 20, 30, 0, time.UTC))) {
+		t.Fatal(res.Rows[0])
+	}
+}
