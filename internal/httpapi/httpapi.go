@@ -142,7 +142,8 @@ type State struct {
 
 // NewState creates the state of a site. The registry must be the one the database schema was synced
 // with. It is also the base the registry is rebuilt from when the site's custom fields change; use
-// NewStateWithHolder to start from a registry that has them already.
+// NewStateWithHolder to start from a registry that has them already. Unlike Rust's AppState::new it does
+// not start the reload loop; call StartMetaReload (serve and testing do).
 func NewState(pool *pgxpool.Pool, registry *core.Registry, config Config) *State {
 	return NewStateWithHolder(pool, db.NewRegistryHolder("default", registry, registry, nil), config)
 }
