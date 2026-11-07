@@ -281,7 +281,7 @@ func Tick(ctx context.Context, client Client, registry *core.Registry, known map
 	rows, err := client.Query(ctx,
 		"SELECT name, next_run_at, coalesce($1::timestamptz, now()) FROM fb_schedule "+
 			"WHERE next_run_at <= coalesce($1::timestamptz, now()) AND name = ANY($2::text[]) "+
-			"ORDER BY next_run_at, name COLLATE \"C\"", atOverride, names)
+			"ORDER BY next_run_at, name", atOverride, names)
 	if err != nil {
 		return 0, wrap(err)
 	}

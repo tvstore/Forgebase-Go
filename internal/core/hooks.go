@@ -293,7 +293,7 @@ func (c HookContext) Equal(o HookContext) bool {
 // The payload is serialized to JSON when Enqueue is called, so changing the value afterwards has
 // no effect on the job (in Rust the payload is moved).
 //
-// It fails if the payload is larger than MaxJobPayloadBytes bytes of JSON, or when this context has
+// It fails if the payload is larger than 64 KiB of JSON, or when this context has
 // no collector (a context made by NewHookContext in a test: add one with WithJobs).
 func (c HookContext) Enqueue(name string, payload any) error {
 	if c.jobs == nil {

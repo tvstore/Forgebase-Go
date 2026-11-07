@@ -320,7 +320,12 @@ func parseJobID(id string) (uuid.UUID, error) {
 
 func parsePayload(text string) (json.RawMessage, error) {
 	if !json.Valid([]byte(text)) {
-		return nil, &Error{Kind: ErrJob, Message: "a stored payload is not JSON"}
+		var v any
+		detail := json.Unmarshal([]byte(text), &v)
+		if detail == nil {
+			detail = errors.New("invalid JSON")
+		}
+		return nil, &Error{Kind: ErrJob, Message: "a stored payload is not JSON: " + detail.Error()}
 	}
 	return json.RawMessage(text), nil
 }

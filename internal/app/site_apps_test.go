@@ -3,7 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,17 +16,21 @@ import (
 	"testing/fstest"
 
 	"github.com/tvstore/forgebase-go/internal/core"
+	"github.com/tvstore/forgebase-go/internal/db"
 	"github.com/tvstore/forgebase-go/internal/db/dbtest"
+	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
 
 // Apps per site (M7.2, ADR 0014): a binary with two apps, base and extra (which depends on base), run with a
 // config file of sites that install different apps, against real PostgreSQL databases. Ported from the
-// scenarios migrate_per_site and cli_per_site of crates/forgebase/tests/site_apps.rs, and from the config
-// validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules of the apps
-// are part of them since P5.1 (the worker of a site is in site_workers_test.go of the root package, which runs
-// the apps as a real process). The site list, site create and follow_ups scenarios are in site_cmd_test.go
-// (P5.2). Deferred, with the phase that brings what they use: the HTTP view of a site's apps (cmd/forgebase
-// tests, with the sales example in P4 and the methods in P7), and the removed-app scenario with fixtures (P7).
+// scenarios migrate_per_site and cli_per_site of crates/forgebase/tests/site_apps.rs, and from the
+// config validation of config_and_site_list that needs only the apps of the binary; the jobs and schedules
+// of the apps are part of them since P5 (the worker of a site is in site_workers_test.go of the root
+// package, which runs the apps as a real process). The site list, site create and follow_ups scenarios are in
+// site_cmd_test.go (P5.2). Deferred, with the phase that brings what they use: the method assertions of
+// http_per_site (P7, with App.Method), and the removed-app scenario with fixtures (P7). The DocType part of
+// http_per_site is ported below; it builds the server's per-site states in the test (what serve does with
+// siteComposed) and sends requests into the routing handler, with no socket.
 
 const (
 	siteItem = "name = \"item\"\nlabel = \"Item\"\nnaming = { field = \"code\" }\n" +
@@ -258,4 +265,135 @@ func TestAProblemOfOnlyOneSitesAppsNamesTheSite(t *testing.T) {
 	r := p.run("migrate", "--site", "a", "--doctypes", dir)
 	expectCode(t, r, 1, "the apps of site a")
 	expectContains(t, r.stderr, "error: cannot load DocType files:\n  - site `a`: ", "note.toml", "extra_item")
+}
+
+// siteRequest sends a request to the routing handler for host, with an optional session cookie.
+func siteRequest(t *testing.T, h http.Handler, method, path, host string, session siteSession, body string) (int, string, http.Header) {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != "" {
+		reader = bytes.NewReader([]byte(body))
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	req.Host = host
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if session.cookie != "" {
+		req.Header.Set("Cookie", "fb_session="+session.cookie)
+		req.Header.Set("X-Forgebase-CSRF", session.csrf)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String(), rec.Result().Header
+}
+
+// siteSession is a login: the session cookie and its CSRF token.
+type siteSession struct{ cookie, csrf string }
+
+func siteLogin(t *testing.T, h http.Handler, host string) siteSession {
+	t.Helper()
+	code, text, header := siteRequest(t, h, "POST", "/api/v1/login", host, siteSession{}, `{"username":"root","password":"a long password"}`)
+	if code != 200 {
+		t.Fatalf("login on %s: %d %s", host, code, text)
+	}
+	var reply struct {
+		Data struct {
+			CSRF string `json:"csrf_token"`
+		}
+	}
+	if err := json.Unmarshal([]byte(text), &reply); err != nil {
+		t.Fatal(err)
+	}
+	for _, set := range header.Values("Set-Cookie") {
+		if rest, ok := strings.CutPrefix(set, "fb_session="); ok {
+			value, _, _ := strings.Cut(rest, ";")
+			return siteSession{cookie: value, csrf: reply.Data.CSRF}
+		}
+	}
+	t.Fatal("no session cookie")
+	return siteSession{}
+}
+
+// Rust: site_apps.rs::http_per_site (the DocType part; the method assertions are P7)
+func TestHTTPShowsOnlyTheDocTypesOfTheAppsOfTheSite(t *testing.T) {
+	p := newAppPair(t, `apps = ["base"]`)
+	expectCode(t, p.run("migrate", "--site", "a"), 0, "migrate a")
+	expectCode(t, p.run("migrate", "--site", "b"), 0, "migrate b")
+	for _, d := range []*dbtest.DB{p.a, p.b} {
+		if _, err := db.CreateUser(context.Background(), d.Pool, "root", "a long password", []string{"Administrator"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// serve's own per-site wiring: its composition of each site (siteRegistries) and its routing (routeSites),
+	// on the pools of the two test databases, without a socket.
+	cfg, err := loadConfig(filepath.Join(p.dir, "forgebase.toml"), func(string) string { return "" }, binaryApps(siteApps()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{o: Options{Apps: siteApps()}}
+	sites := cfg.sites
+	registries, err := r.siteRegistries(sites, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := []*siteContext{
+		{site: sites[0], pool: p.a.Pool, registry: registries[0]},
+		{site: sites[1], pool: p.b.Pool, registry: registries[1]},
+	}
+	routing, lines, err := routeSites(true, contexts, nil, httpapi.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "site a: a.localhost\n" {
+		t.Errorf("announcement %q", lines)
+	}
+	sessionA, sessionB := siteLogin(t, routing, "a.localhost"), siteLogin(t, routing, "b.localhost")
+	doctypes := func(host string, session siteSession) string {
+		code, text, _ := siteRequest(t, routing, "GET", "/api/v1/meta", host, session, "")
+		if code != 200 {
+			t.Fatalf("%s: %d %s", host, code, text)
+		}
+		var reply struct{ Data []struct{ Name string } }
+		if err := json.Unmarshal([]byte(text), &reply); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, d := range reply.Data {
+			names = append(names, d.Name)
+		}
+		return strings.Join(names, ",")
+	}
+	if got := doctypes("a.localhost", sessionA); got != "item" {
+		t.Errorf("site a: %s", got)
+	}
+	if got := doctypes("b.localhost", sessionB); got != "extra_item,item" {
+		t.Errorf("site b: %s", got)
+	}
+	status := func(host string, session siteSession, method, path, body string) int {
+		code, _, _ := siteRequest(t, routing, method, path, host, session, body)
+		return code
+	}
+	// A DocType of an app that is not installed does not exist on A: meta, list and create.
+	for _, c := range [][3]string{{"GET", "/api/v1/meta/extra_item", ""}, {"GET", "/api/v1/resource/extra_item", ""}, {"POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`}} {
+		if got := status("a.localhost", sessionA, c[0], c[1], c[2]); got != 404 {
+			t.Errorf("a %v: %d", c[:2], got)
+		}
+	}
+	// On B it is served; on A the installed DocType still is.
+	if got := status("b.localhost", sessionB, "POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`); got != 201 {
+		t.Errorf("create on b: %d", got)
+	}
+	if got := status("b.localhost", sessionB, "GET", "/api/v1/resource/extra_item", ""); got != 200 {
+		t.Errorf("list on b: %d", got)
+	}
+	if got := status("a.localhost", sessionA, "GET", "/api/v1/resource/item", ""); got != 200 {
+		t.Errorf("item on a: %d", got)
+	}
+	// Nothing was written to A.
+	if got := p.a.Rows("SELECT coalesce(to_regclass('doc_extra_item')::text, 'NULL')"); got[0][0] != "NULL" {
+		t.Errorf("%v", got)
+	}
 }

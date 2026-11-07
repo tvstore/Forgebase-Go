@@ -28,8 +28,8 @@ var newAppFiles = [][2]string{
 	{".gitignore", "gitignore.tpl"},
 	{"README.md", "README.md.tpl"},
 	{"AGENTS.md", "AGENTS.md.tpl"},
-	{"{{name}}.go", "app.go.tpl"},
-	{"{{name}}_test.go", "app_test.go.tpl"},
+	{"app.go", "app.go.tpl"},
+	{"app_test.go", "app_test.go.tpl"},
 	{"cmd/{{name}}/main.go", "main.go.tpl"},
 	{"cmd/{{name}}/main_test.go", "main_test.go.tpl"},
 	{"doctypes/{{name}}_note.toml", "note.toml.tpl"},
@@ -41,10 +41,14 @@ var newAppFiles = [][2]string{
 // imports the app package by its name.
 var notAPackageName = map[string]bool{}
 
+// goKeywords are the keywords of Go: the one list the name rule and the error message use.
+var goKeywords = map[string]bool{}
+
 func init() {
 	for _, name := range strings.Fields(`
 		break default func interface select case defer go map struct chan else goto package switch const
 		fallthrough if range type continue for import return var`) {
+		goKeywords[name] = true
 		notAPackageName[name] = true
 	}
 	for _, name := range strings.Fields(`
@@ -53,14 +57,28 @@ func init() {
 		delete imag len make max min new panic print println real recover`) {
 		notAPackageName[name] = true
 	}
-	// The roots of the standard library's import paths (go list std), and the names the generated files
-	// use for imports.
+	// What the go command treats specially as a module path or an import path (each verified by generating a
+	// module for the name and running go build):
+	//   - the roots of the standard library's import paths (`go list std`), and the directories of
+	//     $GOROOT/src that are not in it, builtin and arena: an import path of the app would mean the library
+	//     or be ambiguous with it; cmd, internal and vendor are refused as a precaution, being directories there too
+	//     (no build of them was shown to fail);
+	//   - the package patterns std, all, tool and work, which are not importable packages;
+	//   - toolchain, which is not a valid module path, and mod, whose packages the go command refuses
+	//     ("disallowed import path");
+	//   - main, which cannot be the package of a library, and testdata, a directory the go tool skips (so ./... would
+	//     miss cmd/testdata).
 	for _, name := range strings.Fields(`
 		archive bufio bytes cmp compress container context crypto database debug embed encoding errors expvar
 		flag fmt hash html image index io iter log maps math mime net os path plugin reflect regexp runtime
 		slices sort strconv strings structs sync syscall testing text time unicode unique unsafe uuid vendor
-		weak cmd main internal simd fbtest`) {
+		weak cmd main internal simd builtin arena std all tool work toolchain mod testdata`) {
 		notAPackageName[name] = true
+	}
+	// The names that Windows reserves for devices: a module path may not have them as an element.
+	notAPackageName["con"], notAPackageName["prn"], notAPackageName["aux"], notAPackageName["nul"] = true, true, true, true
+	for i := '1'; i <= '9'; i++ {
+		notAPackageName["com"+string(i)], notAPackageName["lpt"+string(i)] = true, true
 	}
 }
 
@@ -76,7 +94,7 @@ func newApp(name, forgebasePath, dir string) (string, error) {
 			rustQuote(name), len(name), maxAppNameLen, name))
 	}
 	switch {
-	case isGoKeyword(name):
+	case goKeywords[name]:
 		problems = append(problems, fmt.Sprintf("app name `%s` is a Go keyword and cannot be the name of a package here", name))
 	case notAPackageName[name]:
 		problems = append(problems, fmt.Sprintf("app name `%s` cannot be used as a package name here", name))
@@ -130,16 +148,6 @@ func newApp(name, forgebasePath, dir string) (string, error) {
 		return "", err
 	}
 	return target, nil
-}
-
-func isGoKeyword(name string) bool {
-	switch name {
-	case "break", "default", "func", "interface", "select", "case", "defer", "go", "map", "struct", "chan",
-		"else", "goto", "package", "switch", "const", "fallthrough", "if", "range", "type", "continue", "for",
-		"import", "return", "var":
-		return true
-	}
-	return false
 }
 
 // generate creates target and writes files (and the go.sum of the checkout) into it. From the moment the

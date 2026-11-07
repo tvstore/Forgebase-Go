@@ -42,12 +42,23 @@ func (l *lab) handler(ctx context.Context, job *JobContext) error {
 	l.mu.Unlock()
 	var p struct {
 		SleepMS int `json:"sleep_ms"`
+		// Stubborn ignores the context: the handler sleeps the whole time.
+		Stubborn bool `json:"stubborn"`
+		// PanicOnCancel panics when the context is cancelled.
+		PanicOnCancel bool `json:"panic_on_cancel"`
 	}
 	_ = job.DecodePayload(&p)
 	_, inserted := job.Documents().Insert(ctx, "seen", core.Document{Values: map[string]core.Value{"job_id": core.Text(id)}})
-	select {
-	case <-time.After(time.Duration(p.SleepMS) * time.Millisecond):
-	case <-ctx.Done():
+	if p.Stubborn {
+		time.Sleep(time.Duration(p.SleepMS) * time.Millisecond)
+	} else {
+		select {
+		case <-time.After(time.Duration(p.SleepMS) * time.Millisecond):
+		case <-ctx.Done():
+			if p.PanicOnCancel {
+				panic("cancelled")
+			}
+		}
 	}
 	l.mu.Lock()
 	delete(l.running, id)
@@ -83,7 +94,7 @@ type labWorld struct {
 }
 
 func workerConfigFor(grace time.Duration) workerConfig {
-	return workerConfig{poll: 20 * time.Millisecond, grace: grace, margin: time.Second}
+	return workerConfig{poll: 20 * time.Millisecond, grace: grace, margin: time.Second, abortWait: 300 * time.Millisecond}
 }
 
 // setupWith is a worker on a migrated database. No schedule is left in the database unless the test asks for
@@ -413,5 +424,65 @@ func TestAWorkerEnqueuesADueScheduleOnceAndRunsIt(t *testing.T) {
 	eqRow(t, w.one("SELECT (last_run_at IS NOT NULL)::text FROM fb_schedule"), "true")
 	if !strings.Contains(w.log.String(), "worker: started w: 4 job type(s), concurrency 2") {
 		t.Errorf("%s", w.log.String())
+	}
+}
+
+// Not in Rust (a handler cannot be aborted in Go): a handler that ignores its context is abandoned after the
+// grace period and the abort wait; the job is given back and the worker says the pool cannot be closed in peace.
+func TestAHandlerThatIgnoresItsContextIsAbandonedAndTheJobIsReleased(t *testing.T) {
+	w := setupLab(t, 200*time.Millisecond)
+	w.enqueue(`{"sleep_ms": 6000, "stubborn": true}`)
+	stop, receiver := signals()
+	result := make(chan bool, 1)
+	go func() { result <- w.worker.runWorker(context.Background(), 1, "w", receiver) }()
+	w.waitHandlerSleeping("w/0")
+	stop <- struct{}{}
+	started := time.Now()
+	if !<-result {
+		t.Error("a slot panicked")
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Errorf("the worker took %s to stop", time.Since(started))
+	}
+	if !w.worker.leftBehind() {
+		t.Error("the abandoned handler was not noticed")
+	}
+	eqRow(t, w.one("SELECT status, attempts::text FROM fb_job"), "queued", "0")
+}
+
+// Not in Rust: a second signal does not wait for a handler that ignores its context.
+func TestASecondSignalDoesNotWaitForAHandlerThatIgnoresItsContext(t *testing.T) {
+	w := setupLab(t, time.Minute)
+	w.worker.config.abortWait = time.Minute
+	w.enqueue(`{"sleep_ms": 6000, "stubborn": true}`)
+	stop, receiver := signals()
+	result := make(chan bool, 1)
+	go func() { result <- w.worker.runWorker(context.Background(), 1, "w", receiver) }()
+	w.waitHandlerSleeping("w/0")
+	stop <- struct{}{}
+	stop <- struct{}{}
+	started := time.Now()
+	<-result
+	if time.Since(started) > 2*time.Second {
+		t.Errorf("the worker took %s to exit", time.Since(started))
+	}
+	if !w.worker.leftBehind() {
+		t.Error("the hard stop was not noticed")
+	}
+	eqRow(t, w.one("SELECT status FROM fb_job"), "running")
+}
+
+// Not in Rust: a handler that panics because it was aborted is an aborted attempt (the timeout is recorded), not
+// a panic failure.
+func TestAPanicAfterTheAbortIsTheTimeoutNotAPanic(t *testing.T) {
+	w := setupLab(t, 5*time.Second)
+	w.worker.jobs["lab.work"].options = NewJobOptions().Timeout(300 * time.Millisecond)
+	w.enqueue(`{"sleep_ms": 20000, "panic_on_cancel": true}`)
+	if got := w.runOne("w"); got != outcomeRetried {
+		t.Fatalf("outcome %v", got)
+	}
+	row := w.one("SELECT status, last_error FROM fb_job")
+	if row[0] != "queued" || !strings.HasPrefix(row[1], "timed out after 0.3 s") {
+		t.Errorf("%q", row)
 	}
 }

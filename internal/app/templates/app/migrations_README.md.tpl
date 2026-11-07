@@ -3,7 +3,7 @@
 SQL data migrations, applied once per database by `migrate`, after the DocType schema sync.
 Add one when you must change or backfill data, not to create tables for DocTypes (the sync does
 that). Name files `NNNN_what.sql` (the digits are the version, `what` is the name) and embed
-them in `{{name}}.go`:
+them in `app.go`:
 
     //go:embed migrations/*.sql
     var migrations embed.FS
