@@ -7,8 +7,8 @@ The method and the totals are in the [parity report](../parity-report.md#1-test-
 |---|---|
 | Rust tests and scenarios | 1299 |
 | of which scenarios of the two targets without a test harness | 12 |
-| Mapped to Go tests | 1297 |
-| Not ported, with the reason | 2 |
+| Mapped to Go tests | 1298 |
+| Not ported, with the reason | 1 |
 | Unmatched | 0 |
 
 ## `crates/forgebase-core/src/document.rs`
@@ -1597,7 +1597,7 @@ The method and the totals are in the [parity report](../parity-report.md#1-test-
 
 | Rust test | Go test | Status |
 |---|---|---|
-| `the_independent_hmac_matches_a_known_vector` | none | not ported: It checks the hand-written HMAC-SHA256 of the Rust test helper expected_signature against RFC 4231 test case 2. The Go tests have no such helper: the signature is crypto/hmac from the standard library, and TestTheSignatureHasTheDocumentedForm pins one value computed independently with Python. |
+| `the_independent_hmac_matches_a_known_vector` | `internal/webhooktest/webhooktest_test.go::TestTheIndependentHMACMatchesAKnownVector` | mapped |
 
 ## `crates/forgebase/tests/customize.rs`
 
