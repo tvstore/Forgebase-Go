@@ -153,7 +153,7 @@ func RunReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, call
 
 // fetchReport prepares the statement, checks its shape, binds values and reads at most max_rows + 1 rows
 // through a portal (the Execute message of the extended protocol has a row limit; pgx does not expose
-// it, so the messages are sent and read here). The values of the rows are in the text format.
+// it, so the messages are sent and read here). The values of the rows are in the format resultFormat chooses per column.
 func fetchReport(ctx context.Context, conn *pgx.Conn, report *core.ReportDef, values []core.Value) ([][][]byte, []pgconn.FieldDescription, error) {
 	// The unnamed statement: nothing is left in the connection's statement cache.
 	statement, err := conn.PgConn().Prepare(ctx, "", report.SQL, nil)
