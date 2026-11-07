@@ -443,3 +443,15 @@ func TestACallerCannotSetAReadOnlyField422ValidationFailed(t *testing.T) {
 	}
 	wantStatus(t, patch(name, J{"total": 7}), http.StatusOK)
 }
+
+// An empty DocType name followed by "/" is a parameter as in matchit: an unknown DocType after
+// authentication; an empty name reaches the handler of the lifecycle.
+func TestAnEmptyParameterIsAnUnknownDoctypeOrName(t *testing.T) {
+	e, admin := resourceSetup(t)
+	wantCode(t, e.send(get("/api/v1/resource//x").session(admin)), http.StatusNotFound, "not_found")
+	wantCode(t, e.send(post("/api/v1/resource//x/submit").session(admin).json(J{"version": 1})), http.StatusNotFound, "not_found")
+	// An empty name of a known DocType: not found (a document that does not exist).
+	wantCode(t, e.send(get("/api/v1/resource/note//").session(admin)), http.StatusNotFound, "not_found")
+	rep := e.send(post("/api/v1/resource/bill//submit").session(admin).json(J{"version": 1}))
+	wantCode(t, rep, http.StatusNotFound, "not_found")
+}
