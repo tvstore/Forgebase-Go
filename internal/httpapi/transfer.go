@@ -484,7 +484,7 @@ type csvReader struct {
 type csvRecord struct {
 	fields []string
 	// byteOffset and line are the position the Rust csv crate reports for the record (csv::Position): where the
-	// previous read ended (0 for the first record), and the line count there. Blank lines before the record are
+	// previous read ended (0 for the first record, or 3 after a second byte order mark), and the line count there. Blank lines before the record are
 	// inside the read, so they are before the position.
 	byteOffset int
 	line       uint64
