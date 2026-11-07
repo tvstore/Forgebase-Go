@@ -341,3 +341,105 @@ func TestTheFirstProblemReportedDoesNotDependOnMapOrder(t *testing.T) {
 		}
 	}
 }
+
+// The wording and position of the syntax errors are serde_json 1.0.154's (jsonparse.go mirrors its de.rs
+// and read.rs). The expected texts were derived from that source, case by case.
+func TestSyntaxErrorsReadLikeSerdeJSON(t *testing.T) {
+	for _, c := range [][2]string{
+		{``, "EOF while parsing a value at line 1 column 0"},
+		{`   `, "EOF while parsing a value at line 1 column 3"},
+		{`{`, "EOF while parsing an object at line 1 column 1"},
+		{`{"a":1`, "EOF while parsing an object at line 1 column 6"},
+		{`{bad`, "key must be a string at line 1 column 2"},
+		{`{"a" 1}`, "expected `:` at line 1 column 6"},
+		{`{"a":1 "b":2}`, "expected `,` or `}` at line 1 column 8"},
+		{`{"a":1,}`, "trailing comma at line 1 column 8"},
+		{`{"a":1,`, "EOF while parsing a value at line 1 column 7"},
+		{`{"a":1,1:2}`, "key must be a string at line 1 column 8"},
+		{`[`, "EOF while parsing a list at line 1 column 1"},
+		{`[1 2]`, "expected `,` or `]` at line 1 column 4"},
+		{`[1,]`, "trailing comma at line 1 column 4"},
+		{`[,]`, "expected value at line 1 column 2"},
+		{`{"a":1} x`, "trailing characters at line 1 column 9"},
+		{`{"a":1}{`, "trailing characters at line 1 column 8"},
+		{`x`, "expected value at line 1 column 1"},
+		{"{\n\"a\": ?}", "expected value at line 2 column 6"},
+		{`tru`, "EOF while parsing a value at line 1 column 3"},
+		{`nul!`, "expected ident at line 1 column 4"},
+		{`"abc`, "EOF while parsing a string at line 1 column 4"},
+		{`"a\qb"`, "invalid escape at line 1 column 4"},
+		{`"a\u12zz"`, "invalid escape at line 1 column 8"},
+		{`"a\u12"`, "EOF while parsing a string at line 1 column 7"},
+		{`"a\u12`, "EOF while parsing a string at line 1 column 6"},
+		{`"\ud800x"`, "unexpected end of hex escape at line 1 column 8"},
+		{`"\udc00"`, "lone leading surrogate in hex escape at line 1 column 7"},
+		{"\"a\x01\"", "control character (\\u0000-\\u001F) found while parsing a string at line 1 column 3"},
+		{"{\"a\":\"x\x01\"}", "control character (\\u0000-\\u001F) found while parsing a string at line 1 column 8"},
+		{`01`, "invalid number at line 1 column 2"},
+		{`-`, "EOF while parsing a value at line 1 column 1"},
+		{`-x`, "invalid number at line 1 column 2"},
+		{`1.`, "EOF while parsing a value at line 1 column 2"},
+		{`1.x`, "invalid number at line 1 column 3"},
+		{`1e`, "EOF while parsing a value at line 1 column 2"},
+		{`1e+x`, "invalid number at line 1 column 4"},
+		{`1e999`, "number out of range at line 1 column 5"},
+		{`1e99999999999`, "number out of range at line 1 column 12"},
+		{`1e+99999999999`, "number out of range at line 1 column 13"},
+		{strings.Repeat("[", 128), "recursion limit exceeded at line 1 column 128"},
+	} {
+		_, err := parseJSON(c[0])
+		if err == nil || err.Error() != c[1] {
+			t.Errorf("%q: got %v, want %s", c[0], err, c[1])
+		}
+	}
+	// The error of ParseInput is that text after "invalid JSON: ".
+	_, err := one(t, `{bad`)
+	if err == nil || err.Error() != "invalid JSON: key must be a string at line 1 column 2" {
+		t.Errorf("%v", err)
+	}
+	// 127 levels are fine, and every valid kind of text parses.
+	if _, err := parseJSON(strings.Repeat("[", 127) + strings.Repeat("]", 127)); err != nil {
+		t.Errorf("%v", err)
+	}
+	// An exponent that overflows i32 is a zero when the number is zero or the exponent negative.
+	for _, ok := range []string{`0e99999999999`, `1e-99999999999`, `-0e+99999999999`} {
+		if _, err := parseJSON(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, ok := range []string{`null`, ` true `, `{"a":[1,2.5,-3e2,"xé😀\n"],"b":{}}`, `[]`, `"\/"`} {
+		if _, err := parseJSON(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	v, _ := parseJSON(`"é😀"`)
+	if v != "é😀" {
+		t.Errorf("%q", v)
+	}
+}
+
+// Number's Display, which the message about an integer out of range uses.
+func TestNumbersDisplayLikeSerdeJSON(t *testing.T) {
+	for _, c := range [][2]string{
+		{`1.5`, "1.5"}, {`1.0`, "1.0"}, {`1e3`, "1000.0"}, {`-2.50`, "-2.5"}, {`1e21`, "1e+21"}, {`1e16`, "1e+16"},
+		{`1e15`, "1000000000000000.0"}, {`1.5e-7`, "1.5e-7"}, {`0.00001`, "0.00001"}, {`0.000001`, "1e-6"}, {`6.62607015e-34`, "6.62607015e-34"}, {`3.439070283483335e+35`, "3.439070283483335e+35"},
+		{`-0`, "-0.0"}, {`0.0`, "0.0"}, {`9223372036854775808`, "9223372036854775808"},
+		{`-9223372036854775809`, "-9.223372036854776e+18"}, {`18446744073709551616`, "1.8446744073709552e+19"},
+		{`123456.789`, "123456.789"}, {`5`, "5"}, {`-5`, "-5"},
+	} {
+		v, err := parseJSON(c[0])
+		if err != nil {
+			t.Errorf("%s: %v", c[0], err)
+			continue
+		}
+		if got := v.(jsonNumber).String(); got != c[1] {
+			t.Errorf("%s displays %s, want %s", c[0], got, c[1])
+		}
+	}
+	if m := message(t, `{"i":1e3}`); !strings.Contains(m, "1000.0 is not an integer in the range") {
+		t.Error(m)
+	}
+	if m := message(t, `{"i":9223372036854775808}`); !strings.Contains(m, "9223372036854775808 is not an integer") {
+		t.Error(m)
+	}
+}
