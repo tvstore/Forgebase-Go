@@ -19,7 +19,7 @@ Internet --80/443--> caddy (HTTPS, Host passed through)
 ```
 
 - `https://<your domain>/desk/` is the web interface, `https://<your domain>/api/v1/...` the API.
-- The image runs the **`sales` example app** by default, so you have DocTypes to try. To run your own app, build the binary of your own Go module (`FORGEBASE_APP_DIR` is the directory of the module and `FORGEBASE_APP_PKG` its main package, for example `FORGEBASE_APP_DIR=.` and `FORGEBASE_APP_PKG=./cmd/myapp`; for the stock `forgebase` binary `FORGEBASE_APP_PKG=./cmd/forgebase`; see [Your first app](first-app.md) and the header of the [`Dockerfile`](../../Dockerfile)). The build context is this repository, so an app of your own lives in your clone of it or you copy the `Dockerfile` and `deploy/` next to your module and change the `COPY` lines.
+- The image runs the **`sales` example app** by default, so you have DocTypes to try. To run your own app, build the binary of your own Go module (`FORGEBASE_APP_DIR` is the directory of the module and `FORGEBASE_APP_PKG` its main package, for example `FORGEBASE_APP_DIR=myapp` and `FORGEBASE_APP_PKG=./cmd/myapp` for a module at `<clone>/myapp`, whose `go.mod` must then `replace github.com/tvstore/forgebase-go => ..` with a relative path: `forgebase new-app` writes an absolute one, which does not exist inside the build; for the stock `forgebase` binary `FORGEBASE_APP_PKG=./cmd/forgebase`; see [Your first app](first-app.md) and the header of the [`Dockerfile`](../../Dockerfile)). The build context is this repository, so an app of your own lives in your clone of it or you copy the `Dockerfile` and `deploy/` next to your module and change the `COPY` lines.
 - PostgreSQL is reachable only on the private Docker network, so its connection needs no TLS (a URL without `sslmode` means no TLS; for a database on another network see [Render + Neon](#3-render--neon-free-path) and [TLS to PostgreSQL](operations.md#tls-to-postgresql)). Only ports 80 and 443 are open.
 - Free-tier notes: Oracle Cloud's Always Free tier included, at the time of writing, Ampere A1 (arm64) instances with up to 4 OCPUs and 24 GB of memory in total, and two small AMD micro instances with 1 GB (verify the current limits on Oracle's site; free tiers change). The image is built on the VM itself (`docker compose build`), so there is no cross-building: every base image is multi-arch and works on arm64 and amd64.
 
@@ -228,7 +228,7 @@ unset PW FORGEBASE_DATABASE_URL
 4. Docker command (Render's "Docker Command" field, which becomes the arguments of the image's entrypoint): **`all`**. This is the single-container mode ([section 2](#2-single-container-mode)): the web server and the job worker run in one container, which is what a free service allows.
 5. Deploy. Open `https://<your-service>.onrender.com/desk/` and log in as `admin` with the password of step 3.2.
 
-If the service does not start, read Render's logs. A line that contains `error performing TLS handshake` is a connection problem: see [TLS to PostgreSQL](operations.md#tls-to-postgresql) and the troubleshooting table there.
+If the service does not start, read Render's logs. A line that contains `error performing TLS handshake` or `no root certificate` is a connection problem: see [TLS to PostgreSQL](operations.md#tls-to-postgresql) and the troubleshooting table there.
 
 ### 3.4 Limits to expect (check each provider's current docs)
 

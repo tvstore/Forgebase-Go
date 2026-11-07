@@ -7,7 +7,9 @@
 #   docker build --build-arg APP_DIR=myapp --build-arg APP_PKG=./cmd/myapp -t myapp .
 #
 # APP_DIR is the directory of the Go module that holds the binary (relative to the build context) and
-# APP_PKG the main package inside it. Guide: docs/guide/deploy.md. Nothing in this file is specific to
+# APP_PKG the main package inside it. An app module's go.mod `replace github.com/tvstore/forgebase-go => ...`
+# must be a relative path inside the build context (`=> ..` for an app at `<clone>/myapp`); `forgebase
+# new-app` writes an absolute path, which does not exist in the build stage. Guide: docs/guide/deploy.md. Nothing in this file is specific to
 # one CPU architecture: every base image below is multi-arch (amd64 and arm64), so build on the machine
 # that will run it.
 #
