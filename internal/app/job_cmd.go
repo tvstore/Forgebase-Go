@@ -50,14 +50,14 @@ func (r *runner) job(ctx context.Context, site *site) error {
 		filter := db.JobFilter{Status: r.m.str("status"), Name: r.m.str("name")}
 		found, err := db.ListJobs(ctx, sc.pool, filter, int64(r.m.u64("limit")))
 		if err != nil {
-			return jobError(err)
+			return err
 		}
 		return r.write(jobTable(found))
 	case "show":
 		id := r.m.str("id")
 		found, err := db.GetJob(ctx, sc.pool, id)
 		if err != nil {
-			return jobError(err)
+			return err
 		}
 		if found == nil {
 			return errf("no job with id %s", id)
@@ -71,7 +71,7 @@ func (r *runner) job(ctx context.Context, site *site) error {
 		id := r.m.str("id")
 		result, status, err := db.RetryDeadJob(ctx, sc.pool, id)
 		if err != nil {
-			return jobError(err)
+			return err
 		}
 		switch result {
 		case db.RetryQueued:
@@ -83,16 +83,17 @@ func (r *runner) job(ctx context.Context, site *site) error {
 	case "enqueue":
 		id, err := db.Enqueue(ctx, sc.pool, sc.registry, r.m.str("name"), payload, r.m.str("actor"))
 		if err != nil {
-			return jobError(err)
+			return enqueueError(err)
 		}
 		return r.write("enqueued job " + id.String() + "\n")
 	}
 	return errf("unknown job command %q", verb)
 }
 
-// jobError is a refused job (an unknown name, a payload that is too large, an id that is no UUID) as the
-// plain message the command line prints; any other error is as it is.
-func jobError(err error) error {
+// enqueueError is a refused enqueue (an unknown name, a payload that is too large) as the plain message the
+// command line prints: Rust maps DbError::Job to CliError::Job there only. The other job commands print the
+// database error as it is (`job: ...`, for an id that is no UUID).
+func enqueueError(err error) error {
 	var dbe *db.Error
 	if errors.As(err, &dbe) && dbe.Kind == db.ErrJob {
 		return errf("%s", dbe.Message)

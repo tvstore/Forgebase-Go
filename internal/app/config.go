@@ -111,6 +111,8 @@ type siteContext struct {
 	registry *core.Registry
 	// holder is the registry behind registry, which a long-running command (serve, worker) keeps current.
 	holder *db.RegistryHolder
+	// methods runs the app methods of the site (nil: none, every method call is a 404). Set by serve.
+	methods httpapi.MethodDispatch
 }
 
 // open opens the pool of the site (poolSize overrides the configured size) and joins it with registry, the

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -15,9 +14,9 @@ import (
 )
 
 // One router, two sites (M7.2, ADR 0014): the real binary of site_workers_test.go serves a config file whose
-// sites install different apps, over a real socket. Ported from the scenario http_per_site and the serve step of
-// removed_app of crates/forgebase/tests/site_apps.rs (the other steps of removed_app are in
-// internal/app/site_apps_test.go).
+// sites install different apps, over a real socket. Ported from the serve step of removed_app of
+// crates/forgebase/tests/site_apps.rs (the other steps of removed_app and the scenario http_per_site are in
+// internal/app/site_apps_test.go, which sends the requests into the routing handler without a socket).
 
 // siteServer is a running `forgebase serve`, killed when the test ends.
 type siteServer struct {
@@ -107,65 +106,6 @@ func (s *siteServer) session(host string) map[string]string {
 	}
 	cookie, _, _ := strings.Cut(header.Get("Set-Cookie"), ";")
 	return map[string]string{"Cookie": cookie, "X-Forgebase-CSRF": reply.Data.CSRF, "Content-Type": "application/json"}
-}
-
-func (s *siteServer) doctypes(host string, session map[string]string) []string {
-	s.t.Helper()
-	status, text, _ := s.request("GET", "/api/v1/meta", host, session, "")
-	if status != 200 {
-		s.t.Fatalf("%d %s", status, text)
-	}
-	var reply struct {
-		Data []struct {
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(text), &reply); err != nil {
-		s.t.Fatal(err)
-	}
-	names := []string{}
-	for _, d := range reply.Data {
-		names = append(names, d.Name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// Rust: site_apps.rs::http_per_site
-func TestHTTPShowsOnlyTheAppsOfTheSite(t *testing.T) {
-	w := newSiteWorld(t)
-	w.setUp()
-	server := w.serve()
-	sessionA, sessionB := server.session("a.localhost"), server.session("b.localhost")
-	expect(t, server.doctypes("a.localhost", sessionA), []string{"item"})
-	expect(t, server.doctypes("b.localhost", sessionB), []string{"extra_item", "item"})
-
-	onA := func(method, path, body string) int {
-		status, _, _ := server.request(method, path, "a.localhost", sessionA, body)
-		return status
-	}
-	onB := func(method, path, body string) int {
-		status, _, _ := server.request(method, path, "b.localhost", sessionB, body)
-		return status
-	}
-	// A DocType of an app that is not installed does not exist on A: meta, list and create.
-	expect(t, onA("GET", "/api/v1/meta/extra_item", ""), 404)
-	expect(t, onA("GET", "/api/v1/resource/extra_item", ""), 404)
-	expect(t, onA("POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`), 404)
-	// On B it is served; on A the installed DocType still is.
-	expect(t, onB("POST", "/api/v1/resource/extra_item", `{"code":"h-1"}`), 201)
-	expect(t, onB("GET", "/api/v1/resource/extra_item", ""), 200)
-	expect(t, onA("GET", "/api/v1/resource/item", ""), 200)
-	// Nothing was written to A.
-	expect(t, w.a.Rows("SELECT coalesce(to_regclass('doc_extra_item')::text, 'NULL')"), [][]string{{"NULL"}})
-	// The methods (M9.1) of an app that is not installed do not exist either, over a real server.
-	method := func(on func(string, string, string) int, name string) int {
-		return on("POST", "/api/v1/method/"+name, "{}")
-	}
-	expect(t, method(onA, "base.hello"), 200)
-	expect(t, method(onA, "extra.hello"), 404)
-	expect(t, method(onB, "base.hello"), 200)
-	expect(t, method(onB, "extra.hello"), 200)
 }
 
 // Dropping an app from a site's list keeps its tables and data; the DocType is no longer served.

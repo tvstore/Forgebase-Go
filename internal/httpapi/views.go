@@ -136,7 +136,7 @@ func viewLabel(m map[string]any) (*string, error) {
 
 // viewRoute is what the view routes do first: authenticate (and read the body when there is one), then
 // the DocType and the read right. The first value is the parsed body, nil for a route without one.
-func (s *State) viewRoute(w http.ResponseWriter, r *request, hasBody bool, pathLen int) (auth *authenticated, body any, path []string, doctype *core.DocType, err error) {
+func (s *State) viewRoute(w http.ResponseWriter, r *request, hasBody bool, pathLen int) (auth *authenticated, body any, path []string, registry *core.Registry, doctype *core.DocType, err error) {
 	if auth, err = s.authenticate(r); err != nil {
 		return
 	}
@@ -148,7 +148,8 @@ func (s *State) viewRoute(w http.ResponseWriter, r *request, hasBody bool, pathL
 	if path, err = r.pathParams(pathLen); err != nil {
 		return
 	}
-	if doctype, err = topLevel(s.snapshot(), path[0]); err != nil {
+	registry = s.snapshot()
+	if doctype, err = topLevel(registry, path[0]); err != nil {
 		return
 	}
 	err = require(doctype, auth.caller(), []core.Right{core.RightRead}, core.RightRead)
@@ -157,14 +158,14 @@ func (s *State) viewRoute(w http.ResponseWriter, r *request, hasBody bool, pathL
 
 // handleViewList is GET /api/v1/views/{doctype}: the views the caller sees, shared first.
 func handleViewList(s *State, w http.ResponseWriter, r *request) error {
-	auth, _, _, doctype, err := s.viewRoute(w, r, false, 1)
+	auth, _, _, registry, doctype, err := s.viewRoute(w, r, false, 1)
 	if err != nil {
 		return err
 	}
 	if _, err := params(r); err != nil {
 		return err
 	}
-	views, err := db.ListViews(r.Context(), s.pool, s.snapshot(), doctype.Name, auth.caller())
+	views, err := db.ListViews(r.Context(), s.pool, registry, doctype.Name, auth.caller())
 	if err != nil {
 		return err
 	}
@@ -181,7 +182,7 @@ func handleViewList(s *State, w http.ResponseWriter, r *request) error {
 // handleViewCreate is POST /api/v1/views/{doctype}: body {"label", "definition", "shared"?}; 201 with the
 // view.
 func handleViewCreate(s *State, w http.ResponseWriter, r *request) error {
-	auth, body, _, doctype, err := s.viewRoute(w, r, true, 1)
+	auth, body, _, registry, doctype, err := s.viewRoute(w, r, true, 1)
 	if err != nil {
 		return err
 	}
@@ -214,7 +215,7 @@ func handleViewCreate(s *State, w http.ResponseWriter, r *request) error {
 	if err != nil {
 		return err
 	}
-	view, err := db.CreateView(r.Context(), s.pool, s.snapshot(), doctype.Name, caller, *label, definition, shared)
+	view, err := db.CreateView(r.Context(), s.pool, registry, doctype.Name, caller, *label, definition, shared)
 	if err != nil {
 		return err
 	}
@@ -228,7 +229,7 @@ func handleViewCreate(s *State, w http.ResponseWriter, r *request) error {
 
 // handleViewUpdate is PATCH /api/v1/views/{doctype}/{id}: body {"version", "label"?, "definition"?}.
 func handleViewUpdate(s *State, w http.ResponseWriter, r *request) error {
-	auth, body, path, doctype, err := s.viewRoute(w, r, true, 2)
+	auth, body, path, registry, doctype, err := s.viewRoute(w, r, true, 2)
 	if err != nil {
 		return err
 	}
@@ -257,7 +258,7 @@ func handleViewUpdate(s *State, w http.ResponseWriter, r *request) error {
 	if changes.Label, err = viewLabel(m); err != nil {
 		return err
 	}
-	view, err := db.UpdateView(r.Context(), s.pool, s.snapshot(), doctype.Name, id, expected, caller, changes)
+	view, err := db.UpdateView(r.Context(), s.pool, registry, doctype.Name, id, expected, caller, changes)
 	if err != nil {
 		return err
 	}
@@ -271,7 +272,7 @@ func handleViewUpdate(s *State, w http.ResponseWriter, r *request) error {
 
 // handleViewDelete is DELETE /api/v1/views/{doctype}/{id}?version=N: 204 without a body.
 func handleViewDelete(s *State, w http.ResponseWriter, r *request) error {
-	auth, _, path, doctype, err := s.viewRoute(w, r, false, 2)
+	auth, _, path, registry, doctype, err := s.viewRoute(w, r, false, 2)
 	if err != nil {
 		return err
 	}
@@ -287,7 +288,7 @@ func handleViewDelete(s *State, w http.ResponseWriter, r *request) error {
 	if err != nil {
 		return err
 	}
-	if err := db.DeleteView(r.Context(), s.pool, s.snapshot(), doctype.Name, id, expected, auth.caller()); err != nil {
+	if err := db.DeleteView(r.Context(), s.pool, registry, doctype.Name, id, expected, auth.caller()); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -319,7 +320,7 @@ func summaryAggregates(text string) ([]db.Aggregate, error) {
 // the caller may read, grouped. A separate path, because /resource/{doctype}/summary would collide with a
 // document named summary.
 func handleSummary(s *State, w http.ResponseWriter, r *request) error {
-	auth, _, _, doctype, err := s.viewRoute(w, r, false, 1)
+	auth, _, _, registry, doctype, err := s.viewRoute(w, r, false, 1)
 	if err != nil {
 		return err
 	}
@@ -341,7 +342,7 @@ func handleSummary(s *State, w http.ResponseWriter, r *request) error {
 	if summaryQuery.Aggregates, err = summaryAggregates(query["aggregates"]); err != nil {
 		return err
 	}
-	summary, err := db.Summary(r.Context(), s.pool, s.snapshot(), doctype.Name, caller, summaryQuery)
+	summary, err := db.Summary(r.Context(), s.pool, registry, doctype.Name, caller, summaryQuery)
 	if err != nil {
 		return err
 	}

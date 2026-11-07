@@ -198,7 +198,7 @@ func TestCreateDatabaseRefusesAnUnusableURLWithoutShowingIt(t *testing.T) {
 		{"not a url :: pw", "not a valid PostgreSQL URL"},
 		{"postgres://u:pw@h/db?sslmode=prefer", "`sslmode=prefer` is not supported"},
 	} {
-		_, err := CreateDatabase(t.Context(), c.url, "")
+		_, err := CreateDatabase(t.Context(), c.url, nil)
 		if err == nil || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), "pw") && !strings.Contains(c.want, "pw") {
 			t.Errorf("%q: %v", c.url, err)
 		}

@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
 
@@ -61,16 +60,11 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return err
 	}
-	var (
-		routing       *httpapi.Sites
-		lines         []string
-		implicitHosts []string
-	)
+	var implicitHosts []string
 	if cfg.configured {
 		if strings.TrimSpace(r.o.Getenv("FORGEBASE_ALLOWED_HOSTS")) != "" {
 			r.warn("warning: FORGEBASE_ALLOWED_HOSTS is ignored: the hosts come from the config file\n")
 		}
-		routing = httpapi.ConfiguredSites()
 	} else {
 		var err error
 		implicitHosts, err = parseAllowedHosts(r.getenvOr("FORGEBASE_ALLOWED_HOSTS", "localhost,127.0.0.1"))
@@ -81,15 +75,9 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 	// Every site's registry is composed before any pool is opened, so a configuration or composition
 	// error is reported without touching a database. Each site gets a registry of its own, of the apps
 	// installed on it.
-	registries := make([]*core.Registry, len(sites))
-	dispatchers := make([]httpapi.MethodDispatch, len(sites))
-	for i, site := range sites {
-		composed, err := r.siteComposed(site, r.m.str("doctypes"))
-		if err != nil {
-			return err
-		}
-		registries[i] = composed.registry
-		dispatchers[i] = composed.MethodDispatch()
+	composeds, err := r.siteComposeds(sites, r.m.str("doctypes"))
+	if err != nil {
+		return err
 	}
 	var opened []*siteContext
 	defer func() {
@@ -102,29 +90,19 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 	reloadCtx, stopReload := context.WithCancel(ctx)
 	defer stopReload()
 	for i, site := range sites {
-		sc, err := site.open(ctx, r.o, registries[i], 0)
+		sc, err := site.open(ctx, r.o, composeds[i].registry, 0)
 		if err != nil {
 			return err
 		}
+		sc.methods = composeds[i].MethodDispatch()
 		opened = append(opened, sc)
-		hosts := implicitHosts
-		if cfg.configured {
-			hosts = site.hosts
-		}
-		appConfig := httpapi.DefaultConfig()
-		appConfig.AllowedHosts = hosts
-		appConfig.SecureCookies = !insecure
-		appConfig.DeskDir = deskDir
-		state := httpapi.NewStateWithHolder(sc.pool, sc.holder, appConfig).WithMethods(dispatchers[i])
-		state.StartMetaReload(reloadCtx, r.o.Stderr)
-		if cfg.configured {
-			if err := routing.AddSite(site.hosts, state); err != nil {
-				return errf("%s", err)
-			}
-			lines = append(lines, fmt.Sprintf("site %s: %s\n", site.name, strings.Join(site.hosts, ", ")))
-		} else {
-			routing = httpapi.ImplicitSites(state)
-		}
+	}
+	base := httpapi.DefaultConfig()
+	base.SecureCookies = !insecure
+	base.DeskDir = deskDir
+	routing, lines, err := routeSites(reloadCtx, r.o.Stderr, cfg.configured, opened, implicitHosts, base)
+	if err != nil {
+		return err
 	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -269,4 +247,49 @@ func serveError(err error) error {
 		return nil
 	}
 	return err
+}
+
+// siteComposeds is the composition of each site: its registry and the handlers of its methods.
+func (r *runner) siteComposeds(sites []*site, local string) ([]*Composed, error) {
+	composeds := make([]*Composed, len(sites))
+	for i, site := range sites {
+		composed, err := r.siteComposed(site, local)
+		if err != nil {
+			return nil, err
+		}
+		composeds[i] = composed
+	}
+	return composeds, nil
+}
+
+// routeSites is the Host routing of serve: one httpapi.State per opened site, with that site's pool and
+// registry, behind one router. With a config file (configured) each site answers to its own hosts and a
+// line "site NAME: HOSTS" is returned for the announcement; without one the only site answers to
+// implicitHosts. base has the settings that are the same for every site.
+func routeSites(reload context.Context, log io.Writer, configured bool, sites []*siteContext, implicitHosts []string, base httpapi.Config) (*httpapi.Sites, []string, error) {
+	var (
+		routing *httpapi.Sites
+		lines   []string
+	)
+	if configured {
+		routing = httpapi.ConfiguredSites()
+	}
+	for _, sc := range sites {
+		appConfig := base
+		appConfig.AllowedHosts = implicitHosts
+		if configured {
+			appConfig.AllowedHosts = sc.site.hosts
+		}
+		state := httpapi.NewStateWithHolder(sc.pool, sc.holder, appConfig).WithMethods(sc.methods)
+		state.StartMetaReload(reload, log)
+		if configured {
+			if err := routing.AddSite(sc.site.hosts, state); err != nil {
+				return nil, nil, errf("%s", err)
+			}
+			lines = append(lines, fmt.Sprintf("site %s: %s\n", sc.site.name, strings.Join(sc.site.hosts, ", ")))
+		} else {
+			routing = httpapi.ImplicitSites(state)
+		}
+	}
+	return routing, lines, nil
 }

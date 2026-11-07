@@ -75,7 +75,8 @@ func (r *toolRunner) command(tool pgTool, env []db.EnvVar, args ...string) *exec
 		program = filepath.Join(r.binDir, program)
 	}
 	cmd := exec.Command(program, args...)
-	var clean []string
+	// Never nil: a nil Env would inherit the whole environment of this process.
+	clean := []string{}
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "PG") {
 			clean = append(clean, entry)
