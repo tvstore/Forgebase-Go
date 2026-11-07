@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -80,12 +79,11 @@ func object(v any, allowed ...string) (map[string]any, error) {
 
 // asInt64 is the integer of a JSON number, like serde_json's as_i64.
 func asInt64(v any) (int64, bool) {
-	n, ok := v.(json.Number)
+	n, ok := v.(jsonNumber)
 	if !ok {
 		return 0, false
 	}
-	i, err := strconv.ParseInt(n.String(), 10, 64)
-	return i, err == nil
+	return n.int64Value()
 }
 
 func version(m map[string]any) (int64, error) {

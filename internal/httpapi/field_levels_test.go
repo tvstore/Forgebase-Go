@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -113,7 +114,7 @@ func (s *levelSite) full() (string, int64) {
 		"ledger": []any{J{"qty": 1}, J{"qty": 2}},
 	})
 	wantStatus(s.t, rep, http.StatusCreated)
-	version, _ := asInt64(at(rep.data(), "version"))
+	version, _ := testInt64(at(rep.data(), "version"))
 	return str(rep.data(), "name"), version
 }
 
@@ -257,7 +258,7 @@ func TestAHiddenFieldIsRefusedExactlyLikeAFieldThatDoesNotExist(t *testing.T) {
 	name, version := hidden.full()
 	rep := plain.post(plain.admin, "/api/v1/resource/account", J{"title": "Acme", "region": "north", "revenue": 10})
 	plainName := str(rep.data(), "name")
-	plainVersion, _ := asInt64(at(rep.data(), "version"))
+	plainVersion, _ := testInt64(at(rep.data(), "version"))
 	for _, value := range []any{500, "zzz", nil} {
 		a := hidden.patch(hidden.agent, name, version, J{"credit_limit": value})
 		b := plain.patch(plain.agent, plainName, plainVersion, J{"credit_limit": value})
@@ -268,4 +269,14 @@ func TestAHiddenFieldIsRefusedExactlyLikeAFieldThatDoesNotExist(t *testing.T) {
 			t.Error(a.text)
 		}
 	}
+}
+
+// testInt64 is the integer of a number of a decoded reply (the tests decode replies with encoding/json).
+func testInt64(v any) (int64, bool) {
+	n, ok := v.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	i, err := n.Int64()
+	return i, err == nil
 }

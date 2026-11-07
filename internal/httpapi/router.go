@@ -225,7 +225,7 @@ func jsonContentType(h http.Header) bool {
 
 // readJSON reads the request body as one JSON value (what the Rust ApiJson extractor does): 415 for
 // another content type (checked before the body is read), 413 over the body limit, 400 for a body that
-// cannot be read or is not valid JSON. Numbers stay json.Number.
+// cannot be read or is not valid JSON. Numbers are jsonNumber.
 func (s *State) readJSON(w http.ResponseWriter, r *request) (any, error) {
 	if !jsonContentType(r.Header) {
 		return nil, newError(http.StatusUnsupportedMediaType, "unsupported_media_type",
@@ -239,9 +239,9 @@ func (s *State) readJSON(w http.ResponseWriter, r *request) (any, error) {
 		}
 		return nil, errBadRequest("the body is not valid JSON")
 	}
-	// serde_json refuses a body that is not UTF-8, a lone surrogate escape and a nesting of 128 levels;
-	// encoding/json would replace the first two silently and read arrays nested up to 10000 levels.
-	if !utf8.Valid(body) || hasLoneSurrogate(body) || tooDeep(body) {
+	// serde_json::from_slice refuses a body that is not UTF-8; the parser (jsonparse.go) takes a string and
+	// has serde_json's other refusals (lone surrogates, the nesting limit of 128).
+	if !utf8.Valid(body) {
 		return nil, errBadRequest("the body is not valid JSON")
 	}
 	v, err := decodeJSON(string(body))
@@ -249,78 +249,6 @@ func (s *State) readJSON(w http.ResponseWriter, r *request) (any, error) {
 		return nil, errBadRequest("the body is not valid JSON")
 	}
 	return v, nil
-}
-
-// maxJSONDepth is the nesting of arrays and objects that serde_json refuses ("recursion limit exceeded":
-// its limit is 128, and the 128th level is the first one refused).
-const maxJSONDepth = 127
-
-// tooDeep is true when the JSON text nests arrays and objects deeper than serde_json reads. Brackets inside
-// strings do not count.
-func tooDeep(body []byte) bool {
-	depth, inString := 0, false
-	for i := 0; i < len(body); i++ {
-		switch b := body[i]; {
-		case inString && b == '\\':
-			i++
-		case b == '"':
-			inString = !inString
-		case inString:
-		case b == '[' || b == '{':
-			if depth++; depth > maxJSONDepth {
-				return true
-			}
-		case b == ']' || b == '}':
-			depth--
-		}
-	}
-	return false
-}
-
-// hasLoneSurrogate is true when the JSON text has a \uD800-\uDFFF escape that is not half of a pair.
-// A backslash only occurs inside a string in valid JSON (anywhere else the text is refused anyway).
-func hasLoneSurrogate(body []byte) bool {
-	hex4 := func(i int) (int, bool) {
-		if i+4 > len(body) {
-			return 0, false
-		}
-		n := 0
-		for _, b := range body[i : i+4] {
-			d := unhex(b)
-			if d < 0 {
-				return 0, false
-			}
-			n = n<<4 | d
-		}
-		return n, true
-	}
-	for i := 0; i < len(body); i++ {
-		if body[i] != '\\' {
-			continue
-		}
-		i++
-		if i >= len(body) || body[i] != 'u' {
-			continue
-		}
-		n, ok := hex4(i + 1)
-		if !ok {
-			continue
-		}
-		i += 4
-		switch {
-		case n >= 0xD800 && n < 0xDC00:
-			if i+2 < len(body) && body[i+1] == '\\' && body[i+2] == 'u' {
-				if low, ok := hex4(i + 3); ok && low >= 0xDC00 && low < 0xE000 {
-					i += 6
-					continue
-				}
-			}
-			return true
-		case n >= 0xDC00 && n < 0xE000:
-			return true
-		}
-	}
-	return false
 }
 
 // queryPairs is the query string as ordered pairs, so that a repeated parameter is still visible

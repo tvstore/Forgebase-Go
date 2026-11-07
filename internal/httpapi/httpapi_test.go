@@ -337,25 +337,6 @@ func TestReadJSON(t *testing.T) {
 	}
 }
 
-func TestHasLoneSurrogate(t *testing.T) {
-	for in, want := range map[string]bool{
-		`"a"`:        false,
-		`"A"`:        false,
-		`"😀"`:        false,
-		`"\ud83d"`:   true,
-		`"\ude00"`:   true,
-		`"\ud83dx"`:  true,
-		`"\ud83dA"`:  true,
-		`"\\ud800"`:  false,
-		`"\\\ud800"`: true,
-		`"\u12"`:     false,
-	} {
-		if got := hasLoneSurrogate([]byte(in)); got != want {
-			t.Errorf("hasLoneSurrogate(%s) = %v, want %v", in, got, want)
-		}
-	}
-}
-
 func TestMarshalIsSerdeLike(t *testing.T) {
 	bs := "\\"
 	b, err := marshal(map[string]any{"b": "<&>" + string(rune(0x2028)), "a": []any{1, nil, true}, "c": bs + "u2028"})
@@ -365,22 +346,5 @@ func TestMarshalIsSerdeLike(t *testing.T) {
 	want := `{"a":[1,null,true],"b":"<&>` + string(rune(0x2028)) + `","c":"` + bs + bs + `u2028"}`
 	if got := string(b); got != want {
 		t.Errorf("got %s, want %s", got, want)
-	}
-}
-
-// A nesting of 128 levels is refused like serde_json does; 127 is read.
-func TestTooDeep(t *testing.T) {
-	nest := func(n int) string { return strings.Repeat("[", n) + strings.Repeat("]", n) }
-	for _, c := range []struct {
-		body string
-		want bool
-	}{
-		{nest(127), false}, {nest(128), true}, {strings.Repeat(`{"a":`, 127) + "1" + strings.Repeat("}", 127), false},
-		{strings.Repeat(`{"a":`, 128) + "1" + strings.Repeat("}", 128), true},
-		{`"` + strings.Repeat("[", 500) + `"`, false}, {`["\\"` + strings.Repeat("[", 200) + `]`, true}, {`["\"[["]`, false},
-	} {
-		if got := tooDeep([]byte(c.body)); got != c.want {
-			t.Errorf("tooDeep(%.30q) = %v, want %v", c.body, got, c.want)
-		}
 	}
 }
