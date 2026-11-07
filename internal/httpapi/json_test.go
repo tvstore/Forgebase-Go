@@ -8,12 +8,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/tvstore/forgebase-go/internal/core"
+	"github.com/tvstore/forgebase-go/internal/db"
 	"github.com/tvstore/forgebase-go/internal/decimal"
 )
 
-// Ported from crates/forgebase-http/src/json.rs (the tests of the input mapping; the output mapping is
-// tested in internal/db, where it lives, and the filters and sorts are tested in filters_test.go).
+// Ported from crates/forgebase-http/src/json.rs (the input mapping and, at the end of this file, the tests of the
+// output mapping, which db.DocumentToJSON implements; the filters and sorts are tested in filters_test.go).
 
 const mixed = `
 name = "t"
@@ -441,5 +444,140 @@ func TestNumbersDisplayLikeSerdeJSON(t *testing.T) {
 	}
 	if m := message(t, `{"i":9223372036854775808}`); !strings.Contains(m, "9223372036854775808 is not an integer") {
 		t.Error(m)
+	}
+}
+
+// ---- the output half of json.rs (db.DocumentToJSON and db.ValueToJSON) ----------------------------------
+
+const outputID = "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b"
+
+// storedForOutput is the document of the output tests of json.rs.
+func storedForOutput(name string, at time.Time, version int64) *db.StoredDocument {
+	return &db.StoredDocument{
+		ID: uuid.MustParse(outputID), Name: name, Owner: "o", CreatedAt: at, ModifiedAt: at, ModifiedBy: "m",
+		Version: version, Values: map[string]core.Value{}, Tables: map[string][]core.Row{},
+	}
+}
+
+// Rust: json.rs::output_mapping
+func TestOutputMapping(t *testing.T) {
+	at := time.Date(2024, time.March, 15, 17, 20, 30, 123456000, time.FixedZone("+07:00", 7*3600))
+	m, _ := decimal.Parse("12.50")
+	doc := storedForOutput("n", at, 3)
+	doc.Values = map[string]core.Value{
+		"at": core.Datetime(at), "on": core.NewDate(2024, time.March, 5), "m": core.Decimal(m),
+		"i": core.Int(math.MinInt64), "c": core.Bool(false), "d": core.Null(),
+	}
+	object, err := db.DocumentToJSON(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if object["id"] != outputID || object["version"] != int64(3) || object["created_at"] != "2024-03-15T10:20:30.123456Z" ||
+		object["at"] != "2024-03-15T10:20:30.123456Z" || object["on"] != "2024-03-05" || object["m"] != "12.50" ||
+		object["i"] != int64(math.MinInt64) || object["c"] != false || object["d"] != nil {
+		t.Fatalf("%v", object)
+	}
+	// Output parses back to the same values. The standard columns are not fields, so they come back as
+	// unknown (null) keys only.
+	text, err := marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round := mustOne(t, string(text))
+	for name, want := range map[string]core.Value{
+		"at": core.Datetime(at), "on": core.NewDate(2024, time.March, 5), "m": core.Decimal(m), "i": core.Int(math.MinInt64),
+	} {
+		if !round[name].Equal(want) {
+			t.Errorf("%s = %+v, want %+v", name, round[name], want)
+		}
+	}
+}
+
+// Rust: json.rs::table_output_is_an_array_of_row_objects_in_order
+func TestTableOutputIsAnArrayOfRowObjectsInOrder(t *testing.T) {
+	price, _ := decimal.Parse("2.50")
+	doc := storedForOutput("n", time.Unix(0, 0), 1)
+	doc.Tables = map[string][]core.Row{
+		"lines": {{"qty": core.Int(1), "price": core.Decimal(price)}, {"qty": core.Null(), "price": core.Null()}},
+		"empty": {},
+	}
+	object, err := db.DocumentToJSON(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, err := marshal(object["lines"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := marshal(object["empty"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(lines) != `[{"price":"2.50","qty":1},{"price":null,"qty":null}]` || string(empty) != `[]` {
+		t.Errorf("%s %s", lines, empty)
+	}
+}
+
+// Rust: json.rs::extreme_datetimes_never_panic
+func TestExtremeDatetimesNeverPanic(t *testing.T) {
+	// Valid RFC 3339 whose UTC instant is outside the range: parsing succeeds, writing it back as UTC must
+	// be an error.
+	edge, err := time.Parse(time.RFC3339, "9999-12-31T23:00:00-05:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out *db.OutputError
+	if _, err := db.ValueToJSON("at", core.Datetime(edge)); !errors.As(err, &out) {
+		t.Errorf("the edge: %v", err)
+	}
+	ok, err := time.Parse(time.RFC3339, "9999-12-31T23:59:59Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ValueToJSON("at", core.Datetime(ok)); err != nil {
+		t.Errorf("the last second: %v", err)
+	}
+}
+
+// Rust: json.rs::docstatus_and_amended_from_are_output_for_submittable_doctypes_only
+func TestDocstatusAndAmendedFromAreOutputForSubmittableDoctypesOnly(t *testing.T) {
+	stored := func(status *core.DocStatus, amendedFrom string) map[string]any {
+		doc := storedForOutput("X-1", time.Unix(0, 0), 3)
+		doc.DocStatus, doc.AmendedFrom = status, amendedFrom
+		object, err := db.DocumentToJSON(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return object
+	}
+	cancelled, draft := core.Cancelled, core.Draft
+	if o := stored(&cancelled, "X"); o["docstatus"] != int64(2) || o["amended_from"] != "X" {
+		t.Errorf("%v", o)
+	}
+	o := stored(&draft, "")
+	if v, ok := o["amended_from"]; o["docstatus"] != int64(0) || !ok || v != nil {
+		t.Errorf("%v", o)
+	}
+	o = stored(nil, "")
+	_, hasStatus := o["docstatus"]
+	_, hasAmended := o["amended_from"]
+	if hasStatus || hasAmended {
+		t.Errorf("%v", o)
+	}
+}
+
+// Rust: json.rs::workflow_state_is_output_only_when_the_document_has_one
+func TestWorkflowStateIsOutputOnlyWhenTheDocumentHasOne(t *testing.T) {
+	doc := storedForOutput("n", time.Unix(0, 0), 1)
+	doc.WorkflowState = "Pending"
+	object, err := db.DocumentToJSON(doc)
+	if err != nil || object["workflow_state"] != "Pending" {
+		t.Fatalf("%v %v", object, err)
+	}
+	// A DocType without a workflow (and a document that has no state yet): no key.
+	doc.WorkflowState = ""
+	object, err = db.DocumentToJSON(doc)
+	if _, ok := object["workflow_state"]; err != nil || ok {
+		t.Fatalf("%v %v", object, err)
 	}
 }

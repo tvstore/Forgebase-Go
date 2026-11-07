@@ -1,0 +1,15 @@
+# What the `// Rust:` comments of the Go tests cannot say. One line per Rust test:
+#   RUST_PATH::NAME | go | GO_FILE::GO_FUNC
+#   RUST_PATH::NAME | not ported | REASON
+#   RUST_PATH::NAME | unmatched | WHAT IS KNOWN
+# Read by .github/ci/test-mapping.py; see docs/parity-report.md.
+
+# The tests of the app template. The Go template (internal/app/templates/app/app_test.go.tpl) has the four
+# tests of the Rust one under Go names; the CI job app-template generates an app and runs them (go test ./...).
+crates/forgebase/templates/app/tests/app.rs::every_doctype_file_is_listed | go | internal/app/templates/app/app_test.go.tpl::TestEveryDocTypeFileIsEmbedded
+crates/forgebase/templates/app/tests/app.rs::the_app_fits_together | go | internal/app/templates/app/app_test.go.tpl::TestTheAppFitsTogether
+crates/forgebase/templates/app/tests/app.rs::the_title_is_trimmed_and_may_not_be_blank | go | internal/app/templates/app/app_test.go.tpl::TestTheTitleIsTrimmedAndMayNotBeBlank
+crates/forgebase/templates/app/tests/app.rs::a_user_can_create_and_read_a_note | go | internal/app/templates/app/app_test.go.tpl::TestAUserCanCreateAndReadANote
+
+# A test of a test helper that the Go tests do not have.
+crates/forgebase/tests/common/mod.rs::the_independent_hmac_matches_a_known_vector | not ported | It checks the hand-written HMAC-SHA256 of the Rust test helper expected_signature against RFC 4231 test case 2. The Go tests have no such helper: the signature is crypto/hmac from the standard library, and TestTheSignatureHasTheDocumentedForm pins one value computed independently with Python.

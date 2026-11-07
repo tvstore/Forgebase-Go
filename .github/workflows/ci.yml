@@ -88,6 +88,8 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 .github/ci/linkcheck.py
+      - name: Test the test-mapping generator of the parity report
+        run: python3 .github/ci/test_test_mapping.py
 
   check:
     needs: changes
