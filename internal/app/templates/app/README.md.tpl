@@ -1,6 +1,6 @@
 # {{name}}
 
-A [Forgebase](https://github.com/tvstore/forgebase-go) app: the package (`{{name}}.go`, the function `App()`) and a binary that runs it (`cmd/{{name}}`). Agents and contributors: read [AGENTS.md](AGENTS.md).
+A [Forgebase](https://github.com/tvstore/forgebase-go) app: the package (`app.go`, the function `App()`) and a binary that runs it (`cmd/{{name}}`). Agents and contributors: read [AGENTS.md](AGENTS.md).
 
 ## Build, test, run
 
@@ -25,11 +25,11 @@ FORGEBASE_DEV_INSECURE_COOKIES=1 ./{{name}} serve          # http://127.0.0.1:80
 
 | Path | Purpose |
 |---|---|
-| `{{name}}.go` | `App()`: the app's name, version, DocTypes, hooks and migrations |
+| `app.go` | `App()`: the app's name, version, DocTypes, hooks and migrations |
 | `cmd/{{name}}/main.go` | The binary: the list of apps, in dependency order |
 | `doctypes/` | One TOML file per DocType, with its permissions |
 | `migrations/` | SQL data migrations |
-| `{{name}}_test.go` | Tests, using `forgebase/testing` |
+| `app_test.go` | Tests, using `forgebase/testing` |
 
 ## Extend it
 
@@ -40,6 +40,6 @@ FORGEBASE_DEV_INSECURE_COOKIES=1 ./{{name}} serve          # http://127.0.0.1:80
 
 ## Forgebase dependency
 
-`go.mod` points at a local Forgebase checkout (`replace`). To use a released version instead, delete the `replace` line and run `go get github.com/tvstore/forgebase-go@<version>`. The `require` lines and `go.sum` were copied from that checkout when this module was created, so you start with the versions Forgebase was tested with; commit both, and run `go mod tidy` when you want only what the app needs.
+`go.mod` points at a local Forgebase checkout (`replace`). To use a released version instead, delete the `replace` line and run `go get github.com/tvstore/forgebase-go@<version>`. The `require` lines and `go.sum` were copied from that checkout when this module was created, so you start with the versions Forgebase was tested with; commit both. `go mod tidy` is clean as created; run it again after you add imports.
 
 The full guide is `docs/guide/first-app.md` in the Forgebase checkout.

@@ -68,7 +68,31 @@ An application cannot import `internal/core`, so the root package re-exports wha
 
 `Date` and `OffsetDateTime` of Rust are the standard `time.Time` (a Date value is a `time.Time` whose clock part is ignored, `NewDate` builds one), so nothing is re-exported for them. The decimal constructor of a `Value` is `DecimalValue` because `Decimal` is the type. `HookContext.Enqueue` exists now; the job queue it feeds arrives in P5 (the name of a job that no app registered is refused when the job is written, as in Rust).
 
-**The decimal arithmetic is an addition.** Rust apps compute with `rust_decimal`'s operators (the `sales` example multiplies, sums and rounds); the Go `internal/decimal` had none (ADR 0027: "the core does none"). P4 adds `Sign`, `Add`, `Mul` and `Rescale` to it, in `internal/decimal/arith.go`, and they are reachable through the `Decimal` alias. `Add`, `Mul` and `Rescale` return whether the result fits and never round to make it fit, which is stricter than `rust_decimal` (which scales a product down to fit); `Rescale` to fewer digits rounds half away from zero, the rule the example needs. A hook that needs the other behaviour rounds an operand first. This is the one deliberate extension of a Rust-equivalent surface in P4.
+**The decimal arithmetic is an addition.** Rust apps compute with `rust_decimal`'s operators (the `sales` example multiplies, sums and rounds); the Go `internal/decimal` had none (ADR 0027: "the core does none"). P4 adds `Sign`, `Add`, `Mul` and `Rescale` to it, in `internal/decimal/arith.go`, and they are reachable through the `Decimal` alias. `Add`, `Mul` and `Rescale` return whether the result fits and never round to make it fit, which is stricter than `rust_decimal` (which scales a product down to fit); `Rescale` to fewer digits rounds half away from zero, the rule the example needs. A hook that needs the other behaviour rounds an operand first. This is the one deliberate extension of a Rust-equivalent surface in P4. **This amends [ADR 0027](0027-decimal-and-toml.md)**, whose "Known limits" say that the type has no arithmetic; ADR 0027 is not edited, and the index marks it as amended. The other deliberate deviation is that `Add` and `Mul` return not-ok where `rust_decimal` would scale the result down to fit (it rounds a product to fit 96 bits, an overflowing sum of mixed scales likewise); it is listed in the CHANGELOG parity list.
+
+### What is public: the rule for aliased types
+
+A type alias exposes the whole type: **every exported field and method of an aliased internal type is public API**, whether or not this ADR lists it, and an internal-only helper must therefore be a free function of its internal package (as `app.ComposeBinary`, `app.DocTypePaths` and `app.FilePaths` are, for `forgebase/testing`) or unexported, never an exported method. `internal/app` and `internal/core` say so in their package documentation. The exported members of the aliased types today (inspected from their method sets and fields):
+
+| Alias | Exported fields | Exported methods |
+|---|---|---|
+| `App` | none | `DependsOn`, `DocTypes`, `Hooks`, `Migrations`, `Name`, `Version` |
+| `Binary` | none | `App`, `Check`, `Run`, `RunArgs` |
+| `StartupError` | none | `Error`, `Problems` |
+| `DocTypeHooks` (interface) | | `BeforeInsert`, `Validate`, `BeforeDelete`, `BeforeSubmit`, `BeforeCancel`, `BeforeTransition` |
+| `BaseHooks` | none | the same six, doing nothing |
+| `HookContext` | `DocType`, `Actor`, `Operation`, `Transition` | `Enqueue`, `Equal`, `WithJobs`, `WithTransition` |
+| `HookError` | none | `Error`, `Message` |
+| `TransitionInfo` | `Action`, `From`, `To` | none |
+| `EnqueuedJobs` | none | `Take` |
+| `EnqueuedJob` | none | `Name`, `Payload` |
+| `Document` | `Name`, `Values`, `Tables` | none |
+| `Row` (map type) | | none |
+| `Value` | `Kind`, `Text`, `Int`, `Dec`, `Bool`, `Time` | `Equal`, `KindName` |
+| `ValueKind`, `Operation` | | none |
+| `Decimal` | none | `Add`, `Cmp`, `Equal`, `IsNegative`, `IsZero`, `Mantissa` (a `*big.Int`), `MantissaDigits`, `Mul`, `Neg`, `Normalize`, `Rescale`, `Scale`, `Sign`, `String` |
+
+`Value.Dec` has the internal type `decimal.Decimal`, which is the alias `Decimal`. The methods of these types are documented at their definitions: `go doc ./internal/app App.DocTypes` (run inside the module) shows the text that `go doc forgebase.App.DocTypes` cannot, and the package overview of `forgebase` names the methods.
 
 ### The package `forgebase/testing`
 
@@ -134,7 +158,7 @@ Not in this version, with the phase that adds it: `run_jobs`, `JobRun` and `run_
 
 ### `forgebase new-app`
 
-`forgebase new-app NAME --forgebase-path DIR [--dir DIR]` writes a Go module that builds and passes its own tests as created: `go.mod` (module `NAME`; `go` and `toolchain` lines copied from the checkout's `go.mod`; `require github.com/tvstore/forgebase-go v0.0.0` and a `replace` to the absolute checkout path; the checkout's other requirements as `// indirect` lines, and its `go.sum`, so the build uses the versions Forgebase was tested with, the Go counterpart of copying `Cargo.lock`), the app package `NAME` (`NAME.go`, with the sample hook), `doctypes/NAME_note.toml` (byte-identical to the Rust template), `migrations/README.md`, `cmd/NAME/main.go` and its test, `NAME_test.go`, `README.md`, `AGENTS.md` (adapted to Go) and `.gitignore`. The templates are embedded with `//go:embed` and end in `.tpl` so that the Go tool does not compile them. Same placeholders, rendered in one pass; same rules: never overwrite, a failed run removes the directory it created, the same messages. The name rules are those of an app name plus the 54-byte limit; in place of the Rust keywords and reserved crate names a name may not be a Go keyword, a predeclared identifier or a top-level package of the standard library (the generated `main` imports the app package by its name, and an import path such as `fmt` would mean the library). The CI job `app-template` generates `demo` outside the checkout, vets, tests and builds it, migrates, creates a user, serves, logs in and checks that `GET /api/v1/meta/demo_note` says `"app":"demo"`.
+`forgebase new-app NAME --forgebase-path DIR [--dir DIR]` writes a Go module that builds and passes its own tests as created: `go.mod` (module `NAME`; `go` and `toolchain` lines copied from the checkout's `go.mod`; `require github.com/tvstore/forgebase-go v0.0.0` and a `replace` to the absolute checkout path; the checkout's other requirements as `// indirect` lines, and its `go.sum`, so the build uses the versions Forgebase was tested with, the Go counterpart of copying `Cargo.lock`), the app package `NAME` (`app.go`, with the sample hook), `doctypes/NAME_note.toml` (byte-identical to the Rust template), `migrations/README.md`, `cmd/NAME/main.go` and its test, `app_test.go`, `README.md`, `AGENTS.md` (adapted to Go) and `.gitignore`. The templates are embedded with `//go:embed` and end in `.tpl` so that the Go tool does not compile them. Same placeholders, rendered in one pass; same rules: never overwrite, a failed run removes the directory it created, the same messages. The name rules are those of an app name plus the 54-byte limit; in place of the Rust keywords and reserved crate names a name may not be a Go keyword, a predeclared identifier or a top-level package of the standard library (the package clause uses the name, and an import path such as `fmt` would mean the library). Nothing else needs refusing: the generated files import the app package under the alias `apppkg` and the files are named `app.go` and `app_test.go`, so identifiers the templates declare (`t`, `binary`, `doctype`, ...) and file-name suffixes Go interprets (`_test`, `_linux`) cannot clash with the app name; a test generates and vets a module for each such name. The CI job `app-template` generates `demo` outside the checkout, vets, tests and builds it, migrates, creates a user, serves, logs in and checks that `GET /api/v1/meta/demo_note` says `"app":"demo"`.
 
 ### Example apps are modules of their own
 

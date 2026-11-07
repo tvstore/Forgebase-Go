@@ -20,18 +20,18 @@ go build -o bin/forgebase ./cmd/forgebase                     # in the Forgebase
 bin/forgebase new-app crm --forgebase-path . --dir ~/apps
 ```
 
-The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
+The name is the app name and the module name: lowercase letters, digits and underscores, starting with a letter, at most 54 bytes (it is also the prefix of your DocTypes). It is the name of the Go package too, so it may not be a Go keyword, a predeclared identifier or a package of the standard library (`fmt`, `net`, ...). Nothing else is refused: the generated files import the app package under the alias `apppkg` and name their own files `app.go` and `app_test.go`, so a name such as `t`, `binary`, `foo_test` or `x_linux` works (a test generates and vets a module for each of them). The command refuses an existing directory, never overwrites, and needs no database. It creates `~/apps/crm`:
 
 ```
 crm/
   go.mod                  module crm; requires forgebase-go with a replace to the checkout
   go.sum                  copied from the Forgebase checkout
-  crm.go                  func App() *forgebase.App, and the sample hook
+  app.go                  func App() *forgebase.App, and the sample hook
   cmd/crm/main.go         forgebase.New().App(crm.App()).Run()
   cmd/crm/main_test.go    the binary starts and refuses what it should
   doctypes/crm_note.toml  one sample DocType, with permissions for the role "Crm User"
   migrations/README.md    how to add SQL data migrations
-  crm_test.go             guard test, startup check, a hook test, an end-to-end test
+  app_test.go             guard test, startup check, a hook test, an end-to-end test
   README.md  AGENTS.md  .gitignore
 ```
 
@@ -59,7 +59,7 @@ Log in with `POST /api/v1/login` and `{"username": "ann", "password": "..."}`; t
 
 ## 3. DocTypes are embedded
 
-`crm.go` embeds the directory:
+`app.go` embeds the directory:
 
 ```go
 //go:embed doctypes/*.toml
@@ -140,7 +140,7 @@ write = true
 create = true
 ```
 
-`tasks.go` (replaces the sample, including its `NoteRules` hook):
+`app.go` (replaces the sample, including its `NoteRules` hook):
 
 ```go
 package tasks
@@ -196,7 +196,7 @@ func main() {
 }
 ```
 
-`tasks_test.go` (replaces the sample tests, which test the sample DocType and hook that are gone). It builds the same binary as `main.go`, checks the hook without a database, and runs both apps end to end with a user that has both roles:
+`app_test.go` (replaces the sample tests, which test the sample DocType and hook that are gone). It builds the same binary as `main.go`, checks the hook without a database, and runs both apps end to end with a user that has both roles:
 
 ```go
 package tasks_test
@@ -436,7 +436,7 @@ Apps import the root package `github.com/tvstore/forgebase-go` and, in their tes
 
 The generated `go.mod` points at your checkout: `require github.com/tvstore/forgebase-go v0.0.0` and `replace github.com/tvstore/forgebase-go => <checkout>`. A relative `--forgebase-path` is written as an absolute path, because it is relative to where you ran the command, not to the new module. To depend on a released version instead, delete the `replace` line and run `go get github.com/tvstore/forgebase-go@<version>`.
 
-`new-app` copies the `go` and `toolchain` lines of the checkout's `go.mod`, its requirements (as `// indirect` lines) and its `go.sum` into the app, so your first build uses the dependency versions Forgebase is tested and license-checked with, not whatever is newest. `go mod tidy` leaves only what the app needs; commit `go.mod` and `go.sum`. Updating dependencies later is your decision (`go get -u`). The toolchain is the one the checkout pins; Go downloads it itself when your installed `go` is older (`GOTOOLCHAIN`, see <https://go.dev/doc/toolchain>).
+`new-app` copies the `go` and `toolchain` lines of the checkout's `go.mod`, its requirements (as `// indirect` lines) and its `go.sum` into the app, so your first build uses the dependency versions Forgebase is tested and license-checked with, not whatever is newest. `go mod tidy` is clean as created, and keeps it so as you add imports; commit `go.mod` and `go.sum`. Updating dependencies later is your decision (`go get -u`). The toolchain is the one the checkout pins; Go downloads it itself when your installed `go` is older (`GOTOOLCHAIN`, see <https://go.dev/doc/toolchain>).
 
 ## Common errors
 

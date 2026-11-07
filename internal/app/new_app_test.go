@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -98,8 +99,8 @@ func TestNewAppWritesTheModuleWithEveryPlaceholderReplaced(t *testing.T) {
 		t.Errorf("%q", r.stdout)
 	}
 	expectContains(t, r.stdout, "cd ./my_app", "go test ./...")
-	want := []string{".gitignore", "AGENTS.md", "README.md", "cmd/my_app/main.go", "cmd/my_app/main_test.go",
-		"doctypes/my_app_note.toml", "go.mod", "go.sum", "migrations/README.md", "my_app.go", "my_app_test.go"}
+	want := []string{".gitignore", "AGENTS.md", "README.md", "app.go", "app_test.go", "cmd/my_app/main.go", "cmd/my_app/main_test.go",
+		"doctypes/my_app_note.toml", "go.mod", "go.sum", "migrations/README.md"}
 	if got := filesOf(t, created); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("files %v, want %v", got, want)
 	}
@@ -123,9 +124,9 @@ func TestNewAppWritesTheModuleWithEveryPlaceholderReplaced(t *testing.T) {
 	if strings.Contains(goMod, "ignore") {
 		t.Errorf("the ignore directive of the checkout must not be copied:\n%s", goMod)
 	}
-	lib := read(t, filepath.Join(created, "my_app.go"))
+	lib := read(t, filepath.Join(created, "app.go"))
 	expectContains(t, lib, `forgebase.NewApp("my_app")`, "package my_app", `Hooks("my_app_note", NoteRules{})`, "//go:embed doctypes/*.toml")
-	expectContains(t, read(t, filepath.Join(created, "cmd/my_app/main.go")), `"my_app"`, "my_app.App()")
+	expectContains(t, read(t, filepath.Join(created, "cmd/my_app/main.go")), `apppkg "my_app"`, "apppkg.App()")
 	// The go.sum of the checkout is copied as it is.
 	if got := read(t, filepath.Join(created, "go.sum")); got != fakeGoSum {
 		t.Errorf("go.sum %q", got)
@@ -146,7 +147,7 @@ func TestNewAppSampleDocTypeIsValidAndOpenToTheSampleRole(t *testing.T) {
 	if doctype.Name != "my_app_note" || len(doctype.Permissions) != 1 || doctype.Permissions[0].Role != "My App User" {
 		t.Errorf("%+v", doctype)
 	}
-	if !strings.Contains(read(t, filepath.Join(s.root, "my_app/my_app_test.go")), `"My App User"`) {
+	if !strings.Contains(read(t, filepath.Join(s.root, "my_app/app_test.go")), `"My App User"`) {
 		t.Error("the test uses the same role")
 	}
 }
@@ -423,5 +424,28 @@ func TestParseGoMod(t *testing.T) {
 	}
 	if only := parseGoMod("module x\n\ngo 1.26.0\n"); only.directives() != "go 1.26.0" || only.requireLines() != "" {
 		t.Errorf("%+v", only)
+	}
+}
+
+// Not in Rust: every name that is accepted must give a module that compiles. The names are the ones that the
+// templates' own identifiers could clash with if the app package were imported under its name (t,
+// binary, doctype, ...), and names that Go gives a meaning to in file names (_test, _linux, _windows_amd64).
+// The template imports the app package as apppkg, so none of them may break; apppkg itself is one.
+func TestEveryAcceptedNameGeneratesAModuleThatVets(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	names := []string{"t", "binary", "doctype", "apps", "apppkg", "rules", "ctx", "doc", "ann", "testdb", "doctypes", "app", "foo_test", "x_linux", "x_windows_amd64", "title", "forgebase_x", "migrations", "db"}
+	for _, name := range names {
+		if r := runCLI(map[string]string{}, "", "new-app", name, "--forgebase-path", root, "--dir", dir); r.code != 0 {
+			t.Fatalf("%s: %+v", name, r)
+		}
+		cmd := exec.Command("go", "vet", "./...")
+		cmd.Dir = filepath.Join(dir, name)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("go vet of the module generated for %q: %v\n%s", name, err, out)
+		}
 	}
 }

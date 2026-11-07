@@ -121,10 +121,13 @@ func (d *DB) drop() {
 	defer cancel()
 	conn, err := pgx.Connect(ctx, d.adminURL)
 	if err != nil {
+		d.t.Logf("cannot drop the test database %s: %v", d.name, err)
 		return
 	}
 	defer func() { _ = conn.Close(ctx) }()
-	_, _ = conn.Exec(ctx, "DROP DATABASE IF EXISTS "+db.QuoteIdent(d.name)+" WITH (FORCE)")
+	if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+db.QuoteIdent(d.name)+" WITH (FORCE)"); err != nil {
+		d.t.Logf("cannot drop the test database %s: %v", d.name, err)
+	}
 }
 
 // URL is the URL of this database, for code that connects on its own.
@@ -434,8 +437,21 @@ func (c *Client) send(method, target, contentType string, body []byte, s *sessio
 //		fbtest.AssertDocTypesListed(t, sales.App(), "doctypes")
 //	}
 //
-// The same file rules as the app's DocTypes method apply: *.toml files at any depth, names that start
-// with a dot ignored.
+// The same file rules as the app's DocTypes method apply: the directory is read **recursively** (every
+// *.toml at any depth, names that start with a dot ignored). This differs from the Rust guard, which compared
+// only the files directly in the directory.
+//
+// dir must be the embed path of the files: the comparison is of dir + "/" + the file's path under dir with the
+// paths the app's DocTypes saw. So an app that passes the embed.FS itself works with dir "doctypes", and an app
+// that passes a sub-tree, DocTypes(fs.Sub(files, "doctypes")), has embedded paths without the prefix
+// ("customer.toml") and can only be checked with dir "." from a test whose working directory is the
+// doctypes directory. Prefer passing the embed.FS itself:
+//
+//	//go:embed doctypes/*.toml
+//	var files embed.FS
+//
+//	forgebase.NewApp("sales").DocTypes(files)                        // fbtest.AssertDocTypesListed(t, app, "doctypes")
+//	forgebase.NewApp("sales").DocTypes(fs.Sub(files, "doctypes"))    // only: AssertDocTypesListed(t, app, ".") inside doctypes/
 func AssertDocTypesListed(t stdtesting.TB, a *forgebase.App, dir string) {
 	t.Helper()
 	clean := path.Clean(filepath.ToSlash(dir))

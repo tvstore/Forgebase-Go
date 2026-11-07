@@ -28,8 +28,8 @@ var newAppFiles = [][2]string{
 	{".gitignore", "gitignore.tpl"},
 	{"README.md", "README.md.tpl"},
 	{"AGENTS.md", "AGENTS.md.tpl"},
-	{"{{name}}.go", "app.go.tpl"},
-	{"{{name}}_test.go", "app_test.go.tpl"},
+	{"app.go", "app.go.tpl"},
+	{"app_test.go", "app_test.go.tpl"},
 	{"cmd/{{name}}/main.go", "main.go.tpl"},
 	{"cmd/{{name}}/main_test.go", "main_test.go.tpl"},
 	{"doctypes/{{name}}_note.toml", "note.toml.tpl"},
@@ -41,10 +41,14 @@ var newAppFiles = [][2]string{
 // imports the app package by its name.
 var notAPackageName = map[string]bool{}
 
+// goKeywords are the keywords of Go: the one list the name rule and the error message use.
+var goKeywords = map[string]bool{}
+
 func init() {
 	for _, name := range strings.Fields(`
 		break default func interface select case defer go map struct chan else goto package switch const
 		fallthrough if range type continue for import return var`) {
+		goKeywords[name] = true
 		notAPackageName[name] = true
 	}
 	for _, name := range strings.Fields(`
@@ -53,8 +57,9 @@ func init() {
 		delete imag len make max min new panic print println real recover`) {
 		notAPackageName[name] = true
 	}
-	// The roots of the standard library's import paths (go list std), and the names the generated files
-	// use for imports.
+	// The roots of the standard library's import paths (go list std), and the names the generated files use
+	// for imports. Nothing else the templates declare can clash: the app package is imported under the alias
+	// apppkg, and every other identifier is local to a function or private to the package under test.
 	for _, name := range strings.Fields(`
 		archive bufio bytes cmp compress container context crypto database debug embed encoding errors expvar
 		flag fmt hash html image index io iter log maps math mime net os path plugin reflect regexp runtime
@@ -76,7 +81,7 @@ func newApp(name, forgebasePath, dir string) (string, error) {
 			rustQuote(name), len(name), maxAppNameLen, name))
 	}
 	switch {
-	case isGoKeyword(name):
+	case goKeywords[name]:
 		problems = append(problems, fmt.Sprintf("app name `%s` is a Go keyword and cannot be the name of a package here", name))
 	case notAPackageName[name]:
 		problems = append(problems, fmt.Sprintf("app name `%s` cannot be used as a package name here", name))
@@ -130,16 +135,6 @@ func newApp(name, forgebasePath, dir string) (string, error) {
 		return "", err
 	}
 	return target, nil
-}
-
-func isGoKeyword(name string) bool {
-	switch name {
-	case "break", "default", "func", "interface", "select", "case", "defer", "go", "map", "struct", "chan",
-		"else", "goto", "package", "switch", "const", "fallthrough", "if", "range", "type", "continue", "for",
-		"import", "return", "var":
-		return true
-	}
-	return false
 }
 
 // generate creates target and writes files (and the go.sum of the checkout) into it. From the moment the

@@ -4,11 +4,11 @@ Instructions for every agent and human who changes this app. `{{name}}` is a [Fo
 
 ## Where things live
 
-- `{{name}}.go`: `App()` returns the `*forgebase.App` (name, version, DocTypes, hooks, migrations). All wiring is here.
+- `app.go`: `App()` returns the `*forgebase.App` (name, version, DocTypes, hooks, migrations). All wiring is here.
 - `cmd/{{name}}/main.go`: the binary, `forgebase.New().App(..).Run()`; apps in dependency order.
 - `doctypes/*.toml`: one DocType per file, with its `[[permissions]]`.
-- `migrations/*.sql`: data migrations, named `NNNN_what.sql` and embedded in `{{name}}.go`.
-- `{{name}}_test.go`: the tests. Format of the DocType files: `docs/blueprint/architecture.md` in the Forgebase checkout (the path is in `go.mod`); the guide is `docs/guide/first-app.md` there.
+- `migrations/*.sql`: data migrations, named `NNNN_what.sql` and embedded in `app.go`.
+- `app_test.go`: the tests. Format of the DocType files: `docs/blueprint/architecture.md` in the Forgebase checkout (the path is in `go.mod`); the guide is `docs/guide/first-app.md` there.
 
 ## Rules
 
