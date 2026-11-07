@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -227,10 +226,11 @@ type rawConfig struct {
 // match keys without regard to case and accept unknown ones (the same choice as internal/core/load.go).
 func decodeConfig(text string) (*rawConfig, error) {
 	var root map[string]any
-	if _, err := toml.Decode(text, &root); err != nil {
+	md, err := toml.Decode(text, &root)
+	if err != nil {
 		return nil, err
 	}
-	if err := unknownKeys(root, "sites"); err != nil {
+	if err := firstUnknownKey(md); err != nil {
 		return nil, err
 	}
 	raw := &rawConfig{}
@@ -265,9 +265,6 @@ func decodeConfig(text string) (*rawConfig, error) {
 
 func decodeSite(table map[string]any) (rawSite, error) {
 	var site rawSite
-	if err := unknownKeys(table, "name", "hosts", "database_url_env", "pool_size", "apps"); err != nil {
-		return site, err
-	}
 	var err error
 	if v, ok := table["name"]; ok {
 		if site.name, err = asString(v); err != nil {
@@ -300,31 +297,39 @@ func decodeSite(table map[string]any) (rawSite, error) {
 	return site, nil
 }
 
-// unknownKeys is serde's deny_unknown_fields: the first key (in sorted order) that is not allowed.
-func unknownKeys(table map[string]any, allowed ...string) error {
-	var unknown []string
-	for key := range table {
-		found := false
-		for _, a := range allowed {
-			found = found || a == key
+var (
+	topKeys  = []string{"sites"}
+	siteKeys = []string{"name", "hosts", "database_url_env", "pool_size", "apps"}
+)
+
+// firstUnknownKey is serde's deny_unknown_fields: the first key, in the order of the document, that the
+// top level or a [[sites]] table does not allow. (BurntSushi's MetaData lists the keys in document
+// order; a map would lose it.)
+func firstUnknownKey(md toml.MetaData) error {
+	for _, key := range md.Keys() {
+		var allowed []string
+		switch {
+		case len(key) == 1:
+			allowed = topKeys
+		case len(key) == 2 && key[0] == "sites":
+			allowed = siteKeys
+		default:
+			continue
 		}
-		if !found {
-			unknown = append(unknown, key)
+		if containsString(allowed, key[len(key)-1]) {
+			continue
 		}
+		quoted := make([]string, len(allowed))
+		for i, a := range allowed {
+			quoted[i] = "`" + a + "`"
+		}
+		expected := "expected one of " + strings.Join(quoted, ", ")
+		if len(allowed) == 1 {
+			expected = "expected " + quoted[0]
+		}
+		return fmt.Errorf("unknown field `%s`, %s", key[len(key)-1], expected)
 	}
-	if len(unknown) == 0 {
-		return nil
-	}
-	sort.Strings(unknown)
-	quoted := make([]string, len(allowed))
-	for i, a := range allowed {
-		quoted[i] = "`" + a + "`"
-	}
-	expected := "expected one of " + strings.Join(quoted, ", ")
-	if len(allowed) == 1 {
-		expected = "expected " + quoted[0]
-	}
-	return fmt.Errorf("unknown field `%s`, %s", unknown[0], expected)
+	return nil
 }
 
 func asString(v any) (string, error) {
@@ -394,7 +399,7 @@ func validateConfig(raw *rawConfig, binaryApps []binaryApp) ([]*site, []string) 
 		}
 		var hosts []string
 		for _, host := range r.hosts {
-			host = strings.ToLower(host)
+			host = asciiLower(host)
 			if problem := hostProblem(host); problem != "" {
 				problems = append(problems, fmt.Sprintf("%s: host %s %s", label, rustQuote(host), problem))
 			} else if other := siteWithHost(sites, host); other != nil {
@@ -451,6 +456,18 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// asciiLower lower-cases the ASCII letters only, like Rust's to_ascii_lowercase (strings.ToLower would
+// also change other letters, so a host that Rust refuses would pass here).
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // rustQuote is a string as Rust's {:?} writes it, for the host names the messages repeat.

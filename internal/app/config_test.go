@@ -388,3 +388,26 @@ func TestLoadConfigReadsTheOptionBeforeTheEnvironment(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// serde reports the first unknown key in the order of the document (not the first in sorted order).
+func TestTheFirstUnknownKeyInDocumentOrderIsReported(t *testing.T) {
+	if m := problems(t, "zeta = 1\nalpha = 2\n"); !strings.Contains(m, "unknown field `zeta`, expected `sites`") {
+		t.Error(m)
+	}
+	site := "[[sites]]\nname = \"a\"\nzulu = 1\nhosts = [\"a.test\"]\nbravo = 2\ndatabase_url_env = \"A\"\n"
+	if m := problems(t, site); !strings.Contains(m, "unknown field `zulu`, expected one of `name`, `hosts`, `database_url_env`, `pool_size`, `apps`") {
+		t.Error(m)
+	}
+	// An unknown key before the sites is found first, one in a later table last.
+	later := "[[sites]]\nname = \"a\"\n[[sites]]\nname = \"b\"\nbogus = 1\n"
+	if m := problems(t, later); !strings.Contains(m, "unknown field `bogus`") {
+		t.Error(m)
+	}
+}
+
+// Rust lower-cases the ASCII letters of a host only (to_ascii_lowercase).
+func TestHostsAreLoweredInASCIIOnly(t *testing.T) {
+	if got := asciiLower("ABC.Ünï-É.TEST"); got != "abc.Ünï-É.test" {
+		t.Fatalf("%q", got)
+	}
+}
