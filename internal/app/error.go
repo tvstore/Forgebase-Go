@@ -79,6 +79,9 @@ func describeDB(e *db.Error) string {
 			lines[i] = c.String()
 		}
 		return fmt.Sprintf("schema sync refused, %d conflict(s); nothing was changed:\n%s", len(lines), bullets(lines))
+	case db.ErrReportCheck:
+		return fmt.Sprintf("the migrations were applied, but %d report(s) do not fit their SQL:\n%s\nfix the report and run migrate again",
+			len(e.Details), bullets(e.Details))
 	}
 	return e.Error()
 }

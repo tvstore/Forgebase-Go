@@ -21,7 +21,7 @@ import (
 // against a real PostgreSQL. Ported from crates/forgebase/tests/app_binary.rs (the parts that need only the
 // app model: migrate and its dry run, fb_app, hooks of an extending app for the doc commands, the
 // --doctypes directory as the app local, a startup error for every command) and, since P5, the job commands
-// and the worker. Deferred: the reports (P6) and the fixtures (P7) of that file.
+// and the worker, and, since P6, the check of the reports at migrate. Deferred: the fixtures (P7) of that file.
 //
 // The test binary runs itself again as the application binary (selected by the environment variable
 // FORGEBASE_TEST_BINARY) for every command: TestMain below.
@@ -74,8 +74,25 @@ func binarySales() *forgebase.App {
 	return forgebase.NewApp("sales").DependsOn("crm").Hooks("customer", noBanned{})
 }
 
+// binaryCRMWithReport is crm with a report on its customers. The bad one declares one column where the SQL
+// returns two.
+func binaryCRMWithReport(valid bool) *forgebase.App {
+	report := forgebase.NewReport("SELECT name, title FROM doc_customer WHERE ($1::text IS NULL OR name = $1);\n").
+		Roles("Manager").
+		Param(forgebase.LinkParam("customer", "customer")).
+		Column(forgebase.LinkColumn("customer", "customer"))
+	if valid {
+		report.Column(forgebase.DataColumn("title"))
+	}
+	return binaryCRM().Report("totals", report)
+}
+
 func TestMain(m *testing.M) {
 	switch os.Getenv(binaryVar) {
+	case "reports_ok":
+		os.Exit(forgebase.New().App(binaryCRMWithReport(true)).Run())
+	case "reports_bad":
+		os.Exit(forgebase.New().App(binaryCRMWithReport(false)).Run())
 	case "good":
 		os.Exit(forgebase.New().App(binaryCRM()).App(binarySales()).Run())
 	case "sites": // two apps for the sites of site_workers_test.go
@@ -317,4 +334,42 @@ func TestTheJobCommandsAndTheWorkerOfABinaryWithApps(t *testing.T) {
 	if code := good.run("", "job", "retry", second).code; code != 1 {
 		t.Errorf("exit code %d", code)
 	}
+}
+
+// Rust: app_binary.rs::reports: the check of the reports' SQL at migrate (M8.4), after the migrations, never in a
+// dry run; a mismatch is exit code 1 with the migrations kept.
+func TestTheReportCheckAtMigrate(t *testing.T) {
+	db := fbtest.NewDB(t)
+	ok := binaryRun{t: t, mode: "reports_ok", url: db.URL()}
+	// A dry run keeps nothing, so the tables the SQL reads may not exist: it checks nothing.
+	if out := ok.succeeds("", "migrate", "--dry-run"); strings.Contains(out, "reports:") {
+		t.Errorf("%s", out)
+	}
+	if out := ok.succeeds("", "migrate"); !strings.HasSuffix(out, "reports: 1 checked\n") {
+		t.Errorf("%s", out)
+	}
+
+	db = fbtest.NewDB(t)
+	bad := binaryRun{t: t, mode: "reports_bad", url: db.URL()}
+	out := bad.run("", "migrate")
+	if out.code != 1 {
+		t.Fatalf("exit code %d", out.code)
+	}
+	// What was applied is reported, and it stays applied.
+	contains(t, out.stdout, "framework migrations: 13 applied", "app migrations: 1 applied\n  crm 0001 seed\n")
+	if !strings.HasPrefix(out.stderr, "error: the migrations were applied, but 1 report(s) do not fit their SQL:\n") {
+		t.Errorf("%s", out.stderr)
+	}
+	contains(t, out.stderr, "report `crm.totals`: the SQL returns 2 column(s) but 1 are declared", "fix the report and run migrate again")
+	if strings.Contains(out.stderr, "doc_customer") {
+		t.Errorf("the SQL is printed: %s", out.stderr)
+	}
+	if got := db.Rows("SELECT name FROM fb_app"); len(got) != 1 || got[0][0] != "crm" {
+		t.Errorf("%v", got)
+	}
+	again := bad.run("", "migrate")
+	if again.code != 1 {
+		t.Fatalf("exit code %d", again.code)
+	}
+	contains(t, again.stdout, "app migrations: up to date")
 }

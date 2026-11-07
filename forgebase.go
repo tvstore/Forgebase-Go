@@ -83,11 +83,18 @@
 // `forgebase worker` runs the jobs: at least once, in one transaction together with the completion,
 // retried with a growing delay and dead after the attempts. See [JobHandler] for the rules of delivery.
 //
+// # Query reports
+//
+// An app defines a report with [App.Report]: SQL compiled into the binary (an embedded file), the roles
+// that may run it, typed [Param]s and typed [Column]s. It runs read-only with a timeout and a row limit
+// through GET /api/v1/report and POST /api/v1/report/{app}.{name}; `forgebase migrate` prepares every report
+// and refuses one that does not fit its declaration. See [Report] and ADR 0016.
+//
 // # The binary
 //
 // `forgebase [OPTIONS] COMMAND`: migrate (framework migrations, DocType schema sync and app
 // migrations and the sync of the schedules), doc (insert, get, list, update, delete, submit, cancel,
-// amend), user, token, job (list, show, retry, enqueue), worker (runs the background jobs and the
+// amend, and with a workflow transition), user, token, job (list, show, retry, enqueue), worker (runs the background jobs and the
 // scheduler), serve (the HTTP API; no migrations) and new-app (writes a new app module that builds and passes its tests; needs
 // no database, see docs/guide/first-app.md). Configuration comes from FORGEBASE_DATABASE_URL (the
 // database of the one implicit site `default`), and for serve from FORGEBASE_LISTEN,
@@ -186,7 +193,7 @@ func WeeklyOn(weekday time.Weekday, hour, minute int) Schedule {
 }
 
 // Documents are the documents a job can reach, as the trusted system context: Get, List, Insert, Update, Delete,
-// Submit, Cancel and Amend. Get it from JobContext.Documents.
+// Submit, Cancel, Transition and Amend. Get it from JobContext.Documents.
 type Documents = app.Documents
 
 // StoredDocument is a document as a job reads it: its name, version, docstatus and the [Document] with the
@@ -216,6 +223,72 @@ const (
 	FilterGe   = app.FilterGe
 	FilterLike = app.FilterLike
 )
+
+// ---- query reports ----------------------------------------------------------------------------
+
+// Report is an app-defined SQL report, for [App.Report]: the SQL, the roles that may run it, typed parameters
+// and typed result columns. Build one with [NewReport]; the methods are Label, Roles, Param, Column, Timeout
+// and MaxRows, and each returns the Report so that calls chain. The godoc of the type has the rules of the
+// SQL.
+type Report = app.Report
+
+// NewReport is a report that runs this SQL, usually an embedded file:
+//
+//	//go:embed reports/sales_by_customer.sql
+//	var salesByCustomerSQL string
+//
+//	forgebase.NewReport(salesByCustomerSQL).Label("Sales by customer").Roles("Sales Manager")
+func NewReport(sql string) *Report { return app.NewReport(sql) }
+
+// Param is a parameter of a [Report]; Label, Required and DefaultValue refine it. The order of
+// Report.Param calls is the order of $1..$n in the SQL.
+type Param = app.Param
+
+// DataParam is a text parameter of at most 140 characters.
+func DataParam(name string) *Param { return app.DataParam(name) }
+
+// IntParam is a 64-bit integer parameter.
+func IntParam(name string) *Param { return app.IntParam(name) }
+
+// DecimalParam is a fixed-point parameter, a string in the API ("12.50").
+func DecimalParam(name string) *Param { return app.DecimalParam(name) }
+
+// DateParam is a calendar date parameter, YYYY-MM-DD in the API.
+func DateParam(name string) *Param { return app.DateParam(name) }
+
+// CheckParam is a boolean parameter.
+func CheckParam(name string) *Param { return app.CheckParam(name) }
+
+// LinkParam is the name of a document of doctype; it is only bound, not checked for existence.
+func LinkParam(name, doctype string) *Param { return app.LinkParam(name, doctype) }
+
+// SelectParam is one of options.
+func SelectParam(name string, options ...string) *Param { return app.SelectParam(name, options...) }
+
+// Column is a result column of a [Report]; Label refines it. The columns are positional: the statement
+// returns them in the order of the Report.Column calls.
+type Column = app.Column
+
+// DataColumn is a text column (text or varchar).
+func DataColumn(name string) *Column { return app.DataColumn(name) }
+
+// IntColumn is an integer column (int2, int4 or int8).
+func IntColumn(name string) *Column { return app.IntColumn(name) }
+
+// DecimalColumn is a fixed-point column (numeric), a string in the API.
+func DecimalColumn(name string) *Column { return app.DecimalColumn(name) }
+
+// DateColumn is a date column (date).
+func DateColumn(name string) *Column { return app.DateColumn(name) }
+
+// DatetimeColumn is a point-in-time column (timestamptz), RFC 3339 in UTC in the API.
+func DatetimeColumn(name string) *Column { return app.DatetimeColumn(name) }
+
+// CheckColumn is a boolean column (bool).
+func CheckColumn(name string) *Column { return app.CheckColumn(name) }
+
+// LinkColumn is the name of a document of doctype (text or varchar); the desk shows it as a link.
+func LinkColumn(name, doctype string) *Column { return app.LinkColumn(name, doctype) }
 
 // ---- what a hook implements, receives and changes ---------------------------------------------
 

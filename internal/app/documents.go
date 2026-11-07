@@ -270,6 +270,14 @@ func (d *Documents) Cancel(ctx context.Context, doctype, name string, version in
 	return d.result(stored, err)
 }
 
+// Transition takes the workflow transition action of a document of a DocType with a workflow and returns the
+// document as stored. The document must be at version. As everywhere in a job, the roles of the transition
+// and the rights are not checked (the system context), but the BeforeTransition hooks and the validation run.
+func (d *Documents) Transition(ctx context.Context, doctype, name, action string, version int64) (*StoredDocument, error) {
+	stored, err := db.Transition(ctx, d.tx, d.registry, doctype, name, action, version, d.caller)
+	return d.result(stored, err)
+}
+
 // Amend amends a cancelled document: a new draft with a copy of its values, which is returned.
 func (d *Documents) Amend(ctx context.Context, doctype, name string, version int64) (*StoredDocument, error) {
 	stored, err := db.Amend(ctx, d.tx, d.registry, doctype, name, version, d.caller)

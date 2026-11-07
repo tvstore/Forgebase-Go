@@ -35,6 +35,8 @@
 // [RunJobs] runs the background jobs that are due, with the worker's own code, and [RunSchedulesAt]
 // enqueues the scheduled jobs that are due at a given time.
 //
-// Not in this version (later phases): checking report SQL (P6), custom fields and metadata reload, and
-// webhook settings (P7).
+// [CheckReports] prepares the SQL of the reports of an app against the database and says what does not fit
+// what the report declares.
+//
+// Not in this version (later phases): custom fields and metadata reload, and webhook settings (P7).
 package testing

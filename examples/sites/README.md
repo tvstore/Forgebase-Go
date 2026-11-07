@@ -3,11 +3,11 @@
 Two sites on one server and a backup restored into a new database ([ADR 0014](../../docs/adr/0014-multi-site-database-per-site.md), M7.3). It uses the composed binary of [`sales_extension`](../sales_extension/README.md).
 
 - [`forgebase.toml`](forgebase.toml): the site `shop` (the `sales` app only), the site `field` (every app) and `restore_check` (the target of the restore).
-- [`ci.sh`](ci.sh): creates the sites, serves them, checks that each answers for its own host with its own users and apps (and that an unknown host is 404), then backs up `shop`, restores it into `restore_check` and compares the documents (and the login).
+- [`ci.sh`](ci.sh): creates the sites, serves them, checks that each answers for its own host with its own users and apps (and that an unknown host is 404), then backs up `shop`, restores it into `restore_check` and compares the documents (and the login). The script then proves, on `shop`, the approval workflow and a shared saved view over HTTP (M8.5): a Sales User sends an order for approval (a plain submit is refused with 409 `workflow_required`, a Reject is 403), an Administrator saves the view "Pending approval" for everyone, the Sales User sees it and can run its filter but cannot delete it.
 
 The `sites` job of CI runs the script.
 
-**Not in the Go port yet.** The script of the Rust implementation also proves the approval workflow and a shared saved view (P6), the fixture of the sales app, a webhook delivered to a test receiver (`receiver.py`), a site custom field and user permissions (P7). Each part is added here, with `receiver.py`, by the phase that ports what it uses; the header of `ci.sh` lists them.
+**Not in the Go port yet.** The script of the Rust implementation also proves the fixture of the sales app, a webhook delivered to a test receiver (`receiver.py`), a site custom field and user permissions (P7). Each part is added here, with `receiver.py`, by the phase that ports what it uses; the header of `ci.sh` lists them.
 
 ## Run it locally
 

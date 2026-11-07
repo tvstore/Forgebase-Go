@@ -16,13 +16,9 @@ import (
 // field does not exist at all), that hidden data survives an update by a lower-level user, hooks,
 // if_owner and the leak review. Ported from crates/forgebase-db/tests/field_levels.rs.
 //
-// Deferred, with the phase that has what they need: summary (P6), export (P7) and the saved views (P6;
-// the group-by and aggregate parts of
-// hidden_fields_are_unknown_to_filters_sort_summary_and_export_with_identical_errors, the tests
-// export_leaves_out_hidden_fields_and_refuses_them_as_unknown and
-// a_saved_view_on_a_hidden_field_is_unknown_and_hidden_from_the_list) and the transition (P6, test
-// a_transition_returns_a_redacted_document_and_takes_no_field_input). The calls to list are ported
-// (P3); each test that mixes the deferred calls with the others says so.
+// Deferred, with the phase that has what they need: export (P7; the test
+// export_leaves_out_hidden_fields_and_refuses_them_as_unknown). The summary, the saved views and the
+// transition are ported (P6).
 
 // flAccount is the account: credit_limit (level 1), vault_code (level 2, no rule names it), a table
 // ledger at level 1, a unique internal_ref and a Link partner at level 1. Without withLevels it
@@ -179,8 +175,7 @@ read = true
 write = true
 `
 
-// flTicket is a workflow DocType with a note at level 1 (its transition test is P6; it is in the
-// registry so that the sync is the Rust one).
+// flTicket is a workflow DocType with a note at level 1.
 const flTicket = `
 name = "ticket"
 label = "Ticket"
@@ -614,9 +609,9 @@ func TestHooksSeeTheWholeDocumentDuringAnUpdateByAUser(t *testing.T) {
 
 // Rust: field_levels.rs::hidden_fields_are_unknown_to_filters_sort_summary_and_export_with_identical_errors
 //
-// The filter and the sort of a list, and the administrator's filter; the group-by and the aggregate of
-// a summary (P6) and the export (P7) are not ported yet.
-func TestHiddenFieldsAreUnknownToFiltersAndSortsWithIdenticalErrors(t *testing.T) {
+// The filter and the sort of a list, the group-by and the aggregate of a summary, and the administrator's
+// filter; the export (P7) is not ported yet.
+func TestHiddenFieldsAreUnknownToFiltersSortsAndSummariesWithIdenticalErrors(t *testing.T) {
 	env := newFlEnv(t)
 	env.fullAccount()
 	u := user("u", "User")
@@ -641,11 +636,114 @@ func TestHiddenFieldsAreUnknownToFiltersAndSortsWithIdenticalErrors(t *testing.T
 		if missing = message(t, rows, err); hidden != missing {
 			t.Errorf("sort %s: %q and %q", field, hidden, missing)
 		}
+		// Group by.
+		group := db.SummaryQuery{GroupBy: field}
+		sum, err := db.Summary(bg, env.d.Pool, env.reg, "account", u, group)
+		hidden = message(t, sum, err)
+		sum, err = db.Summary(bg, env.d.Pool, env.plain, "account", u, group)
+		if missing = message(t, sum, err); hidden != missing {
+			t.Errorf("group_by %s: %q and %q", field, hidden, missing)
+		}
+		// An aggregate.
+		aggregate := db.SummaryQuery{GroupBy: "region", Aggregates: []db.Aggregate{{Fn: db.AggSum, Field: field}}}
+		sum, err = db.Summary(bg, env.d.Pool, env.reg, "account", u, aggregate)
+		hidden = message(t, sum, err)
+		sum, err = db.Summary(bg, env.d.Pool, env.plain, "account", u, aggregate)
+		if missing = message(t, sum, err); hidden != missing {
+			t.Errorf("aggregate %s: %q and %q", field, hidden, missing)
+		}
+	}
+	// A group-by on a visible field and an aggregate on one work as always.
+	ok, err := db.Summary(bg, env.d.Pool, env.reg, "account", u,
+		db.SummaryQuery{GroupBy: "region", Aggregates: []db.Aggregate{{Fn: db.AggSum, Field: "revenue"}}})
+	if err != nil || len(ok.Groups) != 1 {
+		t.Errorf("summary: %v %v", ok, err)
 	}
 	// The Administrator may use them.
 	rows, err := env.list(admin(), flQueryFilter("credit_limit"))
 	if err != nil || len(rows) != 1 {
 		t.Errorf("admin filter: %v %v", rows, err)
+	}
+}
+
+// Rust: field_levels.rs::a_saved_view_on_a_hidden_field_is_unknown_and_hidden_from_the_list
+func TestASavedViewOnAHiddenFieldIsUnknownAndHiddenFromTheList(t *testing.T) {
+	env := newFlEnv(t)
+	u := user("u", "User")
+	definition := func(field string) *db.ViewDefinition {
+		return viewDef(fmt.Sprintf(`{"filters":[{"field":%q,"op":"=","value":1}],"sort":[],"columns":[]}`, field),
+			db.ListQuery{Filters: []db.Filter{f(field, db.Eq(core.Int(1)))}})
+	}
+	regionDefinition := viewDef(`{"filters":[{"field":"region","op":"=","value":"north"}],"sort":[],"columns":[]}`,
+		db.ListQuery{Filters: []db.Filter{f("region", db.Eq(text("north")))}})
+	// A private view needs a stored user.
+	env.d.Exec("INSERT INTO fb_user (id, username, password_hash) VALUES (gen_random_uuid(), 'u', 'x')")
+	create := func(reg *core.Registry, label string, d *db.ViewDefinition, who core.Caller, shared bool) (*db.View, error) {
+		return db.CreateView(bg, env.d.Pool, reg, "account", who, label, d, shared)
+	}
+	v, err := create(env.reg, "by limit", definition("credit_limit"), u, false)
+	hidden := message(t, v, err)
+	v, err = create(env.plain, "by limit", definition("credit_limit"), u, false)
+	missing := message(t, v, err)
+	if hidden != missing || !strings.Contains(hidden, "unknown field") {
+		t.Errorf("%q and %q", hidden, missing)
+	}
+	// A column on a hidden field is unknown too.
+	columns := viewDef(`{"filters":[],"sort":[],"columns":["credit_limit"]}`, db.ListQuery{})
+	v, err = create(env.reg, "cols", columns, u, false)
+	hidden = message(t, v, err)
+	v, err = create(env.plain, "cols", columns, u, false)
+	if missing = message(t, v, err); hidden != missing {
+		t.Errorf("%q and %q", hidden, missing)
+	}
+	// An Administrator may share a view on the hidden field; the User does not see it listed (its definition
+	// would tell the field), the Manager does.
+	for _, c := range []struct {
+		label string
+		d     *db.ViewDefinition
+	}{{"shared by limit", definition("credit_limit")}, {"shared by region", regionDefinition}} {
+		if _, err := create(env.reg, c.label, c.d, admin(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	labels := func(who core.Caller) []string {
+		views, err := db.ListViews(bg, env.d.Pool, env.reg, "account", who)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, v := range views {
+			out = append(out, v.Label)
+		}
+		return out
+	}
+	strsEqual(t, labels(u), []string{"shared by region"})
+	strsEqual(t, labels(user("m", "Manager")), []string{"shared by limit", "shared by region"})
+	// Running it as a list is refused for the User, like any unknown field.
+	if _, err := env.list(u, definition("credit_limit").Query); err == nil {
+		t.Error("the list ran a view on a hidden field")
+	}
+}
+
+// Rust: field_levels.rs::a_transition_returns_a_redacted_document_and_takes_no_field_input
+func TestATransitionReturnsARedactedDocumentAndTakesNoFieldInput(t *testing.T) {
+	env := newFlEnv(t)
+	manager := user("m", "Manager")
+	clerk := user("c", "Clerk")
+	created, err := env.insert("ticket", doc("title", text("t"), "secret_note", text("hush")), manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := db.Transition(bg, env.d.Pool, env.reg, "ticket", created.Name, "Finish", created.Version, clerk)
+	if err != nil || done.WorkflowState != "Done" {
+		t.Fatal(done, err)
+	}
+	if _, ok := done.Values["secret_note"]; ok {
+		t.Error("the transition returned a field the caller cannot read")
+	}
+	stored := env.get("ticket", created.Name, admin())
+	if !stored.Values["secret_note"].Equal(text("hush")) {
+		t.Error(stored.Values["secret_note"])
 	}
 }
 

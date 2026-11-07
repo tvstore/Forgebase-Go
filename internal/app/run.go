@@ -41,7 +41,6 @@ type Options struct {
 // notYet maps the commands that are not ported yet to the phase that brings them. The commands are
 // parsed completely (so their usage errors and help are those of the Rust binary) and then refused.
 var notYet = map[string]string{
-	"doc transition":  "P6",
 	"data":            "P7",
 	"webhook":         "P7",
 	"customize":       "P7",
@@ -223,7 +222,7 @@ func millis(ms uint64) time.Duration {
 // migrateSite migrates site with its composed DocTypes and returns the report. What was applied is
 // returned with an error too (a refused fixture), so that the caller prints it first. The warnings
 // are written to standard error: the apps recorded in the database that are not installed, and
-// the documents of a workflow that are in a state it no longer defines (P6).
+// the documents of a workflow that are in a state it no longer defines.
 func (r *runner) migrateSite(ctx context.Context, site *site, c *Composed, options db.SyncOptions) (string, error) {
 	sc, err := site.open(ctx, r.o.Getenv, c.registry.Clone(), 0)
 	if err != nil {
@@ -250,7 +249,23 @@ func (r *runner) migrateSite(ctx context.Context, site *site, c *Composed, optio
 	text := migrateReport(report, options.DryRun, c.appCount())
 	// What was applied is reported first (the migrations are committed), then the fixtures of an
 	// app that were refused, which were rolled back.
-	return text, report.FixturesFailure
+	if report.FixturesFailure != nil {
+		return text, report.FixturesFailure
+	}
+	// The reports read the tables the migrations create, so they are checked after them, and never in a
+	// dry run (nothing was applied, so the tables may not be there).
+	if reports := c.reportCount(); reports > 0 && !options.DryRun {
+		problems, err := c.CheckReports(ctx, sc.pool)
+		if err != nil {
+			return text, err
+		}
+		if len(problems) > 0 {
+			// What was applied is reported first: the migrations are committed.
+			return text, &db.Error{Kind: db.ErrReportCheck, Details: problems}
+		}
+		text += fmt.Sprintf("reports: %d checked\n", reports)
+	}
+	return text, nil
 }
 
 // ---- doc ----------------------------------------------------------------------------------------
@@ -262,6 +277,7 @@ type docOperation struct {
 	verb     string
 	doctype  string
 	name     string
+	action   string
 	version  int64
 	actor    string
 	text     string
@@ -281,6 +297,9 @@ func (r *runner) doc(ctx context.Context, site *site) error {
 		doctype: r.m.str("doctype"),
 		name:    r.m.str("name"),
 		actor:   r.m.str("actor"),
+	}
+	if verb == "transition" {
+		op.action = r.m.str("action")
 	}
 	if verb == "list" {
 		op.filter, op.hasFilter = r.m.opt("filter")
@@ -410,6 +429,8 @@ func (r *runner) execute(ctx context.Context, sc *siteContext, op *docOperation)
 		stored, err = db.Submit(ctx, sc.pool, registry, op.doctype, op.name, op.version, caller)
 	case "cancel":
 		stored, err = db.Cancel(ctx, sc.pool, registry, op.doctype, op.name, op.version, caller)
+	case "transition":
+		stored, err = db.Transition(ctx, sc.pool, registry, op.doctype, op.name, op.action, op.version, caller)
 	case "amend":
 		stored, err = db.Amend(ctx, sc.pool, registry, op.doctype, op.name, op.version, caller)
 	case "delete":

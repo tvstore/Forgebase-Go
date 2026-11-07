@@ -19,13 +19,9 @@ import (
 // not skip, when FORGEBASE_TEST_DATABASE_URL is not set.
 //
 // Ported in P4 (the app model): the hooks, the apps together (hook order, the cross-app Link, the owner of
-// each DocType, permissions). Ported in P5 (jobs): the job tests, adapted where the Rust test submits an order
-// with the workflow transitions (that is P6): the jobs the submit would write are queued with SQL, so the
-// handlers are tested as they run in a worker. Deferred, with the phase whose feature the Rust test uses:
+// each DocType, permissions). Ported in P5 (jobs) and P6 (workflow transitions): the job tests, with the submit
+// by the approval workflow of sales. Deferred, with the phase whose feature the Rust test uses:
 //
-//   - P6 (workflow transitions): the submit at the end of the_extension_hook_runs_after_the_sales_hook, the
-//     outbox over HTTP of a_submitted_order_gets_a_follow_up_visit_and_a_log and
-//     a_refused_submit_leaves_no_job_of_either_app;
 //   - P7 (overlays): the_overlay_field_is_a_field_of_customer,
 //     the_overlay_field_exists_only_where_the_extension_app_is_installed.
 
@@ -181,8 +177,7 @@ func pen(qty int, rate string) []any {
 	return []any{map[string]any{"description": "Pen", "qty": qty, "rate": rate}}
 }
 
-// Rust: extension.rs::the_extension_hook_runs_after_the_sales_hook (up to the creation of the order: the
-// submit at its end is a workflow transition, P6)
+// Rust: extension.rs::the_extension_hook_runs_after_the_sales_hook
 func TestTheExtensionHookRunsAfterTheSalesHook(t *testing.T) {
 	e := newEnv(t)
 	const orders = "/api/v1/resource/sales_order"
@@ -209,7 +204,13 @@ func TestTheExtensionHookRunsAfterTheSalesHook(t *testing.T) {
 	// and refuse every order, this one included. Acceptance therefore proves the sales hook ran first.
 	fine := e.user.Post(orders, map[string]any{"customer": "ada@example.com", "items": pen(2, "5.00")})
 	if fine.Status != 201 || at(fine.Data(), "total") != "10.00" {
-		t.Errorf("%d %s", fine.Status, fine.Text)
+		t.Fatalf("%d %s", fine.Status, fine.Text)
+	}
+	// sales_order has an approval workflow: sending it for approval and approving it is the submit, and runs the
+	// same hooks.
+	submitted := submit(e, at(fine.Data(), "name").(string))
+	if submitted.Status != 200 || at(submitted.Data(), "docstatus") != float64(1) {
+		t.Errorf("%d %s", submitted.Status, submitted.Text)
 	}
 }
 
@@ -302,22 +303,37 @@ func draft(t *testing.T, e *env, orderDate string) string {
 	return at(created.Data(), "name").(string)
 }
 
-// queue queues a job as the test: the submit that would write it is a workflow transition (P6).
-func queue(e *env, job, name string) {
-	e.db.Exec(fmt.Sprintf("INSERT INTO fb_job (id, name, payload, status, enqueued_by) "+
-		"VALUES (gen_random_uuid(), '%s', '{\"order\": \"%s\"}', 'queued', 'test')", job, name))
+// submit submits the draft name (version 1) as the sales approval workflow wants it: sent for approval, then
+// approved. It returns the reply of the first transition that fails, or of the approval (the submit itself).
+func submit(e *env, name string) *fbtest.Reply {
+	sent := e.user.Post(ordersPath+"/"+name+"/transition", map[string]any{"action": "Submit for Approval", "version": 1})
+	if sent.Status != 200 {
+		return sent
+	}
+	return e.user.Post(ordersPath+"/"+name+"/transition", map[string]any{"action": "Approve", "version": 2})
+}
+
+func jobNames(e *env) []string {
+	var names []string
+	for _, r := range e.db.Rows(`SELECT name FROM fb_job ORDER BY name COLLATE "C"`) {
+		names = append(names, r[0])
+	}
+	return names
 }
 
 func counts(run fbtest.JobRun) [3]int { return [3]int{run.Done, run.Retried, run.Dead} }
 
-// Rust: extension.rs::a_submitted_order_gets_a_follow_up_visit_and_a_log (the job half)
-func TestAFollowUpVisitIsPlannedAndTheJobsOfBothAppsRun(t *testing.T) {
+// Rust: extension.rs::a_submitted_order_gets_a_follow_up_visit_and_a_log
+func TestASubmittedOrderGetsAFollowUpVisitAndALog(t *testing.T) {
 	e := newEnv(t)
 	name := draft(t, e, "2026-10-20")
-	// One job of each app, as the submit writes them.
-	queue(e, "sales.log_order_event", name)
-	e.db.Exec("UPDATE fb_job SET payload = jsonb_build_object('order', payload->>'order', 'event', 'submitted')")
-	queue(e, "sales_extension.plan_follow_up_visit", name)
+	if submitted := submit(e, name); submitted.Status != 200 {
+		t.Fatalf("%d %s", submitted.Status, submitted.Text)
+	}
+	// One job of each app, both written by the submit.
+	if got := jobNames(e); !reflect.DeepEqual(got, []string{"sales.log_order_event", "sales_extension.plan_follow_up_visit"}) {
+		t.Errorf("%v", got)
+	}
 
 	run := fbtest.RunJobs(binary(), e.db)
 	if counts(run) != [3]int{2, 0, 0} {
@@ -346,12 +362,14 @@ func TestAFollowUpVisitIsPlannedAndTheJobsOfBothAppsRun(t *testing.T) {
 func TestAJobDeliveredTwicePlansOneVisit(t *testing.T) {
 	e := newEnv(t)
 	name := draft(t, e, "2026-10-20")
-	queue(e, "sales_extension.plan_follow_up_visit", name)
+	if submitted := submit(e, name); submitted.Status != 200 {
+		t.Fatalf("%d %s", submitted.Status, submitted.Text)
+	}
 	e.db.Exec("INSERT INTO fb_job (id, name, payload, status, enqueued_by) " +
 		"SELECT gen_random_uuid(), name, payload, 'queued', 'test' FROM fb_job WHERE name = 'sales_extension.plan_follow_up_visit'")
 
 	run := fbtest.RunJobs(binary(), e.db)
-	if counts(run) != [3]int{2, 0, 0} {
+	if counts(run) != [3]int{3, 0, 0} {
 		t.Fatalf("%+v", run)
 	}
 	if got := e.db.Rows("SELECT count(*)::text FROM doc_customer_visit"); !reflect.DeepEqual(got, [][]string{{"1"}}) {
@@ -363,12 +381,46 @@ func TestAJobDeliveredTwicePlansOneVisit(t *testing.T) {
 func TestAnOrderWithoutADateGetsNoVisit(t *testing.T) {
 	e := newEnv(t)
 	name := draft(t, e, "")
-	queue(e, "sales_extension.plan_follow_up_visit", name)
+	if submitted := submit(e, name); submitted.Status != 200 {
+		t.Fatalf("%d %s", submitted.Status, submitted.Text)
+	}
 	run := fbtest.RunJobs(binary(), e.db)
-	if run.Done != 1 || run.Dead != 0 {
+	if run.Done != 2 || run.Dead != 0 {
 		t.Fatalf("%+v", run)
 	}
 	if got := e.db.Rows("SELECT count(*)::text FROM doc_customer_visit"); !reflect.DeepEqual(got, [][]string{{"0"}}) {
+		t.Errorf("%v", got)
+	}
+}
+
+// Rust: extension.rs::a_refused_submit_leaves_no_job_of_either_app (the refusal happens before any job is
+// collected; "collected, then refused" is covered by the framework test of the outbox)
+func TestARefusedSubmitLeavesNoJobOfEitherApp(t *testing.T) {
+	e := newEnv(t)
+	// Every save needs a total of 10.00, so a small order cannot be saved. Make the stored order small behind the
+	// API's back (a row edited by hand, as after a bad import): the submit recomputes the total from the items,
+	// and MinimumOrder refuses it.
+	name := draft(t, e, "2026-10-20")
+	e.db.Exec("UPDATE doc_sales_order_item SET qty = 1")
+	refused := submit(e, name)
+	if refused.Status != 422 || !strings.Contains(refused.ErrorMessage(), "a sales order must total at least 10.00") {
+		t.Fatalf("%d %s", refused.Status, refused.Text)
+	}
+	if got := jobNames(e); len(got) != 0 {
+		t.Errorf("%v", got)
+	}
+}
+
+// A follow-up job that is queued by hand (a payload of the shape the hook writes), without a submit.
+func TestAFollowUpJobQueuedByHandPlansTheVisit(t *testing.T) {
+	e := newEnv(t)
+	name := draft(t, e, "2026-10-20")
+	e.db.Exec(fmt.Sprintf("INSERT INTO fb_job (id, name, payload, status, enqueued_by) "+
+		"VALUES (gen_random_uuid(), 'sales_extension.plan_follow_up_visit', '{\"order\": \"%s\"}', 'queued', 'test')", name))
+	if run := fbtest.RunJobs(binary(), e.db); counts(run) != [3]int{1, 0, 0} {
+		t.Fatalf("%+v", run)
+	}
+	if got := e.db.Rows("SELECT visited_on::text FROM doc_customer_visit"); !reflect.DeepEqual(got, [][]string{{"2026-10-27"}}) {
 		t.Errorf("%v", got)
 	}
 }

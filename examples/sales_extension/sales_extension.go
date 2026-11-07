@@ -70,8 +70,8 @@ func (MinimumOrder) Validate(_ forgebase.HookContext, doc *forgebase.Document) e
 // submit committed. A second hook set of the same app for the same DocType is fine: hooks run in
 // registration order.
 //
-// The job is planFollowUpVisit below. Nothing can reach this hook over HTTP or the command line before P6,
-// because a sales order has a workflow and its submit is a transition.
+// The job is planFollowUpVisit below. This hook runs inside the workflow transition that submits an order (the
+// "Approve" actions of sales), because a sales order has a workflow.
 type FollowUp struct{ forgebase.BaseHooks }
 
 // BeforeSubmit enqueues the job with the name of the order.

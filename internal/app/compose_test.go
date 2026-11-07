@@ -7,10 +7,11 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
-// Ported from the unit tests of crates/forgebase/src/compose.rs (the app model parts; the overlay tests
-// arrive with P7, the report tests with P6).
+// Ported from the unit tests of crates/forgebase/src/compose.rs (the app model parts and, since P6, the report
+// tests; the overlay tests arrive with P7).
 
 const composeCustomer = "name = \"customer\"\nlabel = \"C\"\n"
 const composeLinking = "name = \"{n}\"\nlabel = \"L\"\n[[fields]]\nname = \"f\"\ntype = \"link\"\ntarget = \"{t}\"\n"
@@ -148,5 +149,103 @@ func TestHooksAreRegisteredInAppOrderThenRegistrationOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(order, []string{"crm1", "crm2", "sales"}) {
 		t.Errorf("%v", order)
+	}
+}
+
+func totalsReport() *Report {
+	return NewReport("SELECT 1;").Roles("Manager").Param(LinkParam("customer", "customer")).Column(IntColumn("n"))
+}
+
+// Rust: compose.rs::reports_are_registered_by_full_name_with_the_sql_trimmed
+func TestReportsAreRegisteredByFullNameWithTheSQLTrimmed(t *testing.T) {
+	sales := NewApp("sales").DependsOn("crm").Report("totals", totalsReport())
+	c, startup := compose([]*App{composeCRM(), sales}, "")
+	if startup != nil {
+		t.Fatal(startup)
+	}
+	report := c.registry.Report("sales.totals")
+	if report == nil || report.SQL != "SELECT 1" || report.Label != "Totals" || len(c.registry.Reports()) != 1 || c.registry.Report("totals") != nil {
+		t.Fatalf("%+v", report)
+	}
+	if c.reportCount() != 1 {
+		t.Fatal(c.reportCount())
+	}
+}
+
+// Rust: compose.rs::every_report_composition_error_is_reported_together
+func TestEveryReportCompositionErrorIsReportedTogether(t *testing.T) {
+	sales := NewApp("sales").DependsOn("crm").
+		Report("Bad Name", totalsReport()).
+		Report("dup", totalsReport()).
+		Report("dup", totalsReport()).
+		Report("nobody", NewReport("SELECT 1").Column(IntColumn("n"))).
+		Report("links", NewReport("SELECT 1").Roles("A").Param(LinkParam("p", "ghost")).Param(DataParam("p")).Column(LinkColumn("c", "ghost"))).
+		Report("empty", NewReport(" ; ").Roles("A").Param(IntParam("x"))).
+		Report("limits", NewReport("SELECT 1").Roles("A").Column(IntColumn("n")).Timeout(301*time.Second).MaxRows(100_001))
+	_, startup := compose([]*App{composeCRM(), sales}, "")
+	if startup == nil {
+		t.Fatal("refused")
+	}
+	text := startup.Error()
+	for _, needle := range []string{
+		"report `Bad Name`: name \"Bad Name\"",
+		"report `dup` is registered more than once",
+		"report `nobody`: no roles",
+		"report `links`: param `p` links to unknown DocType `ghost`",
+		"report `links`: column `c` links to unknown DocType `ghost`",
+		"report `links`: param `p` is declared more than once",
+		"report `empty`: the SQL is empty",
+		"report `empty`: no columns",
+		"report `limits`: timeout",
+		"report `limits`: max_rows 100001",
+	} {
+		if !strings.Contains(text, needle) {
+			t.Errorf("%s in\n%s", needle, text)
+		}
+	}
+}
+
+// Rust: compose.rs::a_report_may_only_link_to_its_own_app_and_its_dependencies
+func TestAReportMayOnlyLinkToItsOwnAppAndItsDependencies(t *testing.T) {
+	// sales does not depend on crm, so its report cannot name crm's customer.
+	sales := NewApp("sales").Report("totals", totalsReport())
+	_, startup := compose([]*App{composeCRM(), sales}, "")
+	if startup == nil || !strings.Contains(startup.Error(),
+		"report `totals`: param `customer` links to `customer`, which belongs to app `crm`; app `sales` does not depend on `crm`") {
+		t.Fatal(startup)
+	}
+}
+
+// Rust: compose.rs::a_report_may_not_link_to_a_child_doctype
+func TestAReportMayNotLinkToAChildDoctype(t *testing.T) {
+	app := NewApp("a").
+		DocTypes(files(
+			"doctypes/parent.toml", "name = \"parent\"\nlabel = \"P\"\n[[fields]]\nname = \"rows\"\ntype = \"table\"\ntarget = \"child\"\n",
+			"doctypes/child.toml", "name = \"child\"\nlabel = \"C\"\nis_child = true\n")).
+		Report("r", NewReport("SELECT 1").Roles("A").Param(LinkParam("c", "child")).Column(IntColumn("n")))
+	_, startup := compose([]*App{app}, "")
+	if startup == nil || !strings.Contains(startup.Error(), "a child DocType") {
+		t.Fatal(startup)
+	}
+}
+
+// Not in Rust: a nil report is a startup error, like a nil hook set.
+func TestANilReportIsAStartupError(t *testing.T) {
+	_, startup := compose([]*App{NewApp("a").Report("r", nil)}, "")
+	if startup == nil || !strings.Contains(startup.Error(), "app `a`: report `r` is nil") {
+		t.Fatal(startup)
+	}
+}
+
+// Not in Rust: a nil Param or Column of a report is a startup error, like a nil report.
+func TestANilReportParamOrColumnIsAStartupError(t *testing.T) {
+	for want, report := range map[string]*Report{
+		"app `a`: report `r`: Param is given nil":  NewReport("SELECT 1").Roles("A").Param(nil),
+		"app `a`: report `r`: Column is given nil": NewReport("SELECT 1").Roles("A").Column(nil),
+	} {
+		_, startup := compose([]*App{NewApp("a").Report("r", report)}, "")
+		if startup == nil || !strings.Contains(startup.Error(), want) {
+			t.Fatal(want, startup)
+		}
 	}
 }

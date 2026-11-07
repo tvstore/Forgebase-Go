@@ -24,10 +24,9 @@ import (
 // Deferred Rust tests, with their phase (the tests that mix them with get and the like are ported
 // without them; the visible names, the Rust env.names, are those get finds, one document at a time):
 //   - an_import_applies_the_rules_to_every_row: P7 (import)
-//   - a_hidden_document_is_not_found_by_a_transition_and_a_visible_one_moves: P6 (transition)
 //   - two_sites_keep_their_own_permissions: P5 (sites)
-// The summary and export parts of every_read_shows_only_what_the_restriction_allows: P6 (summary) and
-// P7 (export). The list parts, link titles and the auth and management tests are here (P3).
+// The export part of every_read_shows_only_what_the_restriction_allows: P7 (export). The summary part and the
+// transition test are ported (P6). The list parts, link titles and the auth and management tests are here (P3).
 
 const upCustomerGroup = `
 name = "customer_group"
@@ -322,8 +321,8 @@ func strs(items ...string) []string { return items }
 
 // Rust: user_permissions.rs::every_read_shows_only_what_the_restriction_allows
 //
-// The get part, the names, and the filter, sort and paging of a list; the summary (P6) and the
-// export (P7) are not ported yet.
+// The get part, the names, the filter, sort and paging of a list and the summary; the export (P7) is not ported
+// yet.
 func TestEveryReadShowsOnlyWhatTheRestrictionAllows(t *testing.T) {
 	env := newUpEnv(t)
 	env.seed()
@@ -363,6 +362,53 @@ func TestEveryReadShowsOnlyWhatTheRestrictionAllows(t *testing.T) {
 	rows = listDocs(t, env.d, env.reg, "customer", a, db.ListQuery{Sort: []db.Sort{db.Desc("title")}, Limit: u32(1), Offset: u64(1)})
 	if len(rows) != 1 || rows[0].Name != "c_none" {
 		t.Errorf("paging counts only visible rows: %v", rows)
+	}
+
+	// The summary counts only visible rows.
+	summaryOf := func(who core.Caller) []string {
+		got, err := db.Summary(bg, env.d.Pool, env.reg, "customer", who, db.SummaryQuery{GroupBy: "customer_group"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return groupKeys(got)
+	}
+	want(t, summaryOf(a), strs("null=2", "Retail=1"), "summary ann")
+	all := 0
+	for _, g := range summaryOf(p) {
+		var n int
+		_, _ = fmt.Sscan(g[strings.LastIndex(g, "=")+1:], &n)
+		all += n
+	}
+	if all != 5 {
+		t.Errorf("summary pat counts %d", all)
+	}
+}
+
+// Rust: user_permissions.rs::a_hidden_document_is_not_found_by_a_transition_and_a_visible_one_moves
+func TestAHiddenDocumentIsNotFoundByATransitionAndAVisibleOneMoves(t *testing.T) {
+	env := newUpEnv(t)
+	env.group("Retail")
+	env.group("Wholesale")
+	make := func(title, group string) *db.StoredDocument {
+		return env.put("ticket", doc("title", text(title), "customer_group", text(group)))
+	}
+	hidden := make("t_hidden", "Wholesale")
+	visible := make("t_visible", "Retail")
+	_, err := db.Transition(bg, env.d.Pool, env.reg, "ticket", hidden.Name, "Finish", hidden.Version, ann())
+	wantKind(t, err, db.ErrNotFound)
+	// A stale version on a hidden document: not found first.
+	_, err = db.Transition(bg, env.d.Pool, env.reg, "ticket", hidden.Name, "Finish", 99, ann())
+	wantKind(t, err, db.ErrNotFound)
+	_, err = db.AvailableTransitions(bg, env.d.Pool, env.reg, "ticket", hidden.Name, ann())
+	wantKind(t, err, db.ErrNotFound)
+	done, err := db.Transition(bg, env.d.Pool, env.reg, "ticket", visible.Name, "Finish", visible.Version, ann())
+	if err != nil || done.WorkflowState != "Done" {
+		t.Fatal(done, err)
+	}
+	// The hidden ticket is still open.
+	still := mustGet(t, env.d, env.reg, "ticket", hidden.Name, pat())
+	if still.WorkflowState != "Open" {
+		t.Error(still.WorkflowState)
 	}
 }
 

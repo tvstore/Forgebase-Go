@@ -44,6 +44,11 @@ type scheduleDef struct {
 	schedule Schedule
 }
 
+type namedReport struct {
+	name   string
+	report *Report
+}
+
 type hookSet struct {
 	doctype string
 	hooks   core.DocTypeHooks
@@ -77,7 +82,8 @@ type hookSet struct {
 //     extends another run after the hooks of the app it extends;
 //   - declare SQL data migrations;
 //   - register background jobs (Job), which hooks, other jobs and the command line can enqueue, and run them on
-//     a Schedule.
+//     a Schedule;
+//   - define query reports (Report): SQL compiled into the binary, run read-only for the roles it names.
 //
 // What it may not do: change the definition of another app's DocType, run code outside the binary, or
 // reach the database from a hook.
@@ -90,6 +96,7 @@ type App struct {
 	migrations []MigrationFile
 	jobs       []jobDef
 	schedules  []scheduleDef
+	reports    []namedReport
 	// appProblems are what is wrong with the app itself (shown under "invalid app setup") and
 	// fileProblems what is wrong with a DocType file (shown under "cannot load DocType files"),
 	// found while the files were read. Nothing fails until the binary starts.
@@ -194,6 +201,22 @@ func (a *App) JobWith(name string, handler JobHandler, options JobOptions) *App 
 // [Schedule] and ADR 0013.
 func (a *App) Schedule(job string, schedule Schedule) *App {
 	a.schedules = append(a.schedules, scheduleDef{job: job, schedule: schedule})
+	return a
+}
+
+// Report defines a query report: SQL that the app compiled in, run read-only for the roles it names. The
+// name follows the rules of a DocType name and is unique within the app; the report is known as
+// <app>.<name>. See [Report] for the rules of the SQL, the parameters and the columns. A nil report is a
+// startup error, like everything wrong with a report, once the binary starts.
+func (a *App) Report(name string, report *Report) *App {
+	if report == nil {
+		a.appProblems = append(a.appProblems, fmt.Sprintf("app `%s`: report `%s` is nil", a.name, name))
+		return a
+	}
+	for _, problem := range report.problems {
+		a.appProblems = append(a.appProblems, fmt.Sprintf("app `%s`: report `%s`: %s", a.name, name, problem))
+	}
+	a.reports = append(a.reports, namedReport{name: name, report: report})
 	return a
 }
 

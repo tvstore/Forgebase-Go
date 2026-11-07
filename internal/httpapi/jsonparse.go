@@ -75,6 +75,10 @@ func (n jsonNumber) int64Value() (int64, bool) {
 	return 0, false
 }
 
+// MarshalJSON writes the number as serde_json does, so a parsed value (a saved view's definition) can be
+// written back as it was read.
+func (n jsonNumber) MarshalJSON() ([]byte, error) { return []byte(n.String()), nil }
+
 // String is Number's Display: the integer, or the shortest float text with ".0" for a whole number.
 func (n jsonNumber) String() string {
 	switch n.which {

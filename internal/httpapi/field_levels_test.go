@@ -12,8 +12,8 @@ import (
 // ADR 0024): what each caller reads and writes, the metadata API (hidden fields left out, read_only for
 // fields that can be read but not written), 422 field_not_permitted, and that a hidden field is unknown
 // everywhere: the answer is compared, byte for byte, with the answer of a server whose DocType does not
-// have the field at all. The parts that call summary, export, import or the saved views come with
-// those routes (P6, P7).
+// have the field at all. The parts that call export or import come with those routes (P7); the summary and
+// the saved views are ported (P6).
 
 // account is credit_limit (level 1), vault_code (level 2, nobody has a rule), a table ledger at level 1.
 // Agent is a plain clerk, Boss reads and writes level 1, Auditor reads level 1.
@@ -248,11 +248,20 @@ func TestAHiddenFieldIsRefusedExactlyLikeAFieldThatDoesNotExist(t *testing.T) {
 		filters := encQuery(fmt.Sprintf(`[{"field":%q,"op":"=","value":1}]`, field))
 		same(t, hidden, plain, func() *req { return get("/api/v1/resource/account?filters=" + filters) })
 		same(t, hidden, plain, func() *req { return get("/api/v1/resource/account?sort=" + field + ":desc") })
+		same(t, hidden, plain, func() *req { return get("/api/v1/summary/account?group_by=" + field) })
+		same(t, hidden, plain, func() *req {
+			return get("/api/v1/summary/account?group_by=region&aggregates=sum:" + field)
+		})
 		// A value of the wrong type is not even looked at: no type error names the field.
 		for _, value := range []any{"not a number", 1, nil, []any{J{"qty": "x"}}} {
 			body := J{"title": "t", field: value}
 			same(t, hidden, plain, func() *req { return post("/api/v1/resource/account").json(body) })
 		}
+		// A saved view.
+		view := J{"label": "v", "definition": J{"filters": []any{J{"field": field, "op": "=", "value": 1}}, "sort": []any{}, "columns": []any{}}}
+		same(t, hidden, plain, func() *req { return post("/api/v1/views/account").json(view) })
+		columns := J{"label": "c", "definition": J{"filters": []any{}, "sort": []any{field}, "columns": []any{field}}}
+		same(t, hidden, plain, func() *req { return post("/api/v1/views/account").json(columns) })
 	}
 	// Update: also with the stored value, and with a wrong type.
 	name, version := hidden.full()

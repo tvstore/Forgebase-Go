@@ -209,6 +209,15 @@ func TestRoutingAsAxumDoesIt(t *testing.T) {
 		"/api/v1/resource/note":         "GET,HEAD,POST",
 		"/api/v1/resource/note/x":       "GET,HEAD,PATCH,DELETE",
 		"/api/v1/resource/note/x/amend": "POST",
+		// The routes of P6.
+		"/api/v1/resource/note/x/transition":  "POST",
+		"/api/v1/resource/note/x/transitions": "GET,HEAD",
+		"/api/v1/resource/note/x/history":     "GET,HEAD",
+		"/api/v1/views/note":                  "GET,HEAD,POST",
+		"/api/v1/views/note/1":                "PATCH,DELETE",
+		"/api/v1/summary/note":                "GET,HEAD",
+		"/api/v1/report":                      "GET,HEAD",
+		"/api/v1/report/a.b":                  "POST",
 		// A percent-encoded slash stays inside the segment.
 		"/api/v1/resource/a%2Fb": "GET,HEAD,POST",
 		// An empty parameter followed by "/" is a parameter (matchit): the route of the name.
@@ -222,10 +231,9 @@ func TestRoutingAsAxumDoesIt(t *testing.T) {
 			t.Errorf("%s: Allow %q, want %q", path, got, allow)
 		}
 	}
-	// The routes of the later phases are unknown paths until then.
+	// The routes of P7 are unknown paths until then.
 	for _, path := range []string{
-		"/api/v1/resource/note/x/transition", "/api/v1/resource/note/x/transitions", "/api/v1/resource/note/x/history",
-		"/api/v1/views/note", "/api/v1/summary/note", "/api/v1/report", "/api/v1/export/note", "/api/v1/import/note",
+		"/api/v1/export/note", "/api/v1/import/note",
 		"/api/v1/method/a.b", "/api/v1/customize/note/fields", "/api/v1/user-permissions",
 	} {
 		assertEnvelope(t, sendTo(t, h, get(path)), http.StatusNotFound, "not_found")

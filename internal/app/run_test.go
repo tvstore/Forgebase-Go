@@ -20,10 +20,9 @@ import (
 // standard input of a pipe) are in cmd/forgebase.
 //
 // The serve_* tests and the worker tests (the_worker_of_a_binary_without_app_jobs_..., a_worker_claims_only_...)
-// run the real binary (cmd/forgebase, serve_test.go). Deferred, with the phase that brings the
-// command: doc_transition_takes_a_workflow_transition_as_the_system_context and
-// migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone (P6), the webhook_*,
-// data_*, customize_* and user_permission_* tests (P7).
+// run the real binary (cmd/forgebase, serve_test.go). Ported in P6: doc_transition_takes_a_workflow_transition_as_the_system_context
+// and migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone. Deferred, with the phase that
+// brings the command: the webhook_*, data_*, customize_* and user_permission_* tests (P7).
 
 // doctypes is the DOCTYPES fixture of the Rust CLI tests (tests/fixtures/quickstart), byte-identical.
 const doctypes = "testdata/quickstart"
@@ -1164,5 +1163,116 @@ func TestCommandsTouchOnlyTheDatabaseOfTheirSite(t *testing.T) {
 	}
 	if got := scalar(t, p.b, "SELECT count(*)::text FROM fb_job"); got != "0" {
 		t.Errorf("b has %s jobs", got)
+	}
+}
+
+// workflowDoctypes is the WORKFLOW_DOCTYPES fixture of the Rust CLI tests (tests/fixtures/workflow).
+const workflowDoctypes = "testdata/workflow"
+
+// Rust: cli.rs::doc_transition_takes_a_workflow_transition_as_the_system_context
+func TestDocTransitionTakesAWorkflowTransitionAsTheSystemContext(t *testing.T) {
+	e := newEnv(t)
+	expectCode(t, e.run("migrate", "--doctypes", workflowDoctypes), 0, "migrate")
+	run := func(args ...string) result { return e.run(append(args, "--doctypes", workflowDoctypes)...) }
+	inserted := run("doc", "insert", "purchase", "--data", `{"title":"p"}`)
+	expectCode(t, inserted, 0, "insert")
+	purchase := inserted.json(t)
+	name := purchase["name"].(string)
+	if purchase["workflow_state"] != "Draft" || purchase["docstatus"] != float64(0) {
+		t.Fatalf("%v", purchase)
+	}
+
+	// The roles are not checked: the actor has none, and Approve names a role nobody has.
+	sent := run("doc", "transition", "purchase", name, "Send", "--version", "1", "--actor", "ann")
+	expectCode(t, sent, 0, "send")
+	got := sent.json(t)
+	if got["workflow_state"] != "Pending" || got["version"] != float64(2) || got["modified_by"] != "ann" {
+		t.Errorf("%v", got)
+	}
+	// doc get prints the state too.
+	if state := run("doc", "get", "purchase", name).json(t)["workflow_state"]; state != "Pending" {
+		t.Errorf("%v", state)
+	}
+
+	// Errors and exit codes are those of doc submit: 1 with the message on standard error.
+	stale := run("doc", "transition", "purchase", name, "Approve", "--version", "9")
+	expectCode(t, stale, 1, "stale")
+	expectContains(t, stale.stderr, "current version 2")
+	wrong := run("doc", "transition", "purchase", name, "Cancel", "--version", "2")
+	expectCode(t, wrong, 1, "wrong state")
+	expectContains(t, wrong.stderr, "is in state `Pending`: no transition `Cancel` from it")
+	// Without --version it is a usage error (exit 2).
+	expectCode(t, run("doc", "transition", "purchase", name, "Approve"), 2, "no version")
+
+	// Plain submit and cancel are refused on a DocType with a workflow.
+	for _, step := range []string{"submit", "cancel"} {
+		refused := run("doc", step, "purchase", name, "--version", "2")
+		expectCode(t, refused, 1, step)
+		expectContains(t, refused.stderr, "has a workflow; use a transition")
+	}
+	// Approve submits the document, Cancel cancels it.
+	approved := run("doc", "transition", "purchase", name, "Approve", "--version", "2").json(t)
+	if approved["workflow_state"] != "Approved" || approved["docstatus"] != float64(1) {
+		t.Errorf("%v", approved)
+	}
+	cancelled := run("doc", "transition", "purchase", name, "Cancel", "--version", "3").json(t)
+	if cancelled["workflow_state"] != "Cancelled" || cancelled["docstatus"] != float64(2) {
+		t.Errorf("%v", cancelled)
+	}
+	// The log has every transition with its actor.
+	if got := e.scalar("SELECT string_agg(action || ':' || actor, ',' ORDER BY id) FROM fb_workflow_log"); got != "Send:ann,Approve:cli,Cancel:cli" {
+		t.Errorf("%s", got)
+	}
+
+	// A DocType without a workflow: transition says so.
+	expectCode(t, e.run("migrate", "--doctypes", doctypes), 0, "migrate the other")
+	none := e.run("doc", "transition", "customer", "x", "Send", "--version", "1", "--doctypes", doctypes)
+	expectCode(t, none, 1, "no workflow")
+}
+
+// Rust: cli.rs::migrate_gives_documents_their_state_and_warns_about_a_state_that_is_gone
+func TestMigrateGivesDocumentsTheirStateAndWarnsAboutAStateThatIsGone(t *testing.T) {
+	e := newEnv(t)
+	// The DocType without its workflow: a draft, a submitted and a cancelled document.
+	dir := t.TempDir()
+	text, err := os.ReadFile(workflowDoctypes + "/purchase.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	without, _, _ := strings.Cut(string(text), "[workflow]")
+	if err := os.WriteFile(dir+"/purchase.toml", []byte(without), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, e.run("migrate", "--doctypes", dir), 0, "migrate without the workflow")
+	for range 3 {
+		expectCode(t, e.run("doc", "insert", "purchase", "--data", `{"title":"p"}`, "--doctypes", dir), 0, "insert")
+	}
+	e.d.Exec("UPDATE doc_purchase SET docstatus = 1 WHERE name = (SELECT name FROM doc_purchase ORDER BY created_at, id LIMIT 1 OFFSET 1)")
+	e.d.Exec("UPDATE doc_purchase SET docstatus = 2 WHERE name = (SELECT name FROM doc_purchase ORDER BY created_at, id LIMIT 1 OFFSET 2)")
+
+	// Adding the workflow: the column is added and the documents get a state per docstatus.
+	migrate := e.run("migrate", "--doctypes", workflowDoctypes)
+	expectCode(t, migrate, 0, "migrate with the workflow")
+	expectContains(t, migrate.stdout, "workflow_state")
+	if migrate.stderr != "" {
+		t.Errorf("%q", migrate.stderr)
+	}
+	if got := e.scalar("SELECT string_agg(docstatus::text || '=' || workflow_state, ',' ORDER BY docstatus) FROM doc_purchase"); got != "0=Draft,1=Approved,2=Cancelled" {
+		t.Errorf("%s", got)
+	}
+	// Again: no change, no warning.
+	again := e.run("migrate", "--doctypes", workflowDoctypes)
+	expectCode(t, again, 0, "migrate again")
+	if again.stderr != "" {
+		t.Errorf("%q", again.stderr)
+	}
+
+	// A state the workflow no longer has: one warning line on standard error, exit 0.
+	e.d.Exec("UPDATE doc_purchase SET workflow_state = 'Gone' WHERE docstatus > 0")
+	warned := e.run("migrate", "--doctypes", workflowDoctypes)
+	expectCode(t, warned, 0, "migrate with a state that is gone")
+	const want = "warning: site `default`: DocType `purchase`: 2 documents are in a workflow state that no longer exists; no transition applies to them\n"
+	if warned.stderr != want {
+		t.Errorf("%q", warned.stderr)
 	}
 }
