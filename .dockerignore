@@ -1,0 +1,16 @@
+# Keep the build context small and the build reproducible. The image needs the Go module (go.mod,
+# go.sum, the packages and examples/), desk/ and deploy/entrypoint.sh only.
+.git
+.github
+bin
+/forgebase
+desk/node_modules
+desk/dist
+desk/test-results
+desk/playwright-report
+docs
+**/.env
+**/*.dump
+**/*.partial
+**/*.test
+.claude

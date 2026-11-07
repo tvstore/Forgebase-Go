@@ -515,6 +515,79 @@ jobs:
         if: failure()
         run: tail -n 100 server.log
 
+  # The container image (P5.3, D1 and D2): builds the Dockerfile without pushing it anywhere and runs it
+  # once in single-container mode against a PostgreSQL service. Runs only when the Dockerfile,
+  # .dockerignore, deploy/ or .github/ change, and on the weekly and manual runs (which also catch a
+  # change in the Go code or the desk that breaks the build). Docker is preinstalled on the runner.
+  docker:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forgebase
+          POSTGRES_PASSWORD: forgebase
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgebase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the entrypoint (fake binary)
+        run: bash deploy/test-entrypoint.sh
+      - name: Build the image (no push)
+        run: docker build -t forgebase-sales .
+      # The trust store of the image (ADR 0018): the CA bundle is there, SSL_CERT_FILE points at it so
+      # that only the bundle is read, and the base image's public "snakeoil" test certificate and key
+      # are gone (it must never be a trusted root), and /etc/ssl/certs holds nothing else (libpq also
+      # reads its hashed files, which SSL_CERT_FILE does not limit). Run as root: /etc/ssl/private is
+      # not readable by the application user. `sh -e`: every line must hold, not only the last one.
+      - name: Trust store of the image
+        run: |
+          docker run --rm --user 0 --entrypoint sh forgebase-sales -ec '
+            test "$SSL_CERT_FILE" = /etc/ssl/certs/ca-certificates.crt
+            test -s "$SSL_CERT_FILE"
+            test ! -e /etc/ssl/certs/ssl-cert-snakeoil.pem
+            test ! -e /etc/ssl/private/ssl-cert-snakeoil.key
+            test "$(ls -A /etc/ssl/certs)" = ca-certificates.crt
+          '
+      # `all` mode on the host network (to reach the service on localhost): migrate on start, the
+      # desk and the login page, a login and an authenticated API call, then a graceful stop (the exit
+      # code must be 0, which needs both the server and the worker to stop on SIGTERM).
+      - name: Smoke test, single-container mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name fb --network host \
+            -e FORGEBASE_DATABASE_URL=postgres://forgebase:forgebase@localhost:5432/postgres \
+            -e FORGEBASE_MIGRATE_ON_START=1 \
+            -e FORGEBASE_ALLOWED_HOSTS=localhost \
+            -e FORGEBASE_DEV_INSECURE_COOKIES=1 \
+            forgebase-sales all
+          for _ in $(seq 1 60); do
+            curl -fsS -o /dev/null http://localhost:8000/desk/ && break
+            sleep 1
+          done
+          printf '%s\n' 'ci-smoke-password' | docker exec -i fb forgebase-app user create admin --role Administrator
+          curl -fsS http://localhost:8000/desk/ | grep -q '<title>Forgebase Desk'
+          curl -fsS -c "$RUNNER_TEMP/jar" -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"ci-smoke-password"}' http://localhost:8000/api/v1/login > /dev/null
+          curl -fsS -b "$RUNNER_TEMP/jar" http://localhost:8000/api/v1/meta > /dev/null
+          docker logs fb 2>&1 | grep -q '^worker: started'
+          docker stop fb
+          test "$(docker inspect fb --format '{{.State.ExitCode}}')" = 0
+      - name: Container logs
+        if: failure()
+        run: docker logs fb || true
+
   # The single required status check of the branch ruleset on main (owner decision of 2026-10-31,
   # docs/blueprint/maintenance-policy.md, "CI"). It runs always, also when a job failed or was
   # cancelled, and fails unless every job it needs finished with `success` or `skipped` (a skipped
@@ -527,11 +600,11 @@ jobs:
   # or fails on its merits, when the pull request is marked ready for review; merging needs the
   # `ci-result` of the run on the READY pull request head (AGENTS.md section 10.3).
   #
-  # Later phases add jobs (docker, ...). Every new job must be added to `needs`
+  # Later phases add jobs. Every new job must be added to `needs`
   # here, or the ruleset does not guard it.
   ci-result:
     if: always()
-    needs: [changes, docs, check, licenses, sites, app-template, desk, e2e]
+    needs: [changes, docs, check, licenses, sites, app-template, desk, e2e, docker]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
