@@ -25,9 +25,12 @@ func TestEveryKindOfFailureUsesTheEnvelope(t *testing.T) {
 		assertEnvelope(t, e.send(get(uri).session(s)), http.StatusNotFound, "not_found")
 	}
 	assertEnvelope(t, e.send(reqOf(http.MethodPut, "/api/v1/resource/note").session(s)), http.StatusMethodNotAllowed, "method_not_allowed")
-	// The route of the app methods (P7) is not there yet: an unknown path, 404, even without a credential.
-	assertEnvelope(t, e.send(get("/api/v1/method/frappe.ping").session(s)), http.StatusNotFound, "not_found")
-	assertEnvelope(t, e.send(post("/api/v1/method/frappe.ping").json(map[string]any{})), http.StatusNotFound, "not_found")
+	// The route of the app methods (M9.1) is POST only. This test environment has no dispatcher and no
+	// methods (they come with the app package): a call is the 404 of an unknown method, and without a
+	// credential it is the 401 first.
+	assertEnvelope(t, e.send(get("/api/v1/method/frappe.ping").session(s)), http.StatusMethodNotAllowed, "method_not_allowed")
+	assertEnvelope(t, e.send(post("/api/v1/method/frappe.ping").json(map[string]any{})), http.StatusUnauthorized, "unauthenticated")
+	assertEnvelope(t, e.send(post("/api/v1/method/frappe.ping").session(s).json(map[string]any{})), http.StatusNotFound, "not_found")
 	assertEnvelope(t, e.send(get("/api/v1/login")), http.StatusMethodNotAllowed, "method_not_allowed")
 	assertEnvelope(t, e.send(reqOf(http.MethodOptions, "/api/v1/resource/note")), http.StatusMethodNotAllowed, "method_not_allowed")
 	// Malformed JSON, another content type, no content type, a path that is not UTF-8.

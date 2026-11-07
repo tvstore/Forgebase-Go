@@ -218,6 +218,8 @@ func TestRoutingAsAxumDoesIt(t *testing.T) {
 		"/api/v1/summary/note":                "GET,HEAD",
 		"/api/v1/report":                      "GET,HEAD",
 		"/api/v1/report/a.b":                  "POST",
+		// The route of P7.1.
+		"/api/v1/method/a.b": "POST",
 		// A percent-encoded slash stays inside the segment.
 		"/api/v1/resource/a%2Fb": "GET,HEAD,POST",
 		// An empty parameter followed by "/" is a parameter (matchit): the route of the name.
@@ -234,7 +236,7 @@ func TestRoutingAsAxumDoesIt(t *testing.T) {
 	// The routes of P7 are unknown paths until then.
 	for _, path := range []string{
 		"/api/v1/export/note", "/api/v1/import/note",
-		"/api/v1/method/a.b", "/api/v1/customize/note/fields", "/api/v1/user-permissions",
+		"/api/v1/customize/note/fields", "/api/v1/user-permissions",
 	} {
 		assertEnvelope(t, sendTo(t, h, get(path)), http.StatusNotFound, "not_found")
 	}

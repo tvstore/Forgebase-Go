@@ -11,6 +11,7 @@ import (
 
 	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/db"
+	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
 
 // Putting the apps together: validating them, loading their DocTypes into one registry, registering their
@@ -23,9 +24,9 @@ import (
 // found is collected and reported together. The reference and hook checks only run when every DocType file
 // loaded, because a file that did not load would make them report follow-up errors.
 //
-// Reports (P6) are checked and registered after the hooks. Jobs and schedules (P5) are checked after that
-// (they do not depend on the DocType files, so their problems are reported with the others). Overlays (P7),
-// methods (P7) and fixtures (P7) are added to this order by the phases that bring them.
+// Reports (P6) are checked and registered after the hooks. Jobs (P5) and methods (P7.1) are checked after that,
+// then the schedules (they do not depend on the DocType files, so their problems are reported with the
+// others). Overlays (P7) and fixtures (P7) are added to this order by the phases that bring them.
 
 // localApp is the name of the app that the --doctypes directory forms.
 const localApp = "local"
@@ -89,6 +90,9 @@ type Composed struct {
 	jobs map[string]*jobDef
 	// schedules are the schedules of all apps and the built-in ones, by full job name (valid ones only).
 	schedules map[string]db.Spec
+	// methods runs the methods of all apps by full name (<app>.<method>); the registry has their names and
+	// access.
+	methods *methods
 	// apps are the registered apps (not local) in app order.
 	apps []appInfo
 }
@@ -135,6 +139,9 @@ func (c *Composed) Migrate(ctx context.Context, pool *pgxpool.Pool, options db.S
 	sort.Slice(declared, func(i, j int) bool { return declared[i].Name < declared[j].Name })
 	return db.MigrateAll(ctx, pool, c.registry, specs, declared, options)
 }
+
+// MethodDispatch is what runs the app methods of the composed apps, for internal/httpapi (State.WithMethods).
+func (c *Composed) MethodDispatch() httpapi.MethodDispatch { return c.methods }
 
 // reportCount is how many reports the composed apps define.
 func (c *Composed) reportCount() int { return len(c.registry.Reports()) }
@@ -220,11 +227,12 @@ func compose(apps []*App, local string) (*Composed, *StartupError) {
 		checkReports(apps, reach, registry, errs)
 	}
 	jobs := checkJobs(apps, registry, errs)
+	handlers := checkMethods(apps, registry, errs)
 	schedules := checkSchedules(apps, errs)
 	if !errs.isEmpty() {
 		return nil, errs
 	}
-	c := &Composed{registry: registry, jobs: jobs, schedules: schedules}
+	c := &Composed{registry: registry, jobs: jobs, schedules: schedules, methods: &methods{handlers: handlers}}
 	for _, a := range apps {
 		c.apps = append(c.apps, appInfo{name: a.name, version: a.version, migrations: a.migrations})
 	}
@@ -504,6 +512,35 @@ func checkReports(apps []*App, reach map[string]map[string]bool, registry *core.
 			}
 		}
 	}
+}
+
+// checkMethods checks the methods and registers the valid ones: names and access in the registry, the handlers
+// in the result, by full name. Same rules as the reports and jobs: a valid name, unique within the app, and
+// exactly one way of giving access.
+func checkMethods(apps []*App, registry *core.Registry, errs *StartupError) map[string]MethodHandler {
+	handlers := map[string]MethodHandler{}
+	for _, a := range apps {
+		if a == nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, m := range a.methods {
+			if seen[m.name] {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: method `%s` is registered more than once", a.name, m.name))
+				continue
+			}
+			seen[m.name] = true
+			def, problems := m.method.definition(a.name, m.name)
+			for _, problem := range problems {
+				errs.apps = append(errs.apps, fmt.Sprintf("app `%s`: method `%s`: %s", a.name, m.name, problem))
+			}
+			// The same full name from two apps with the same name is reported as a duplicate app.
+			if len(problems) == 0 && registry.AddMethod(def) {
+				handlers[def.FullName()] = m.method.handler
+			}
+		}
+	}
+	return handlers
 }
 
 // checkSchedules checks the schedules of the apps and adds the built-in ones. A schedule must name a job the

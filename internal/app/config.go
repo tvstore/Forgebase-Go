@@ -109,6 +109,8 @@ type siteContext struct {
 	site     *site
 	pool     *pgxpool.Pool
 	registry *core.Registry
+	// methods runs the app methods of the site (nil: none, every method call is a 404). Set by serve.
+	methods httpapi.MethodDispatch
 }
 
 // open opens the pool of the site (poolSize overrides the configured size) and joins it with

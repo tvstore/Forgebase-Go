@@ -10,8 +10,9 @@ import (
 	"github.com/tvstore/forgebase-go/internal/db"
 )
 
-// Documents: what a job may do with documents (the Rust module documents.rs; a method of P7 will use the
-// same type with a user as the caller).
+// Documents: what a job or a method may do with documents (the Rust module documents.rs). A job's handle is the
+// trusted system context; a method's handle (M9.1, ADR 0019) is the type with the authenticated user as the
+// caller.
 //
 // A job runs as the trusted system context (core.SystemCaller, no permission rules) with the actor
 // job:<app>.<job>, which is recorded as owner / modified_by and given to hooks. Every call uses the same
@@ -24,7 +25,8 @@ import (
 
 // DocError is why a [Documents] call failed: the database function's own error, wrapped. In a job, returning
 // it makes the job fail as described on [JobError]: a database or connection error is retried, every refusal
-// is permanent.
+// is permanent. In a method, returning it (wrapped or not) answers with the status and code the document API
+// gives the same error, and a database or connection error is a generic 500 ([MethodHandler]).
 //
 // The Error text is meant for the server's log and a job's last_error: it can name a constraint or a server
 // message, so do not copy it into a message for users. Err is the *db.Error behind it; the package that
@@ -174,16 +176,18 @@ func (q ListQuery) toDB() (db.ListQuery, error) {
 	return out, nil
 }
 
-// Documents are the documents a job can reach. Get it from [JobContext.Documents] (the system context).
-// Every method returns an error that is a *[DocError]; see there for what a job makes of it.
+// Documents are the documents a job or a method can reach. Get it from [JobContext.Documents] (the system
+// context) or [MethodContext.Documents] (the caller). Every method returns an error that is a *[DocError]; see
+// there for what a job and a method make of it.
 //
 // The arguments are those of the matching `forgebase doc` command: the DocType name, the document name, and
 // for a change the version that was read (a document changed by someone else in between is a version
 // conflict, which is not retryable).
 //
 // Every call acts as the caller the handle was made with, through the same functions as the HTTP API, so the
-// permission rules (if_owner, read rules on Get and List, read-only fields) are the only decision. A job's
-// handle is the system context, which no rule restricts.
+// permission rules (if_owner, read rules on Get and List, read-only fields, workflow roles) are the only
+// decision. A job's handle is the system context, which no rule restricts; a method's is the user who called,
+// so a method can do no more than that user could with the document API.
 type Documents struct {
 	tx       pgx.Tx
 	registry *core.Registry
@@ -271,8 +275,10 @@ func (d *Documents) Cancel(ctx context.Context, doctype, name string, version in
 }
 
 // Transition takes the workflow transition action of a document of a DocType with a workflow and returns the
-// document as stored. The document must be at version. As everywhere in a job, the roles of the transition
-// and the rights are not checked (the system context), but the BeforeTransition hooks and the validation run.
+// document as stored. The document must be at version. Like every call of the handle it acts as the handle's
+// caller: in a method the roles of the transition and the rights of the user are checked (permission_denied
+// when the user may not take it); only a job's handle is the system context, for which they are not. The
+// BeforeTransition hooks and the validation run in both.
 func (d *Documents) Transition(ctx context.Context, doctype, name, action string, version int64) (*StoredDocument, error) {
 	stored, err := db.Transition(ctx, d.tx, d.registry, doctype, name, action, version, d.caller)
 	return d.result(stored, err)

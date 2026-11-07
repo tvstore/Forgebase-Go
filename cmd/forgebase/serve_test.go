@@ -576,8 +576,8 @@ func TestTheWorkerOfABinaryWithoutAppJobsRunsTheBuiltInJobsAndStopsOnSIGTERM(t *
 			break
 		}
 	}
-	// Rust says 4 job types: forgebase.deliver_webhook arrives with the webhooks (P7).
-	if !strings.Contains(log.String(), "3 job type(s)") {
+	// Three clean-up jobs and the webhook delivery (M9.2).
+	if !strings.Contains(log.String(), "4 job type(s)") {
 		t.Errorf("%s", log.String())
 	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {

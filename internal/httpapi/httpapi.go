@@ -50,10 +50,10 @@ import (
 //	DELETE /resource/{doctype}/{name}?version=N    204
 //	POST /resource/{doctype}/{name}/submit         body {"version"}: 200 {"data": doc}; /cancel the same
 //	POST /resource/{doctype}/{name}/amend          body {"version"}: 201 {"data": new doc}
+//	POST /method/{app}.{method}                    body: a JSON object, optional (M9.1, ADR 0019): 200 {"data": ..}
 //
-// Anything else is 404, a wrong method is 405 with Allow. The routes of later phases (transition,
-// transitions and history, views, summary, report, export, import, method, customize and
-// user-permissions) answer 404 like any unknown path until the phase that ports them.
+// Anything else is 404, a wrong method is 405 with Allow. The routes of later phases (export, import,
+// customize and user-permissions) answer 404 like any unknown path until the phase that ports them.
 //
 // With Config.DeskDir set, GET /desk/, /desk/index.html and /desk/assets/{name} serve the built desk
 // from that directory (see desk.go for the allow-list and the headers). The Host routing applies to
@@ -103,6 +103,8 @@ type State struct {
 	logins   chan struct{}
 	name     string
 	routes   []*route
+	// methods runs the app methods (M9.1); nil when the binary has none (every method call is a 404).
+	methods MethodDispatch
 }
 
 // NewState creates the state of a site. The registry must be the one the database schema was synced

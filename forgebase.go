@@ -90,11 +90,25 @@
 // through GET /api/v1/report and POST /api/v1/report/{app}.{name}; `forgebase migrate` prepares every report
 // and refuses one that does not fit its declaration. See [Report] and ADR 0016.
 //
+// # Methods
+//
+// An app defines a method with [App.Method]: a function a client calls over HTTP with
+// POST /api/v1/method/{app}.{method} and a JSON body. It runs as the authenticated caller (the permission rules
+// of the DocTypes are the only decision) in one database transaction that commits when the handler returns nil
+// and is rolled back on every error or panic; it may enqueue jobs, which exist if and only if it commits:
+//
+//	forgebase.NewApp("sales").
+//		Method("order_summary", forgebase.NewMethod(orderSummary).Roles("Sales User", "Sales Manager"))
+//
+// There are no guest methods: a method names its roles or says [Method.AnyUser]. See [MethodHandler] for the
+// rules and ADR 0019.
+//
 // # The binary
 //
 // `forgebase [OPTIONS] COMMAND`: migrate (framework migrations, DocType schema sync and app
 // migrations and the sync of the schedules), doc (insert, get, list, update, delete, submit, cancel,
-// amend, and with a workflow transition), user, token, job (list, show, retry, enqueue), worker (runs the background jobs and the
+// amend, and with a workflow transition), user, token, job (list, show, retry, enqueue), webhook (add, list,
+// disable, enable, remove, rotate-secret, test), worker (runs the background jobs and the
 // scheduler), serve (the HTTP API; no migrations) and new-app (writes a new app module that builds and passes its tests; needs
 // no database, see docs/guide/first-app.md). Configuration comes from FORGEBASE_DATABASE_URL (the
 // database of the one implicit site `default`), and for serve from FORGEBASE_LISTEN,
@@ -192,8 +206,9 @@ func WeeklyOn(weekday time.Weekday, hour, minute int) Schedule {
 	return app.WeeklyOn(weekday, hour, minute)
 }
 
-// Documents are the documents a job can reach, as the trusted system context: Get, List, Insert, Update, Delete,
-// Submit, Cancel, Transition and Amend. Get it from JobContext.Documents.
+// Documents are the documents a job or a method can reach: Get, List, Insert, Update, Delete, Submit, Cancel,
+// Transition and Amend. Get it from JobContext.Documents (the trusted system context) or MethodContext.Documents
+// (the caller, whose permission rules apply).
 type Documents = app.Documents
 
 // StoredDocument is a document as a job reads it: its name, version, docstatus and the [Document] with the
@@ -289,6 +304,38 @@ func CheckColumn(name string) *Column { return app.CheckColumn(name) }
 
 // LinkColumn is the name of a document of doctype (text or varchar); the desk shows it as a link.
 func LinkColumn(name, doctype string) *Column { return app.LinkColumn(name, doctype) }
+
+// ---- methods ----------------------------------------------------------------------------------
+
+// Method is an app method and who may call it, for [App.Method]; build one with [NewMethod] and give it
+// exactly one of Roles and AnyUser. The godoc of [MethodHandler] has the rules.
+type Method = app.Method
+
+// NewMethod is a method run by handler.
+func NewMethod(handler MethodHandler) *Method { return app.NewMethod(handler) }
+
+// MethodHandler is what an app method does: a function that gets the [MethodContext] and returns the value that
+// is sent as {"data": value}, or an error. The godoc of the type has the rules (as the caller, one
+// transaction, errors).
+type MethodHandler = app.MethodHandler
+
+// MethodContext is what a running method knows (Name, Caller, Body, DecodeBody) and may do (Documents, as the
+// caller; Enqueue). It owns the transaction the method runs in.
+type MethodContext = app.MethodContext
+
+// MethodCaller is the user who called a method: Username, Roles and HasRole. Read-only.
+type MethodCaller = app.MethodCaller
+
+// MethodError is why a method failed on purpose: a 400 or 422 with the code method_error and a message
+// written for users. Make one with [MethodBadRequest] or [MethodUnprocessable]; a [DocError] returned as it
+// is keeps the status and code of the document API.
+type MethodError = app.MethodError
+
+// MethodBadRequest is a 400 method_error with this message, sent to the client as it is.
+func MethodBadRequest(message string) *MethodError { return app.MethodBadRequest(message) }
+
+// MethodUnprocessable is a 422 method_error with this message, sent to the client as it is.
+func MethodUnprocessable(message string) *MethodError { return app.MethodUnprocessable(message) }
 
 // ---- what a hook implements, receives and changes ---------------------------------------------
 

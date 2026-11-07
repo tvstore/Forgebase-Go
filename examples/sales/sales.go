@@ -2,14 +2,17 @@
 //
 // It shows what an app is made of (DocTypes, hooks, a data migration, background jobs and a schedule) using the
 // public forgebase API only. cmd/sales puts it into a binary; the module examples/sales_extension builds on it.
-// The method and the fixture of the Rust example arrive with the phase that ports the framework features they use
-// (README.md has the list).
+// The fixture of the Rust example arrives with the phase that ports the framework feature it uses (README.md has
+// the list).
 package sales
 
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/tvstore/forgebase-go"
@@ -51,6 +54,10 @@ func App() *forgebase.App {
 		Job("daily_summary", dailySummary).
 		// Every day at 02:00 UTC. Run `migrate` after changing a schedule: it stores them.
 		Schedule("daily_summary", forgebase.DailyAt(2, 0)).
+		// An app method (ADR 0019): POST /api/v1/method/sales.order_summary, JSON in and out. It runs as the
+		// caller, so the read rules of sales_order decide what it counts. See the guide
+		// docs/guide/integration.md.
+		Method("order_summary", forgebase.NewMethod(orderSummary).Roles("Sales User", "Sales Manager")).
 		// A query report (ADR 0016): SQL compiled into the binary, run by the roles named here in a read-only
 		// transaction. Parameters and columns are positional, see the SQL file.
 		Report("sales_by_customer",
@@ -66,8 +73,7 @@ func App() *forgebase.App {
 				Column(forgebase.DateColumn("last_order"))).
 		// Data migrations (SQL, append-only): see the comments in the file.
 		Migrations(migrations)
-	// A later phase adds to this chain, in the order of the Rust example: the method order_summary and the
-	// fixtures (P7).
+	// A later phase adds to this chain, in the order of the Rust example: the fixtures (P7).
 }
 
 // OrderRules are the business rules of a sales order: computed amounts and total, and what a submit needs.
@@ -249,6 +255,165 @@ func logOrderEvent(ctx context.Context, job *forgebase.JobContext) error {
 		return err
 	}
 	return nil
+}
+
+// states are the workflow states of sales_order (see its [workflow]), the keys of the by_state object of
+// sales.order_summary. A test checks that the DocType file names each of them.
+var states = []string{"Draft", "Pending Approval", "Approved", "Cancelled"}
+
+// orderSummary is the method sales.order_summary: how many sales orders there are, their total and how many
+// are in each workflow state. The counts come from one query per state, so they are not one snapshot: an order
+// that changes state while the method runs may be counted twice or not at all.
+//
+// Input (a JSON object, every key optional, any other key is a 400):
+// {"customer": "<customer name>", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}. from and to bound order_date, both
+// included.
+//
+// Output: {"orders": 3, "total": "123.50", "by_state": {"Draft": 1, "Pending Approval": 0, "Approved": 2,
+// "Cancelled": 0}}. total is a decimal as a string (never a float), the sum over every counted order whatever
+// its state.
+//
+// As the caller. The orders are read through m.Documents(), which acts as the user who called, so the
+// permission rules of sales_order apply: an order the caller may not read is not counted. (sales_order has no
+// if_owner rule: a Sales User and a Sales Manager read every order. With such a rule the same code would count
+// only the caller's own orders, with no change here.)
+//
+// No limit. Documents.List returns at most one page of 500 and has no offset, so the handler pages by name (the
+// sort ends with it and it is unique): it asks for the orders whose name is greater than the last one it saw.
+// The workflow state is a filter, one run per state, because the public StoredDocument does not carry it.
+func orderSummary(ctx context.Context, m *forgebase.MethodContext) (any, error) {
+	filters, err := summaryFilters(m.Body())
+	if err != nil {
+		return nil, err
+	}
+	documents := m.Documents()
+	orders := 0
+	total := forgebase.DecimalFromInt(0)
+	byState := map[string]int{}
+	for _, state := range states {
+		count, sum, err := stateTotals(ctx, documents, filters, state)
+		if err != nil {
+			return nil, err
+		}
+		var fits bool
+		if total, fits = total.Add(sum); !fits {
+			return nil, forgebase.MethodUnprocessable("the total is too large")
+		}
+		orders += count
+		byState[state] = count
+	}
+	total, _ = total.Rescale(2) // a sum of amounts of scale 2 fits again at scale 2
+	return map[string]any{"orders": orders, "total": total.String(), "by_state": byState}, nil
+}
+
+// summaryFilter is a filter of the summary: field, operator, value.
+type summaryFilter struct {
+	field string
+	op    forgebase.FilterOp
+	value forgebase.Value
+}
+
+// summaryFilters checks the body of sales.order_summary and turns it into list filters. Every problem is a 400
+// whose message says what to fix.
+func summaryFilters(body json.RawMessage) ([]summaryFilter, error) {
+	var input map[string]any
+	if err := json.Unmarshal(body, &input); err != nil || input == nil {
+		return nil, forgebase.MethodBadRequest("the body must be a JSON object")
+	}
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if key != "customer" && key != "from" && key != "to" {
+			return nil, forgebase.MethodBadRequest(fmt.Sprintf("unknown key '%s': the keys are customer, from and to", key))
+		}
+	}
+	var filters []summaryFilter
+	switch name := input["customer"].(type) {
+	case nil:
+	case string:
+		if strings.TrimSpace(name) == "" {
+			return nil, forgebase.MethodBadRequest("customer must be the name of a customer, a non-empty string")
+		}
+		filters = append(filters, summaryFilter{"customer", forgebase.FilterEq, forgebase.Text(name)})
+	default:
+		return nil, forgebase.MethodBadRequest("customer must be the name of a customer, a non-empty string")
+	}
+	var dates []time.Time
+	for _, bound := range []struct {
+		key string
+		op  forgebase.FilterOp
+	}{{"from", forgebase.FilterGe}, {"to", forgebase.FilterLe}} {
+		notADate := forgebase.MethodBadRequest(bound.key + " must be a date like 2026-10-31")
+		switch text := input[bound.key].(type) {
+		case nil:
+		case string:
+			date, ok := parseDate(text)
+			if !ok {
+				return nil, notADate
+			}
+			dates = append(dates, date)
+			filters = append(filters, summaryFilter{"order_date", bound.op, forgebase.NewDate(date.Year(), date.Month(), date.Day())})
+		default:
+			return nil, notADate
+		}
+	}
+	if len(dates) == 2 && dates[0].After(dates[1]) {
+		return nil, forgebase.MethodBadRequest("from must not be after to")
+	}
+	return filters, nil
+}
+
+// parseDate is a date written YYYY-MM-DD (four, two and two digits) that exists, or false.
+func parseDate(text string) (time.Time, bool) {
+	if len(text) != 10 || text[4] != '-' || text[7] != '-' {
+		return time.Time{}, false
+	}
+	for i := 0; i < len(text); i++ {
+		if i != 4 && i != 7 && (text[i] < '0' || text[i] > '9') {
+			return time.Time{}, false
+		}
+	}
+	date, err := time.Parse(time.DateOnly, text)
+	return date, err == nil
+}
+
+// stateTotals is how many orders in state the caller can read (with the filters) and the sum of their totals,
+// paging through the list by name.
+func stateTotals(ctx context.Context, documents *forgebase.Documents, filters []summaryFilter, state string) (int, forgebase.Decimal, error) {
+	count := 0
+	sum := forgebase.DecimalFromInt(0)
+	last := ""
+	for {
+		query := forgebase.NewListQuery().
+			Filter("workflow_state", forgebase.FilterEq, forgebase.Text(state)).
+			Limit(page)
+		for _, f := range filters {
+			query = query.Filter(f.field, f.op, f.value)
+		}
+		if last != "" {
+			query = query.Filter("name", forgebase.FilterGt, forgebase.Text(last))
+		}
+		orders, err := documents.List(ctx, "sales_order", query)
+		if err != nil {
+			return 0, sum, err
+		}
+		for _, order := range orders {
+			count++
+			if amount := order.Document.Values["total"]; amount.Kind == forgebase.KindDecimal {
+				var fits bool
+				if sum, fits = sum.Add(amount.Dec); !fits {
+					return 0, sum, forgebase.MethodUnprocessable("the total is too large")
+				}
+			}
+		}
+		if len(orders) < page {
+			return count, sum, nil
+		}
+		last = orders[len(orders)-1].Name
+	}
 }
 
 // page is the page Documents.List returns at most.

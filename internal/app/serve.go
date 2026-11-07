@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tvstore/forgebase-go/internal/core"
 	"github.com/tvstore/forgebase-go/internal/httpapi"
 )
 
@@ -76,7 +75,7 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 	// Every site's registry is composed before any pool is opened, so a configuration or composition
 	// error is reported without touching a database. Each site gets a registry of its own, of the apps
 	// installed on it.
-	registries, err := r.siteRegistries(sites, r.m.str("doctypes"))
+	composeds, err := r.siteComposeds(sites, r.m.str("doctypes"))
 	if err != nil {
 		return err
 	}
@@ -87,10 +86,11 @@ func (r *runner) serve(ctx context.Context, cfg *config) error {
 		}
 	}()
 	for i, site := range sites {
-		sc, err := site.open(ctx, r.o.Getenv, registries[i], 0)
+		sc, err := site.open(ctx, r.o.Getenv, composeds[i].registry, 0)
 		if err != nil {
 			return err
 		}
+		sc.methods = composeds[i].MethodDispatch()
 		opened = append(opened, sc)
 	}
 	base := httpapi.DefaultConfig()
@@ -245,18 +245,17 @@ func serveError(err error) error {
 	return err
 }
 
-// siteRegistries composes the registry of each site from the apps installed on it (and the --doctypes
-// directory local, when given): serve and the tests of its per-site wiring use it.
-func (r *runner) siteRegistries(sites []*site, local string) ([]*core.Registry, error) {
-	registries := make([]*core.Registry, len(sites))
+// siteComposeds is the composition of each site: its registry and the handlers of its methods.
+func (r *runner) siteComposeds(sites []*site, local string) ([]*Composed, error) {
+	composeds := make([]*Composed, len(sites))
 	for i, site := range sites {
 		composed, err := r.siteComposed(site, local)
 		if err != nil {
 			return nil, err
 		}
-		registries[i] = composed.registry
+		composeds[i] = composed
 	}
-	return registries, nil
+	return composeds, nil
 }
 
 // routeSites is the Host routing of serve: one httpapi.State per opened site, with that site's pool and
@@ -277,7 +276,7 @@ func routeSites(configured bool, sites []*siteContext, implicitHosts []string, b
 		if configured {
 			appConfig.AllowedHosts = sc.site.hosts
 		}
-		state := httpapi.NewState(sc.pool, sc.registry, appConfig)
+		state := httpapi.NewState(sc.pool, sc.registry, appConfig).WithMethods(sc.methods)
 		if configured {
 			if err := routing.AddSite(sc.site.hosts, state); err != nil {
 				return nil, nil, errf("%s", err)

@@ -422,7 +422,7 @@ func TestAWorkerEnqueuesADueScheduleOnceAndRunsIt(t *testing.T) {
 		t.Error("the job did not run")
 	}
 	eqRow(t, w.one("SELECT (last_run_at IS NOT NULL)::text FROM fb_schedule"), "true")
-	if !strings.Contains(w.log.String(), "worker: started w: 4 job type(s), concurrency 2") {
+	if !strings.Contains(w.log.String(), "worker: started w: 5 job type(s), concurrency 2") {
 		t.Errorf("%s", w.log.String())
 	}
 }

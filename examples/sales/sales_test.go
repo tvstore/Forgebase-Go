@@ -23,10 +23,10 @@ import (
 // Ported in P4 (the app model): the hooks without a database, the data migration, the computed amounts and
 // total over HTTP and the level 1 field credit_limit. Ported in P5 (jobs): the job tests. Ported in P6 (workflow
 // and reports): the workflow tests over HTTP (the transitions of the job tests included) and the report tests.
+// Ported in P7.1 (methods): the six order_summary tests (the_summary_*) and the_summary_states_are_the_workflow_states.
 // Deferred, with the phase whose feature the Rust test uses:
 //
-//   - P7 (methods and fixtures): the_summary_states_are_the_workflow_states and the six order_summary tests
-//     (the_summary_*), the_fixture_adopts_the_migrated_groups_and_inserts_online and
+//   - P7 (fixtures): the_fixture_adopts_the_migrated_groups_and_inserts_online and
 //     the_fixture_groups_are_usable_by_customers.
 
 const orders = "/api/v1/resource/sales_order"
@@ -1231,4 +1231,184 @@ func TestADailySummaryNeedsAScheduledForTime(t *testing.T) {
 	if n := scalar(e, "SELECT count(*)::text FROM fb_job WHERE last_error LIKE 'the payload must be {\"scheduled_for\"%'"); n != "3" {
 		t.Errorf("%s jobs with the message", n)
 	}
+}
+
+// ---- The method sales.order_summary ------------------------------------------------------------
+
+const summary = "/api/v1/method/sales.order_summary"
+
+// fourOrders makes four orders in four states, by the Sales User (so the Sales Manager's rules are not the only
+// ones at work): Ada's draft of 10.00 on 2026-10-05, Ada's pending order of 20.50 on 2026-10-10, Bob's approved
+// order of 5.00 on 2026-11-02 and Ada's cancelled order of 1.10 on 2026-10-20. Together 36.60.
+func fourOrders(t *testing.T, e *env) {
+	t.Helper()
+	customer(t, e.manager)
+	expectStatus(t, e.manager.Post("/api/v1/resource/customer", map[string]any{"email": "bob@example.com", "full_name": "Bob"}), 201)
+	orderOf(t, e, "ada@example.com", "2026-10-05", "10.00", false)
+	pending := orderOf(t, e, "ada@example.com", "2026-10-10", "20.50", false)
+	expectStatus(t, transition(e.user, pending, "Submit for Approval", 1), 200)
+	orderOf(t, e, "bob@example.com", "2026-11-02", "5.00", true)
+	cancelled := orderOf(t, e, "ada@example.com", "2026-10-20", "1.10", true)
+	expectStatus(t, transition(e.manager, cancelled, "Cancel", 3), 200)
+}
+
+func jsonValue(t *testing.T, text string) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func wantData(t *testing.T, r *fbtest.Reply, want string) {
+	t.Helper()
+	if !reflect.DeepEqual(r.Data(), jsonValue(t, want)) {
+		t.Errorf("data %s, want %s", r.Text, want)
+	}
+}
+
+// Rust: sales.rs::the_summary_states_are_the_workflow_states
+func TestTheSummaryStatesAreTheWorkflowStates(t *testing.T) {
+	// The states are written out in the app; the DocType file is the truth.
+	data, err := os.ReadFile("doctypes/sales_order.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doctype := string(data)
+	for _, state := range []string{"Draft", "Pending Approval", "Approved", "Cancelled"} {
+		if !strings.Contains(doctype, "[[workflow.states]]\nname = \""+state+"\"") {
+			t.Errorf("%s is not a workflow state of sales_order", state)
+		}
+	}
+	if n := strings.Count(doctype, "[[workflow.states]]"); n != 4 {
+		t.Errorf("%d workflow states", n)
+	}
+}
+
+// Rust: sales.rs::the_summary_counts_orders_totals_and_states
+func TestTheSummaryCountsOrdersTotalsAndStates(t *testing.T) {
+	e := newEnv(t)
+	fourOrders(t, e)
+
+	all := e.user.Post(summary, map[string]any{})
+	expectStatus(t, all, 200)
+	wantData(t, all, `{"orders": 4, "total": "36.60",
+		"by_state": {"Draft": 1, "Pending Approval": 1, "Approved": 1, "Cancelled": 1}}`)
+	// The total is a string with its scale, not a float.
+	if _, ok := at(all.Data(), "total").(string); !ok {
+		t.Errorf("%s", all.Text)
+	}
+
+	// One customer; the bounds are both included; null is the same as absent.
+	ada := e.user.Post(summary, map[string]any{"customer": "ada@example.com", "from": nil})
+	if at(ada.Data(), "orders") != float64(3) || at(ada.Data(), "total") != "31.60" {
+		t.Errorf("%s", ada.Text)
+	}
+	october := e.user.Post(summary, map[string]any{"from": "2026-10-10", "to": "2026-10-20"})
+	wantData(t, october, `{"orders": 2, "total": "21.60",
+		"by_state": {"Draft": 0, "Pending Approval": 1, "Approved": 0, "Cancelled": 1}}`)
+	none := e.user.Post(summary, map[string]any{"customer": "nobody@example.com"})
+	wantData(t, none, `{"orders": 0, "total": "0.00",
+		"by_state": {"Draft": 0, "Pending Approval": 0, "Approved": 0, "Cancelled": 0}}`)
+
+	// A Sales Manager is allowed too, and sees the same orders; so does a request without a body at all.
+	manager := e.manager.Post(summary, map[string]any{})
+	if !reflect.DeepEqual(manager.Data(), all.Data()) {
+		t.Errorf("%s", manager.Text)
+	}
+	noBody := e.user.PostRaw(summary, "", nil)
+	if !reflect.DeepEqual(noBody.Data(), all.Data()) {
+		t.Errorf("%s", noBody.Text)
+	}
+}
+
+// Rust: sales.rs::the_summary_counts_what_the_roles_can_read
+func TestTheSummaryCountsWhatTheRolesCanRead(t *testing.T) {
+	// sales_order has no if_owner rule: the read right of Sales User and Sales Manager is for every order, so
+	// an order of the manager is counted for the Sales User too. (The handler reads through the caller's
+	// documents handle, so an if_owner rule would narrow the count with no change to it; the framework tests
+	// if_owner inside a method handler.)
+	e := newEnv(t)
+	customer(t, e.manager)
+	created := e.manager.Post(orders, map[string]any{"customer": "ada@example.com", "items": twoItems()})
+	expectStatus(t, created, 201)
+	seen := e.user.Post(summary, map[string]any{})
+	if at(seen.Data(), "orders") != float64(1) || at(seen.Data(), "total") != "32.00" || at(seen.Data(), "by_state", "Draft") != float64(1) {
+		t.Errorf("%s", seen.Text)
+	}
+}
+
+// Rust: sales.rs::the_summary_is_closed_to_everyone_else
+func TestTheSummaryIsClosedToEveryoneElse(t *testing.T) {
+	e := newEnv(t)
+	fourOrders(t, e)
+
+	// No session: 401.
+	expectStatus(t, e.anon.Post(summary, map[string]any{}), 401)
+	// A role that is not in the method's list: the method does not exist for this user, 404.
+	outsider := e.outsider.Post(summary, map[string]any{})
+	expectStatus(t, outsider, 404)
+	// An unknown method is 404 as well, so the two cannot be told apart.
+	unknown := e.user.Post("/api/v1/method/sales.nothing", map[string]any{})
+	expectStatus(t, unknown, 404)
+	if !reflect.DeepEqual(unknown.Body, outsider.Body) {
+		t.Errorf("%s != %s", unknown.Text, outsider.Text)
+	}
+	// A cookie call needs the CSRF header.
+	expectStatus(t, e.user.WithoutCSRF().Post(summary, map[string]any{}), 403)
+	// An API token needs no CSRF header.
+	byToken := e.anon.WithToken(e.db.CreateToken("ann")).Post(summary, map[string]any{})
+	expectStatus(t, byToken, 200)
+	if at(byToken.Data(), "orders") != float64(4) {
+		t.Errorf("%s", byToken.Text)
+	}
+	// The token of the Accountant is no better than the session.
+	expectStatus(t, e.anon.WithToken(e.db.CreateToken("eve")).Post(summary, map[string]any{}), 404)
+}
+
+// Rust: sales.rs::the_summary_refuses_a_bad_input_with_a_clear_message
+func TestTheSummaryRefusesABadInputWithAClearMessage(t *testing.T) {
+	e := newEnv(t)
+	for _, c := range []struct {
+		body    map[string]any
+		message string
+	}{
+		{map[string]any{"from": "2026-13-01"}, "from must be a date"},
+		{map[string]any{"from": "2026-10-1"}, "from must be a date"},
+		{map[string]any{"to": "yesterday"}, "to must be a date"},
+		{map[string]any{"to": 20261031}, "to must be a date"},
+		{map[string]any{"customer": 5}, "customer must be the name"},
+		{map[string]any{"customer": "  "}, "customer must be the name"},
+		{map[string]any{"limit": 10}, "unknown key 'limit'"},
+		{map[string]any{"from": "2026-10-31", "to": "2026-10-01"}, "from must not be after to"},
+	} {
+		r := e.user.Post(summary, c.body)
+		if r.Status != 400 || r.ErrorCode() != "method_error" || !strings.Contains(r.ErrorMessage(), c.message) {
+			t.Errorf("%v: %d %s", c.body, r.Status, r.Text)
+		}
+	}
+	// A body that is not an object.
+	expectStatus(t, e.user.Post(summary, []int{1}), 400)
+}
+
+// Rust: sales.rs::the_summary_pages_through_more_than_one_page_of_orders
+func TestTheSummaryPagesThroughMoreThanOnePageOfOrders(t *testing.T) {
+	e := newEnv(t)
+	customer(t, e.manager)
+	// 1 001 drafts of 2.00 written with SQL (through the API it would take minutes; a Link column holds the id
+	// of the target): two full pages of 500 and a page of one, which is where a paging mistake shows. One
+	// pending order of 3.00 through the API.
+	e.db.Exec(`INSERT INTO doc_sales_order
+		   (id, name, owner, created_at, modified_at, modified_by, customer, total, workflow_state)
+		 SELECT gen_random_uuid(), 'SO-BULK-' || lpad(n::text, 5, '0'), 'ann', now(), now(), 'ann',
+		        (SELECT id FROM doc_customer WHERE name = 'ada@example.com'), 2.00, 'Draft'
+		 FROM generate_series(1, 1001) AS n`)
+	pending := orderOf(t, e, "ada@example.com", "2026-10-05", "3.00", false)
+	expectStatus(t, transition(e.user, pending, "Submit for Approval", 1), 200)
+
+	r := e.user.Post(summary, map[string]any{})
+	expectStatus(t, r, 200)
+	wantData(t, r, `{"orders": 1002, "total": "2005.00",
+		"by_state": {"Draft": 1001, "Pending Approval": 1, "Approved": 0, "Cancelled": 0}}`)
 }

@@ -1,6 +1,6 @@
 # The command-line tool
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5.1), `site list|create|backup|restore` (P5.2, with TLS to PostgreSQL: `sslmode=require` and `sslrootcert` in the database URL), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command (`doc transition`, `data`, `webhook`, `customize`, `user permission`) parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. In the Go binary today: `--version`, `--help` at every level, `migrate` (with the app migrations of a binary that has apps, P4), `doc insert|get|list|update|delete|submit|cancel|amend|transition`, `user create|set-password|add-role|remove-role|disable|enable`, `token create|revoke`, `job list|show|retry|enqueue`, `worker` (P5.1), `webhook add|list|disable|enable|remove|rotate-secret|test` (P7.1), `site list|create|backup|restore` (P5.2, with TLS to PostgreSQL: `sslmode=require` and `sslrootcert` in the database URL), `serve` and `new-app` (P4: it writes a Go module, see [Your first app](first-app.md)). Every other command (`data`, `customize`, `user permission`) parses its arguments, then fails with exit code 1 and `error: <command> is not available yet in the Go port (arrives in phase P<n>)`; this guide stays the description of the target. See [Parity with the Rust command line](#parity-with-the-rust-command-line).
 
 Walkthrough of the `forgebase` commands (or the binary of your app) for users and tokens, background jobs, webhooks and sites. The document commands (`doc`) are in [Getting started](getting-started.md#quick-start). Run `forgebase --help` for every option.
 
@@ -82,7 +82,7 @@ forgebase job show <id>                             # every field as JSON, the p
 forgebase job retry <id>                            # a dead job goes back to the queue
 ```
 
-The first signal stops the worker from claiming and lets running jobs finish for 30 seconds (then they are given back, without counting an attempt); a second signal exits at once, and another worker recovers what was running when its lease expires. A handler that ignores its `context` does not hold the process: it is abandoned after the grace period (and a wait of at most 5 seconds, while the pool has a free connection: handlers abandoned earlier keep theirs), and a second signal exits within about a second; its job stays `running` until the lease expires. In an app's tests, `fbtest.RunJobs(binary, db)` (`forgebase/testing`) runs the jobs that are due. Two complete examples: `cd examples/sales && go run ./cmd/sales worker` runs the log and daily-summary jobs of [`examples/sales`](../../examples/sales/README.md) (and `go run ./cmd/sales_extension worker` in `examples/sales_extension` those of both example apps), after `migrate`. Go-specific: the worker's log lines go to standard error (`worker: started ...`, `worker: job crm.welcome <id> done (attempt 1)`, `... dead after attempt n: ...`, `worker: stopped`), and the handler's `context` is cancelled when an attempt times out or the worker stops, so a handler should pass it to every call (it is documented on `JobHandler`). The built-in `forgebase.deliver_webhook` arrives with the webhooks (P7): until then the worker of the stock binary says `3 job type(s)`.
+The first signal stops the worker from claiming and lets running jobs finish for 30 seconds (then they are given back, without counting an attempt); a second signal exits at once, and another worker recovers what was running when its lease expires. A handler that ignores its `context` does not hold the process: it is abandoned after the grace period (and a wait of at most 5 seconds, while the pool has a free connection: handlers abandoned earlier keep theirs), and a second signal exits within about a second; its job stays `running` until the lease expires. In an app's tests, `fbtest.RunJobs(binary, db)` (`forgebase/testing`) runs the jobs that are due. Two complete examples: `cd examples/sales && go run ./cmd/sales worker` runs the log and daily-summary jobs of [`examples/sales`](../../examples/sales/README.md) (and `go run ./cmd/sales_extension worker` in `examples/sales_extension` those of both example apps), after `migrate`. Go-specific: the worker's log lines go to standard error (`worker: started ...`, `worker: job crm.welcome <id> done (attempt 1)`, `... dead after attempt n: ...`, `worker: stopped`), and the handler's `context` is cancelled when an attempt times out or the worker stops, so a handler should pass it to every call (it is documented on `JobHandler`). The built-in `forgebase.deliver_webhook` (P7.1) is registered in every binary, so the worker of the stock binary says `4 job type(s)`.
 
 ### Scheduled jobs
 
@@ -108,21 +108,21 @@ A webhook sends a signed JSON snapshot of a document to a URL after it was inser
 
 ```sh
 # Add one. The secret is printed once; store it now.
-cargo run -p sales -- webhook add orders \
+go run ./cmd/sales webhook add orders \
   --doctype sales_order --events insert,submit \
   --url https://hooks.example.com/forgebase/orders --site main
 # added webhook orders
 # secret: 3f9c...   (64 hex characters; it signs every delivery)
 
-cargo run -p sales -- webhook list
+go run ./cmd/sales webhook list
 # NAME    DOCTYPE      EVENTS         URL                          ENABLED  ALLOW_PRIVATE  INSECURE_HTTP
 # orders  sales_order  insert,submit  https://hooks.example.com:443  yes    no             no
 
-cargo run -p sales -- webhook test orders       # one signed test delivery, now, without the queue
-cargo run -p sales -- webhook disable orders    # no new deliveries; queued ones are dropped when they run
-cargo run -p sales -- webhook enable orders
-cargo run -p sales -- webhook rotate-secret orders   # prints a new secret once
-cargo run -p sales -- webhook remove orders
+go run ./cmd/sales webhook test orders       # one signed test delivery, now, without the queue
+go run ./cmd/sales webhook disable orders    # no new deliveries; queued ones are dropped when they run
+go run ./cmd/sales webhook enable orders
+go run ./cmd/sales webhook rotate-secret orders   # prints a new secret once
+go run ./cmd/sales webhook remove orders
 ```
 
 - **`add NAME --doctype D --events E1,E2 --url URL`.** The name follows the rules of a DocType name (lower-case letters, digits, underscores). The DocType must exist on the site and must not be a child DocType. The events are `insert`, `update`, `delete`, `submit`, `cancel` and `transition`; a workflow transition that submits or cancels the document also fires `submit` or `cancel`, and an amendment fires `insert`. The URL must be `https://`, have a host and **no user info** (`user:password@` is refused: put a token in the path or, better, verify the signature). Like the `doc` commands it needs `--doctypes DIR` when the binary has no apps. Every error repeats nothing of the URL.

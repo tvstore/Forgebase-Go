@@ -142,6 +142,10 @@ const (
 	// ErrReportCheck: migrate found reports whose SQL does not fit what they declare (Problems as
 	// text in Details).
 	ErrReportCheck
+	// ErrWebhook: a webhook cannot be added, changed or removed: the name is invalid or taken, the
+	// events or the secret are invalid, or no webhook has the name (Message). Raised by the `webhook`
+	// commands, never by a document operation. The message never contains the secret.
+	ErrWebhook
 )
 
 // Error is everything that can go wrong in this package. Only the members that belong to Kind are
@@ -313,6 +317,8 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("report check failed (%d problem(s))", len(e.Details))
 	case ErrJob:
 		return "job: " + e.Message
+	case ErrWebhook:
+		return "webhook: " + e.Message
 	case ErrHook:
 		return fmt.Sprintf("%s hook of DocType `%s` rejected the operation: %s", e.Hook, e.DocType, e.Message)
 	}

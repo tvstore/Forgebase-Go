@@ -13,9 +13,8 @@ import (
 
 // The outbox side of the outgoing webhooks (M9.2, ADR 0020) against a real PostgreSQL: the delivery jobs
 // that every document operation enqueues in its own transaction. Ported from
-// crates/forgebase-db/tests/webhooks.rs, the tests that are about the outbox. The management of the
-// webhooks (add, list, enable, remove, rotate) is P7: a webhook is added here with a plain INSERT into
-// fb_webhook (what webhooks::add does, without its checks).
+// crates/forgebase-db/tests/webhooks.rs: the tests of the outbox and, since P7.1, the management of the
+// webhooks (add, list, enable, remove, rotate), which is in webhooks.go.
 
 const whNote = `
 name = "note"
@@ -108,15 +107,12 @@ func whSetup(t *testing.T) (*dbtest.DB, *core.Registry) {
 	return d, reg
 }
 
-// hook adds a webhook the way webhooks::add stores it.
-func hook(t *testing.T, d *dbtest.DB, name, doctype string, events ...string) {
+// hook adds a webhook of reg with db.AddWebhook (a random secret, https://example.com/hook).
+func hook(t *testing.T, d *dbtest.DB, reg *core.Registry, name, doctype string, events ...string) {
 	t.Helper()
-	list := make([]string, len(events))
-	for i, e := range events {
-		list[i] = "'" + e + "'"
+	if _, err := db.AddWebhook(bg, d.Pool, reg, db.NewWebhook{Name: name, DocType: doctype, Events: events, URL: "https://example.com/hook"}, nil); err != nil {
+		t.Fatalf("add: %v", err)
 	}
-	d.Exec(fmt.Sprintf("INSERT INTO fb_webhook (name, doctype, events, url, secret) VALUES ('%s', '%s', ARRAY[%s]::text[], 'https://example.com/hook', 'secret')",
-		name, doctype, strings.Join(list, ", ")))
 }
 
 // deliveries are webhook/event/doctype/name/enqueued_by/status of every delivery job, oldest first.
@@ -133,11 +129,11 @@ func deliveries(d *dbtest.DB) []string {
 // Rust: webhooks.rs::a_committed_insert_enqueues_one_job_per_matching_webhook
 func TestACommittedInsertEnqueuesOneJobPerMatchingWebhook(t *testing.T) {
 	d, reg := whSetup(t)
-	hook(t, d, "a_both", "note", "insert", "update")
-	hook(t, d, "b_insert", "note", "insert")
-	hook(t, d, "c_update_only", "note", "update")
-	hook(t, d, "d_other_doctype", "invoice", "insert")
-	hook(t, d, "e_disabled", "note", "insert")
+	hook(t, d, reg, "a_both", "note", "insert", "update")
+	hook(t, d, reg, "b_insert", "note", "insert")
+	hook(t, d, reg, "c_update_only", "note", "update")
+	hook(t, d, reg, "d_other_doctype", "invoice", "insert")
+	hook(t, d, reg, "e_disabled", "note", "insert")
 	d.Exec("UPDATE fb_webhook SET enabled = false WHERE name = 'e_disabled'")
 	stored := mustInsert(t, d, reg, "note", doc("title", text("hello")), sys("ann"))
 	want(t, deliveries(d), []string{
@@ -171,7 +167,7 @@ func TestACommittedInsertEnqueuesOneJobPerMatchingWebhook(t *testing.T) {
 // Rust: webhooks.rs::a_rolled_back_or_failed_operation_enqueues_nothing
 func TestARolledBackOrFailedOperationEnqueuesNothing(t *testing.T) {
 	d, reg := whSetup(t)
-	hook(t, d, "w", "note", "insert", "update", "delete")
+	hook(t, d, reg, "w", "note", "insert", "update", "delete")
 	ann := sys("ann")
 	// The caller's own transaction is rolled back after the insert: no job, no document.
 	tx, err := d.Pool.Begin(bg)
@@ -226,7 +222,7 @@ func TestARolledBackOrFailedOperationEnqueuesNothing(t *testing.T) {
 // Rust: webhooks.rs::every_operation_fires_its_events
 func TestEveryOperationFiresItsEvents(t *testing.T) {
 	d, reg := whSetup(t)
-	hook(t, d, "w", "invoice", "insert", "update", "delete", "submit", "cancel", "transition")
+	hook(t, d, reg, "w", "invoice", "insert", "update", "delete", "submit", "cancel", "transition")
 	ann := sys("ann")
 	one := mustInsert(t, d, reg, "invoice", doc("title", text("inv")), ann)
 	two := mustUpdate(t, d, reg, "invoice", one.Name, 1, titleChange("inv 2"), ann)
@@ -257,8 +253,8 @@ func TestEveryOperationFiresItsEvents(t *testing.T) {
 // Rust: webhooks.rs::a_transition_fires_transition_and_the_docstatus_event
 func TestATransitionFiresTransitionAndTheDocstatusEvent(t *testing.T) {
 	d, reg := whSetup(t)
-	hook(t, d, "t", "order", "transition")
-	hook(t, d, "s", "order", "submit", "cancel")
+	hook(t, d, reg, "t", "order", "transition")
+	hook(t, d, reg, "s", "order", "submit", "cancel")
 	ann := sys("ann")
 	order := mustInsert(t, d, reg, "order", doc("title", text("o")), ann)
 	step := func(stored *db.StoredDocument, action string) *db.StoredDocument {
@@ -292,7 +288,7 @@ func TestATransitionFiresTransitionAndTheDocstatusEvent(t *testing.T) {
 // Rust: webhooks.rs::a_delete_sends_the_document_as_it_was_with_its_rows
 func TestADeleteSendsTheDocumentAsItWasWithItsRows(t *testing.T) {
 	d, reg := whSetup(t)
-	hook(t, d, "w", "invoice", "delete")
+	hook(t, d, reg, "w", "invoice", "delete")
 	withRows := doc("title", text("inv"))
 	withRows.Tables["lines"] = []core.Row{row("item", text("a")), row("item", text("b"))}
 	stored := mustInsert(t, d, reg, "invoice", withRows, sys("ann"))
@@ -306,7 +302,7 @@ func TestADeleteSendsTheDocumentAsItWasWithItsRows(t *testing.T) {
 // Rust: webhooks.rs::a_snapshot_over_the_job_payload_limit_is_sent_without_its_data
 func TestASnapshotOverTheJobPayloadLimitIsSentWithoutItsData(t *testing.T) {
 	d, reg := whSetup(t)
-	hook(t, d, "w", "note", "insert")
+	hook(t, d, reg, "w", "note", "insert")
 	big := doc("title", text("big"), "body", text(strings.Repeat("x", 70_000)))
 	stored, err := db.Insert(bg, d.Pool, reg, "note", big, sys("ann"))
 	if err != nil {
@@ -340,7 +336,7 @@ func TestASnapshotThatCannotBeSerialisedIsSentUnavailableAndTheWriteCommits(t *t
 	d := dbtest.Migrated(t)
 	reg := whWorld(t, whStamp)
 	mustSync(t, d, reg)
-	hook(t, d, "w", "stamp", "insert", "update")
+	hook(t, d, reg, "w", "stamp", "insert", "update")
 	ann := sys("ann")
 	stored := mustInsert(t, d, reg, "stamp", doc("title", text("one")), ann)
 	// A normal snapshot first: data present, not unavailable.
@@ -366,7 +362,7 @@ func TestABinaryWithoutTheDeliveryJobRefusesTheWriteClearly(t *testing.T) {
 	// No AddJob(DeliverWebhookJob): a registry that the framework did not build.
 	reg := registry(t, whNote)
 	mustSync(t, d, reg)
-	hook(t, d, "w", "note", "insert")
+	hook(t, d, reg, "w", "note", "insert")
 	_, err := db.Insert(bg, d.Pool, reg, "note", doc("title", text("x")), sys("ann"))
 	if e := wantKind(t, err, db.ErrJob); !strings.Contains(e.Message, "forgebase.deliver_webhook") {
 		t.Error(e.Message)
@@ -378,8 +374,8 @@ func TestABinaryWithoutTheDeliveryJobRefusesTheWriteClearly(t *testing.T) {
 
 // Rust: webhooks.rs::the_lookup_uses_the_partial_index
 func TestTheLookupUsesThePartialIndex(t *testing.T) {
-	d, _ := whSetup(t)
-	hook(t, d, "w", "note", "insert")
+	d, reg := whSetup(t)
+	hook(t, d, reg, "w", "note", "insert")
 	conn, err := d.Pool.Acquire(bg)
 	if err != nil {
 		t.Fatal(err)
@@ -408,5 +404,210 @@ func TestTheLookupUsesThePartialIndex(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("%v", plan)
+	}
+}
+
+// ---- the management (webhooks.go) -------------------------------------------------------------
+
+func isHexText(s string) bool {
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func newHook(name, doctype string, events ...string) db.NewWebhook {
+	return db.NewWebhook{Name: name, DocType: doctype, Events: events, URL: "https://example.com/x"}
+}
+
+func strp(s string) *string { return &s }
+
+func webhookMessage(t *testing.T, err error) string {
+	t.Helper()
+	return wantKind(t, err, db.ErrWebhook).Message
+}
+
+// Rust: webhooks.rs::adding_checks_the_name_the_events_and_the_doctype
+func TestAddingChecksTheNameTheEventsAndTheDocType(t *testing.T) {
+	d, reg := whSetup(t)
+
+	// A good one: the secret is 32 random bytes as 64 hex characters.
+	secret, err := db.AddWebhook(bg, d.Pool, reg, newHook("good", "note", "insert"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret) != 64 || !isHexText(secret) {
+		t.Errorf("%q", secret)
+	}
+	// A given secret is used as it is.
+	given, err := db.AddWebhook(bg, d.Pool, reg, newHook("given", "note", "insert"), strp("my-own-secret-of-24-bytes"))
+	if err != nil || given != "my-own-secret-of-24-bytes" {
+		t.Fatalf("%q %v", given, err)
+	}
+
+	// A given secret must have at least 16 bytes: 15 are refused, 16 pass; an empty one is its own error.
+	for _, short := range []string{"", "a", "fifteen-bytes!!"} {
+		_, err := db.AddWebhook(bg, d.Pool, reg, newHook("short", "note", "insert"), &short)
+		message := webhookMessage(t, err)
+		expected := "at least 16 bytes"
+		if short == "" {
+			expected = "empty"
+		}
+		if !strings.Contains(message, expected) {
+			t.Errorf("%q: %s", short, message)
+		}
+	}
+	if _, err := db.AddWebhook(bg, d.Pool, reg, newHook("short", "note", "insert"), strp("sixteen-bytes!!!")); err != nil {
+		t.Fatalf("16 bytes are enough: %v", err)
+	}
+	if err := db.RemoveWebhook(bg, d.Pool, "short"); err != nil {
+		t.Fatal(err)
+	}
+	// The name is taken, or not a valid name.
+	_, err = db.AddWebhook(bg, d.Pool, reg, newHook("good", "note", "insert"), nil)
+	if message := webhookMessage(t, err); !strings.Contains(message, "exists already") {
+		t.Error(message)
+	}
+	for _, bad := range []string{"", "Bad", "has space", "1abc", "a-b"} {
+		_, err := db.AddWebhook(bg, d.Pool, reg, newHook(bad, "note", "insert"), nil)
+		message := webhookMessage(t, err)
+		if bad != "" && !strings.Contains(message, "the name "+core.DebugQuote(bad)+" must match") {
+			t.Errorf("%q: %s", bad, message)
+		}
+	}
+	// The DocType must exist and must not be a child DocType.
+	_, err = db.AddWebhook(bg, d.Pool, reg, newHook("a", "nobody", "insert"), nil)
+	wantKind(t, err, db.ErrUnknownDocType)
+	_, err = db.AddWebhook(bg, d.Pool, reg, newHook("b", "invoice_line", "insert"), nil)
+	wantKind(t, err, db.ErrChildDocType)
+	// The events: at least one, all known.
+	for _, events := range [][]string{nil, {"insert", "save"}, {"Insert"}} {
+		_, err := db.AddWebhook(bg, d.Pool, reg, newHook("c", "note", events...), nil)
+		webhookMessage(t, err)
+	}
+	// An empty URL is refused.
+	empty := newHook("c", "note", "insert")
+	empty.URL = ""
+	_, err = db.AddWebhook(bg, d.Pool, reg, empty, nil)
+	if message := webhookMessage(t, err); message != "the URL is empty" {
+		t.Error(message)
+	}
+	// The database refuses an empty or unknown events list as well, whoever writes the row.
+	if err := d.TryExec("INSERT INTO fb_webhook (name, doctype, events, url, secret) VALUES ('raw', 'note', '{}', 'https://x', 's')"); err == nil {
+		t.Error("the CHECK constraint holds for an empty list")
+	}
+	if err := d.TryExec("INSERT INTO fb_webhook (name, doctype, events, url, secret) VALUES ('raw', 'note', '{save}', 'https://x', 's')"); err == nil {
+		t.Error("the CHECK constraint holds for an unknown event")
+	}
+
+	// Nothing but the two good ones was stored.
+	all, err := db.ListWebhooks(bg, d.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, w := range all {
+		names = append(names, w.Name)
+		if !w.Enabled || w.AllowPrivate || w.InsecureHTTP || w.CreatedAt.IsZero() {
+			t.Errorf("%+v", w)
+		}
+	}
+	want(t, names, []string{"given", "good"}, "stored")
+	loaded, err := db.GetWebhook(bg, d.Pool, "given")
+	if err != nil || loaded == nil || loaded.Secret != "my-own-secret-of-24-bytes" {
+		t.Fatalf("%v %v", loaded, err)
+	}
+	if missing, err := db.GetWebhook(bg, d.Pool, "nobody"); err != nil || missing != nil {
+		t.Errorf("%v %v", missing, err)
+	}
+	// The events are kept in the order given, without duplicates.
+	_, err = db.AddWebhook(bg, d.Pool, reg, newHook("ordered", "note", "submit", "insert", "submit"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, _ := db.GetWebhook(bg, d.Pool, "ordered")
+	want(t, ordered.Events, []string{"submit", "insert"}, "events")
+}
+
+// Rust: webhooks.rs::enable_disable_remove_and_rotate_report_a_missing_webhook
+func TestEnableDisableRemoveAndRotateReportAMissingWebhook(t *testing.T) {
+	d, reg := whSetup(t)
+	hook(t, d, reg, "one", "note", "insert")
+	enabled := func() bool {
+		w, err := db.GetWebhook(bg, d.Pool, "one")
+		if err != nil || w == nil {
+			t.Fatalf("%v %v", w, err)
+		}
+		return w.Enabled
+	}
+	secret := func() string {
+		w, _ := db.GetWebhook(bg, d.Pool, "one")
+		return w.Secret
+	}
+	if err := db.SetWebhookEnabled(bg, d.Pool, "one", false); err != nil || enabled() {
+		t.Fatal("disable")
+	}
+	if err := db.SetWebhookEnabled(bg, d.Pool, "one", true); err != nil || !enabled() {
+		t.Fatal("enable")
+	}
+	old := secret()
+	fresh, err := db.RotateWebhookSecret(bg, d.Pool, "one", nil)
+	if err != nil || fresh == old || secret() != fresh {
+		t.Fatalf("%q %q %v", old, fresh, err)
+	}
+	// A secret that is given must have at least 16 bytes; a refused one changes nothing.
+	_, err = db.RotateWebhookSecret(bg, d.Pool, "one", strp("too-short"))
+	if message := webhookMessage(t, err); !strings.Contains(message, "at least 16 bytes") {
+		t.Error(message)
+	}
+	if secret() != fresh {
+		t.Error("a refused secret changed the secret")
+	}
+	sixteen, err := db.RotateWebhookSecret(bg, d.Pool, "one", strp("exactly-16-bytes"))
+	if err != nil || sixteen != "exactly-16-bytes" || secret() != "exactly-16-bytes" {
+		t.Fatalf("%q %v", sixteen, err)
+	}
+	if err := db.RemoveWebhook(bg, d.Pool, "one"); err != nil {
+		t.Fatal(err)
+	}
+	_, rotateErr := db.RotateWebhookSecret(bg, d.Pool, "one", nil)
+	for _, err := range []error{
+		db.SetWebhookEnabled(bg, d.Pool, "one", true),
+		db.RemoveWebhook(bg, d.Pool, "one"),
+		rotateErr,
+	} {
+		if message := webhookMessage(t, err); message != "no webhook named `one`" {
+			t.Error(message)
+		}
+	}
+	// The error text of the kind.
+	if got := (&db.Error{Kind: db.ErrWebhook, Message: "x"}).Error(); got != "webhook: x" {
+		t.Error(got)
+	}
+}
+
+// Rust: webhooks.rs::events_are_checked_and_deduplicated (unit test)
+func TestWebhookEventsAreCheckedAndDeduplicated(t *testing.T) {
+	got, err := db.CheckWebhookEvents([]string{"submit", "insert", "submit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want(t, got, []string{"submit", "insert"}, "events")
+	for _, bad := range [][]string{nil, {}, {"insert", "save"}, {"Insert"}} {
+		if _, err := db.CheckWebhookEvents(bad); err == nil {
+			t.Errorf("%v", bad)
+		}
+	}
+}
+
+// Rust: webhooks.rs::the_secret_is_not_in_debug_output (unit test)
+func TestTheWebhookSecretIsNotInItsPrintedForm(t *testing.T) {
+	hook := db.Webhook{Name: "n", DocType: "d", Events: []string{"insert"}, URL: "https://example.com/TOKEN", Secret: "very-secret", Enabled: true}
+	for _, text := range []string{fmt.Sprint(hook), fmt.Sprintf("%v", hook), fmt.Sprintf("%+v", hook), fmt.Sprintf("%#v", hook), fmt.Sprint(&hook)} {
+		if strings.Contains(text, "very-secret") || strings.Contains(text, "TOKEN") {
+			t.Errorf("%s", text)
+		}
 	}
 }

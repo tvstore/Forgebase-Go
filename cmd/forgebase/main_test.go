@@ -12,6 +12,7 @@ import (
 
 	"github.com/tvstore/forgebase-go"
 	"github.com/tvstore/forgebase-go/internal/db/dbtest"
+	"github.com/tvstore/forgebase-go/internal/webhooktest"
 )
 
 // The tests of the built binary: its exit codes, its standard streams and its environment, which the
@@ -206,6 +207,44 @@ func TestTheBinaryReadsPasswordsFromAPipeAndPrintsTheTokenOnce(t *testing.T) {
 	}
 }
 
+// Rust: cli.rs::a_secret_from_standard_input_is_used_and_not_printed_and_rotation_prints_once and
+// webhook_test_sends_one_signed_delivery_and_exits_by_the_answer, through the real process: the secret comes
+// from a real pipe, and the exit code of `webhook test` follows the answer of a real receiver.
+func TestTheBinaryTakesAWebhookSecretFromAPipeAndTestExitsByTheAnswer(t *testing.T) {
+	d := dbtest.New(t)
+	env := []string{"FORGEBASE_DATABASE_URL=" + d.URL()}
+	if r := runBinary(t, env, "", "migrate", "--doctypes", doctypes); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	receiver := webhooktest.NewHTTP(t, webhooktest.Status(200))
+	add := runBinary(t, env, "a secret of more than 16 bytes\nignored\n", "webhook", "add", "w", "--doctype", "customer",
+		"--events", "insert", "--url", receiver.URL("/hook?token=TOPSECRET"), "--allow-private", "--insecure-http",
+		"--secret-stdin", "--doctypes", doctypes)
+	if add.code != 0 || strings.Contains(add.stdout, "a secret of more") || !strings.Contains(add.stdout, "the secret is the one read from standard input") ||
+		!strings.Contains(add.stdout, "warning: --insecure-http") || add.stderr != "" {
+		t.Fatalf("%+v", add)
+	}
+	ok := runBinary(t, env, "", "webhook", "test", "w")
+	if ok.code != 0 || !strings.Contains(ok.stdout, "answered HTTP 200") || ok.stderr != "" {
+		t.Fatalf("%+v", ok)
+	}
+	requests := receiver.Requests()
+	if len(requests) != 1 || requests[0].Header("x-forgebase-signature") !=
+		webhooktest.ExpectedSignature("a secret of more than 16 bytes", requests[0].Header("x-forgebase-timestamp"), requests[0].Body) {
+		t.Fatalf("%v", requests)
+	}
+	receiver.SetReply(webhooktest.Status(503))
+	failed := runBinary(t, env, "", "webhook", "test", "w")
+	if failed.code != 1 || !strings.Contains(failed.stdout, "answered HTTP 503") || !strings.Contains(failed.stderr, "error: the test delivery was not accepted: HTTP 503") {
+		t.Fatalf("%+v", failed)
+	}
+	for _, text := range []string{failed.stdout, failed.stderr} {
+		if strings.Contains(text, "TOPSECRET") || strings.Contains(text, "a secret of more") {
+			t.Errorf("%s", text)
+		}
+	}
+}
+
 // Rust: cli.rs::invalid_doctype_files_exit_1_naming_the_file, through the real process.
 func TestInvalidDoctypeFilesExit1NamingTheFile(t *testing.T) {
 	dir := t.TempDir()
@@ -221,8 +260,8 @@ func TestInvalidDoctypeFilesExit1NamingTheFile(t *testing.T) {
 
 // A command that is not ported yet fails with exit code 1 and says when it arrives.
 func TestACommandThatIsNotPortedYetSaysWhenItArrives(t *testing.T) {
-	r := runBinary(t, nil, "", "webhook", "list")
-	if r.code != 1 || r.stderr != "error: webhook list is not available yet in the Go port (arrives in phase P7)\n" || r.stdout != "" {
+	r := runBinary(t, nil, "", "customize", "field", "list")
+	if r.code != 1 || r.stderr != "error: customize field list is not available yet in the Go port (arrives in phase P7)\n" || r.stdout != "" {
 		t.Fatalf("%+v", r)
 	}
 }

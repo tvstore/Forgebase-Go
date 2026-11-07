@@ -180,6 +180,7 @@ func (s *State) buildRoutes() []*route {
 		h(map[string]handlerFunc{"GET": handleSummary}, "GET,HEAD", "/api/v1/summary/{doctype}"),
 		h(map[string]handlerFunc{"GET": handleReportList}, "GET,HEAD", "/api/v1/report"),
 		h(map[string]handlerFunc{"POST": handleReportRun}, "POST", "/api/v1/report/{name}"),
+		h(map[string]handlerFunc{"POST": handleMethodCall}, "POST", "/api/v1/method/{name}"),
 	}
 	// The desk routes exist only when a directory is configured.
 	if s.config.DeskDir != "" {

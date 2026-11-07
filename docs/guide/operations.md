@@ -1,6 +1,6 @@
 # Operating Forgebase
 
-> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. The worker (`forgebase worker`), the job commands (P5.1), the `site` commands (list, create, backup, restore) and TLS to PostgreSQL (P5.2) are in the Go binary; the webhooks and the rest arrive with their phases. The error texts of a TLS failure are those of Go's `crypto/tls` (see [TLS to PostgreSQL](#tls-to-postgresql)).
+> Go port status: the behaviour described here is being ported phase by phase (see the [README](../../README.md#status)); code examples still show the Rust API until the phase that ports them. The worker (`forgebase worker`), the job commands (P5.1), the `site` commands (list, create, backup, restore) and TLS to PostgreSQL (P5.2) are in the Go binary; the webhooks (P7.1) are in it too; the rest arrives with its phase. The error texts of a TLS failure are those of Go's `crypto/tls` (see [TLS to PostgreSQL](#tls-to-postgresql)).
 
 For the person who runs a Forgebase deployment: one server, one binary, one or more sites. Every command here was run against the repository at the time of writing (the two-site flow is `examples/sites/ci.sh`, run by the CI job `sites`). Design and decisions: [ADR 0014](../adr/0014-multi-site-database-per-site.md). Security notes: [security model](../blueprint/security-model.md#multi-site-isolation-m71-accepted-adr-0014).
 
